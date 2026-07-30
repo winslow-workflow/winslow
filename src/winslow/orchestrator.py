@@ -261,7 +261,7 @@ class Orchestrator(_ConfigBase):
 
         parser = argparse.ArgumentParser(
             prog="Winslow",
-            description="Workflow runner with Terminal UI",
+            description="A state and workflow management framework with a terminal UI",
         )
 
         cls._add_arguments(parser)
