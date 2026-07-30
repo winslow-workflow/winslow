@@ -1,0 +1,134 @@
+SystemStats {
+    padding-left: 2;
+}
+
+TabbedContent {
+    height: 100%;
+
+    ContentSwitcher {
+        height: 1fr;
+    }
+
+    TabPane {
+        height: 100%;
+    }
+}
+
+/* Shared shell for the plugin-slotted screens (dashboard / workflow). */
+SlottedScreen {
+    layout: vertical;
+
+    .top-pane { height: 15fr; }
+    .bottom-pane { height: 3fr; }
+}
+
+/* Slot containers: every pane fills its row; the logs/resources row is bordered. */
+.tasks-pane, .task-overview,
+.dashboard-workflows, .dashboard-workflow-form, .dashboard-sessions {
+    height: 100%;
+}
+
+.dashboard-logs, .workflow-logs,
+.dashboard-resources, .workflow-resources {
+    height: 100%;
+}
+
+.dashboard-logs-content, .workflow-logs-content,
+.dashboard-resources-content, .workflow-resources-content {
+    height: 100%;
+    border: round $secondary-lighten-1;
+}
+
+.dashboard-logs, .workflow-logs { width: 9fr; }
+.dashboard-resources, .workflow-resources { width: 3fr; }
+
+.round {
+    border: round $secondary-lighten-1;
+}
+
+.hidden {
+    display: None;
+}
+
+.centered {
+    align: center middle;
+
+    Static {
+        width: auto;
+    }
+}
+
+.no-overflow-x {
+    overflow-x: hidden;
+    width: 100%;
+}
+
+/* Pill label base - color variants live with the widgets that use them. */
+.tag {
+    width: auto;
+    height: 1;
+    padding: 0 1;
+    margin-right: 1;
+    color: auto;
+}
+
+.section-label {
+    text-style: bold;
+    margin: 1 0 1 1;
+}
+
+Button.compact {
+    border-top: none;
+    border-bottom: none;
+}
+
+Button.mini {
+    min-width: 4;
+    width: 4;
+}
+
+Button.small {
+    min-width: 8;
+    width: 8;
+}
+
+.modal-content {
+    width: 80%;
+    height: 90%;
+    border: round $secondary-lighten-1;
+    background: $surface;
+
+    .modal-header {
+        height: 4;
+        margin-bottom: 1;
+        width: 100%;
+        border-bottom: $secondary-lighten-1;
+
+        .label-container {
+            width: 10fr;
+            padding-left: 10;
+            padding-top: 1;
+
+            Label { width: 1fr; }
+        }
+
+        .button-container {
+            width: 2fr;
+            padding-right: 1;
+            align: right middle;
+        }
+    }
+
+    .main {
+        width: 100%;
+        height: 100%;
+        margin-left: 1;
+        margin-right: 1;
+        margin-bottom: 1;
+
+    }
+
+    TabbedContent {
+        margin-top: 1;
+    }
+}

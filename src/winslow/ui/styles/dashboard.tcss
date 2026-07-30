@@ -1,0 +1,192 @@
+DashboardScreen {
+    .dashboard-workflows { width: 3fr; }
+
+    .dashboard-workflow-form {
+        width: 6fr;
+
+        WorkflowFormWidget {
+            height: 100%;
+        }
+    }
+
+    .dashboard-sessions {
+        width: 3fr;
+
+        SessionListWidget {
+            height: 100%;
+            padding-bottom: 1;
+        }
+
+        SessionRow {
+
+            height: 4;
+            border: round $primary-lighten-3;
+
+            &.failed { border: round $error; }
+
+            .failed-state {
+                display: none;
+                width: 100%;
+                height: 100%;
+                padding-top: 1;
+
+                .failed-label {
+                    width: 1fr;
+                    padding-left: 2;
+                    color: $error;
+                }
+
+                .actions {
+                    align: right middle;
+                    padding-right: 1;
+                    width: 1fr;
+                }
+            }
+
+            .loading-state {
+                width: 100%;
+                height: 100%;
+                align: center middle;
+
+                LoadingIndicator {
+                    width: auto;
+                    height: 1;
+                    color: $primary;
+                }
+
+                .init-label {
+                    width: auto;
+                    padding-left: 1;
+                    color: $text-muted;
+                }
+            }
+
+            .ready-state {
+                width: 100%;
+                height: 100%;
+                padding-top: 1;
+
+                .totals {
+                    width: 1fr;
+                    padding-left: 2;
+
+                    .summary {
+                        width: auto;
+                    }
+
+                    .elapsed {
+                        width: auto;
+                        padding-left: 2;
+                        color: $text-muted;
+                    }
+
+                    .waiting {
+                        width: auto;
+                        margin-left: 2;
+                        color: $text-muted;
+                    }
+                }
+
+                .actions {
+                    align: right middle;
+                    padding-right: 1;
+                    width: auto;
+
+                    Button {
+                        margin-left: 1;
+                    }
+                }
+            }
+        }
+    }
+
+    #workflow-selector {
+        height: 100%;
+    }
+
+    FilterableOptionList {
+        border: round $secondary-lighten-1;
+        background: $background;
+    }
+}
+
+.workflow-form {
+    FormLabel {
+        width: 25%;
+        padding-left: 2;
+    }
+
+    .form-input {
+        height: auto;
+    }
+
+    .form-footer{
+        height: 8;
+    }
+
+    .help-text {
+        padding-left: 1;
+        padding-top: 1;
+        width: 100%;
+    }
+
+    .form-field.invalid {
+        border: round $error;
+    }
+
+    .field-error {
+        color: $error;
+        padding-left: 1;
+        width: 100%;
+    }
+
+    .form-error-summary {
+        color: $error;
+        padding-top: 1;
+    }
+
+    FormRow {
+        padding-right: 5;
+        padding-left: 5;
+        align: left middle;
+        height: auto;
+    }
+
+    FilterableOptionList {
+        min-height: 15;
+    }
+
+    .form-header {
+        align: center middle;
+        width: 100%;
+        height: 5;
+        border: hkey $primary-lighten-1;
+    }
+}
+
+/* Outer confirmation modal - narrower than the default .modal-content width. */
+.workflow-confirmation-modal {
+    width: 50%;
+}
+
+/* Slot body inside the modal (compose_slot classes it with the slot id). */
+.workflow-confirmation {
+    width: 100%;
+    height: 75%;
+    padding: 1 2;
+
+    ParamsTable {
+        height: auto;
+        margin-bottom: 1;
+    }
+}
+
+.confirmation-actions {
+    width: 100%;
+    height: auto;
+    align: center middle;
+
+    Button {
+        margin: 0 1;
+    }
+}

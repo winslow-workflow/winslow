@@ -1,0 +1,66 @@
+WorkflowScreen {
+    .tasks-pane { width: 9fr; }
+    .task-overview { width: 3fr; }
+
+    TaskInfo {
+
+        TaskSummary {
+            height: auto;
+            padding-top: 1;
+            padding-bottom: 1;
+
+            .task-attributes {
+                height: auto;
+            }
+
+            TaskInfoRow {
+                margin-left: 1;
+                margin-right: 1;
+
+                height: auto;
+
+                Vertical {
+                    height: auto;
+                }
+
+                .attr-name {
+                    color: $text-accent;
+                    padding-bottom: 1;
+                }
+            }
+
+            TaskTags {
+                height: auto;
+                margin-bottom: 1;
+                padding-top: 1;
+                padding-left: 1;
+
+                Horizontal { height: auto; }
+
+                .tag.premier  { background: $primary; }
+                .tag.terminal { background: $accent; }
+                .tag.noop     { background: $panel; color: $text-muted; }
+            }
+        }
+
+        TaskDependencies {
+            padding-left: 1;
+            height: auto;
+
+            .task-dependencies {
+                height: auto;
+            }
+
+            TaskDependencyRow {
+
+                height: 1;
+                margin-top: 1;
+
+                .icon {
+                    width: 3;
+                    margin-right: 1;
+                }
+            }
+        }
+    }
+}

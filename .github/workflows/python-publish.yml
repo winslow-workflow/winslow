@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # The version segment on the tag selects the index, so one tag convention
+      # serves both indexes. The classify step below does the routing.
+      - v*
+
+jobs:
+  build:
+    name: Build and classify
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.classify.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv build
+      # Gate the tag: install the built wheel into a clean env and exercise the
+      # entry point, so a broken build (bad import, missing entry point) fails
+      # here instead of shipping to an index.
+      - name: Smoke-test the built wheel
+        run: |
+          WHEEL=$(ls dist/*.whl)
+          uv venv /tmp/smoke
+          uv pip install --python /tmp/smoke "${WHEEL}[tui]"
+          /tmp/smoke/bin/python -c "import winslow; print('import OK')"
+          /tmp/smoke/bin/winslow --help
+      # A pre-release must not reach the permanent PyPI index, so it goes to
+      # TestPyPI instead. is_prerelease is also true for .devN, aN, bN and rcN.
+      - name: Classify the tag version
+        id: classify
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          PRE=$(uv run --with packaging --no-project python -c \
+            "from packaging.version import Version; print('true' if Version('${VER}').is_prerelease else 'false')")
+          echo "prerelease=${PRE}" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  pypi:
+    name: Publish to PyPI
+    needs: build
+    if: needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    environment:
+      name: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v3
+      - run: uv publish --trusted-publishing always
+
+  testpypi:
+    name: Publish to TestPyPI
+    needs: build
+    if: needs.build.outputs.prerelease == 'true'
+    runs-on: ubuntu-latest
+    environment:
+      name: test-release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: astral-sh/setup-uv@v3
+      - run: uv publish --publish-url https://test.pypi.org/legacy/ --trusted-publishing always

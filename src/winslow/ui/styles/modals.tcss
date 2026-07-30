@@ -1,0 +1,35 @@
+ForceEndModal { align: center middle; }
+ForceEndModal .modal-content {
+    width: 64; height: auto; max-height: 80%;
+    background: $panel; border: round $primary; padding: 1 2;
+}
+ForceEndModal .force-batch { text-style: bold; margin-top: 1; }
+ForceEndModal .force-task { color: $text-muted; }
+ForceEndModal .actions { height: auto; align: center middle; margin-top: 1; }
+ForceEndModal .actions Button { margin: 0 1; }
+
+WorkflowParams {
+    Vertical {
+        width: 50%;
+        height: auto;
+        max-height: 80%;
+        padding: 0 2 1 2;
+    }
+    ParamsTable { height: auto; max-height: 1fr; }
+}
+
+ErrorDetail {
+    Vertical { width: 100; height: 80%; padding: 0 2 1 2; }
+    VerticalScroll { height: 1fr; }
+}
+
+FilterHelp {
+    Vertical {
+        width: 80;
+        height: 80%;
+        padding: 0 2 1 2;
+    }
+    VerticalScroll {
+        height: 1fr;
+    }
+}

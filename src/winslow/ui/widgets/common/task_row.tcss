@@ -1,0 +1,31 @@
+/* Shell shared by the live task list's TaskRow and history's RecordRow -
+   subclass stylesheets add their own columns/states on top. */
+TaskRowBase {
+    layout: horizontal;
+    height: 3;
+    width: 100%;
+    opacity: 85%;
+    background: $secondary-darken-2;
+    margin: 1 1 0 1;
+
+    &.filter-match {
+        opacity: 100%;
+        background: $secondary-darken-1;
+    }
+
+    &.filter-dim {
+        opacity: 30%;
+    }
+
+    .row-content {
+        padding-top: 1;
+        padding-left: 1;
+        width: 5fr;
+
+        .icon   { width: 1fr; }
+        .index  { width: 1fr; }
+        .name   { width: 8fr; }
+        .status { width: 4fr; }
+        .log    { width: 10fr; overflow-x: hidden; }
+    }
+}

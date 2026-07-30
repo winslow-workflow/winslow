@@ -1,0 +1,640 @@
+import os
+import copy
+import argparse
+import importlib
+from enum import Enum
+
+from winslow.workflow import WorkflowRegistry
+from winslow._config import _ConfigBase
+from winslow.constants import Mode
+from winslow.descriptors import ConfigOption
+from winslow.util import iter_dir_module_names, classes_in_module
+
+from winslow.exceptions import MisconfigurationError, InitializationError
+from winslow.logger import LOGGER, setup_run_logging, shutdown_run_logging
+
+
+INDENT = "\t"
+
+
+class Action(Enum):
+    RUN = "run"
+    SHOW = "show"
+
+
+def _parse_mode(value):
+    """The argparse type for --mode. It converts a string into a Mode and gives a
+    lowercase error message."""
+    try:
+        return Mode(value)
+    except ValueError:
+        choices = ", ".join(m.value for m in Mode)
+        raise argparse.ArgumentTypeError(
+            f"invalid choice: {value!r} (choose from {choices})"
+        )
+
+
+class OrchestratorConfig(argparse.Namespace):
+    """The parsed CLI config, with the derived accessors. action and mode have
+    class defaults, so is_interactive resolves on a subcommand that does not
+    declare them. SHOW, for example, has no mode, and argparse then leaves the
+    attribute unset."""
+
+    action = Action.RUN
+    mode = Mode.TUI
+
+    @property
+    def is_interactive(self):
+        # This gates the interactive setup that SHOW does not need, especially
+        # the log buffer of each task (see Graph). The store and the runner read
+        # the mode instead.
+        return self.action is not Action.SHOW and self.mode is not Mode.HEADLESS
+
+
+def _merged_config(base, overrides):
+    """Make a deep copy and do not change the base. The parsed base is used again
+    in a later session and to pre-fill a form. A change in place would thus copy
+    the inputs of one run into the next run. `base` is None for a workflow with
+    no config."""
+    merged = copy.deepcopy(base) if base is not None else argparse.Namespace()
+    vars(merged).update(overrides)
+    return merged
+
+
+class Orchestrator(_ConfigBase):
+    workflow_registry_class = WorkflowRegistry
+
+    workflow = ConfigOption(
+        help_text="Name of the workflow to view / run.",
+        required=False,
+        subcommands=(
+            Action.RUN.value,
+            Action.SHOW.value,
+        ),
+        # The UI has a workflow selection widget, so it needs no text input.
+        show_on_ui=False,
+    )
+
+    filter = ConfigOption(
+        help_text=(
+            "Filter expression for tasks. Supports name matching (bare text), "
+            "filter commands (!g <group>, !group <group>), "
+            "boolean operators (& |), negation (~), grouping (()), "
+            "and comma-separated OR shorthand (foo,bar)."
+        ),
+        required=False,
+        subcommands=(
+            Action.RUN.value,
+            Action.SHOW.value,
+        ),
+        depends_on="initialize",
+        show_on_ui=False,
+    )
+
+    initialize = ConfigOption(
+        action="store_true",
+        required=False,
+        default=False,
+        help_text=(
+            "Initialize a single workflow (chosen with --workflow) and list its "
+            "tasks. Required in order to use --filter with show."
+        ),
+        subcommands=Action.SHOW.value,
+        show_on_ui=False,
+    )
+
+    with_deps = ConfigOption(
+        action="store_true",
+        required=False,
+        default=False,
+        help_text=(
+            "With --initialize, also list each task's dependencies, in the order "
+            "they run."
+        ),
+        subcommands=Action.SHOW.value,
+        depends_on="initialize",
+        show_on_ui=False,
+    )
+
+    mode = ConfigOption(
+        type=_parse_mode,
+        choices=tuple(Mode),
+        required=False,
+        help_text=(
+            "How to run the workflow(s): 'tui' launches the interactive terminal"
+            " UI; 'headless' runs single-thread/single-process with no UI, useful"
+            " for CI and debugging."
+        ),
+        default=Mode.TUI,
+        subcommands=Action.RUN.value,
+        show_on_ui=False,
+    )
+
+    check = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Checks the tasks in the workflow instead of running them"
+            " - available in headless run mode."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+        show_on_ui=False,
+    )
+
+    disable_concurrency = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Disables all concurrency during task runs (e.g. task dependencies and task "
+            "eligibility will be checked sequentially)."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+    )
+
+    dry_run = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Run tasks in dry-run mode (dry_run method will be "
+            "called on tasks, instead of run)"
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+    )
+
+    force_run = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Skips implicit success checks before a task run. "
+            "Runnability and dependency checks will still be in effect."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+    )
+
+    force_success = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Mark tasks as successful (FORCE_SUCCESS) without running any checks "
+            "or the task itself. Ineligible (skipped) tasks are left untouched."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+    )
+
+    reraise_errors = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Re-raise unexpected task errors after marking the task ERROR, "
+            "aborting the run instead of continuing. For CI and debugging."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+        show_on_ui=False,
+    )
+
+    debug = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text="Enable debug mode and logging.",
+        default=False,
+        subcommands=(
+            Action.RUN.value,
+            Action.SHOW.value,
+        ),
+        # The command line enables the debug mode.
+        show_on_ui=False,
+    )
+
+    def __init__(self, orchestrator_config, directory=None, unknown_args=None):
+        self.directory = directory or os.getcwd()
+        # argparse reads sys.argv if this is None. Normalize it at the boundary.
+        self.unknown_args = list(unknown_args or ())
+
+        super().__init__(orchestrator_config)
+
+        self.workflow_registry = self.workflow_registry_class(self.orchestrator_config)
+
+        # Set later if the interactive mode is enabled.
+        self.ui = None
+
+        self.logger = LOGGER
+
+    @property
+    def is_interactive(self):
+        return self.orchestrator_config.is_interactive
+
+    @classmethod
+    def _add_arguments(cls, parser, subcommand=None):
+        for arg_ctx in cls.get_argparse_context(subcommand):
+            try:
+                name = arg_ctx.pop("arg_name")
+                parser.add_argument(name, **arg_ctx)
+            except (TypeError, KeyError):
+                cmd = subcommand if subcommand else "base"
+                LOGGER.error(
+                    f"Could not add argument for {cmd} parser {parser}, context: '{name}' - {arg_ctx}"
+                )
+                raise
+
+    @classmethod
+    def _generate_subcommand(
+        cls,
+        subparsers,
+        action,
+        help_text,
+    ):
+        sub_parser = subparsers.add_parser(action.value, help=help_text)
+
+        cls._add_arguments(sub_parser, subcommand=action.value)
+        sub_parser.set_defaults(action=action)
+
+        return sub_parser
+
+    @classmethod
+    def get_base_parser(cls):
+
+        parser = argparse.ArgumentParser(
+            prog="Winslow",
+            description="Workflow runner with Terminal UI",
+        )
+
+        cls._add_arguments(parser)
+
+        subparsers = parser.add_subparsers(help="Available subcommands")
+
+        all_defaults = {
+            name: conf.default
+            for name, conf in cls.config_meta.items()
+            if conf.subcommands
+        }
+        parser.set_defaults(action=Action.RUN, **all_defaults)
+
+        cls._generate_subcommand(
+            subparsers,
+            action=Action.SHOW,
+            help_text="Show workflow / task information.",
+        )
+
+        cls._generate_subcommand(
+            subparsers, action=Action.RUN, help_text="Run workflow(s)."
+        )
+
+        return parser
+
+    @classmethod
+    def parse_args(cls):
+        base_parser = cls.get_base_parser()
+        base_args, unknown_args = base_parser.parse_known_args(
+            namespace=OrchestratorConfig()
+        )
+        return base_args, unknown_args
+
+    @property
+    def sorted_workflow_classes(self):
+        return sorted(
+            self.workflow_registry.classes,
+            key=lambda kls: (kls.get_module_path(), kls.__name__),
+        )
+
+    @classmethod
+    def get_from_cwd(cls):
+        klasses = []
+        for scoped_name in iter_dir_module_names(os.getcwd(), recursive=False):
+            try:
+                module = importlib.import_module(scoped_name)
+            # Catch SystemExit too. A sys.exit() in an unguarded script must not
+            # stop the CLI.
+            except (Exception, SystemExit) as e:
+                # The orchestrator is optional. A broken file that has no
+                # relation to it must not stop the CLI.
+                LOGGER.warning(
+                    f"Skipping {scoped_name.split('.', 1)[1]}.py - "
+                    f"{type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                continue
+            klasses.extend(classes_in_module(module, cls))
+
+        if len(klasses) > 1:
+            names = ", ".join(kls.__name__ for kls in klasses)
+
+            raise MisconfigurationError(
+                f"Multiple concrete orchestrator classes found in {os.getcwd()}: {names}. "
+                f"Please define one orchestrator at most per directory."
+            )
+
+        return klasses[0] if klasses else None
+
+    def _parse_known_workflow_args(self, workflow_kls, unknown):
+        """Returns the parsed args, or None, and the tokens that this workflow did
+        not claim."""
+        parser = workflow_kls.get_parser(lenient=True)
+        if parser is None:
+            return None, tuple(unknown)
+        try:
+            # Lenient: the args of another workflow are not for this parser.
+            args, leftover = parser.parse_known_args(unknown)
+        except SystemExit:
+            # argparse already printed the message. Send the exit to the clean
+            # error path.
+            raise MisconfigurationError(
+                f"Invalid arguments for workflow '{workflow_kls.get_name()}' (see above)."
+            )
+        return args, tuple(leftover)
+
+    @classmethod
+    def _leftover_indices(cls, unknown, leftover):
+        """The positions in `unknown` that argparse did NOT claim for this
+        workflow.
+
+        The positions are matched, and not the values. This is important.
+
+        Two workflows each take a number, and the user runs:
+
+            --my-integer 7 --batch-size 7
+
+        Workflow A claims `--my-integer 7`. Workflow B claims `--batch-size 7`.
+        Each token is claimed, so the user must get no error.
+
+        A comparison by value makes the two `7` tokens equal: the leftover of A
+        holds a `7`, which belongs to B, and the leftover of B holds a `7`, which
+        belongs to A. The value `7` thus looks unclaimed and the result is the
+        wrong message "Unrecognized arguments: 7". The positions keep the two
+        tokens separate: the `7` of A is at position 1 and the `7` of B is at
+        position 3.
+
+            unknown = ['--my-integer', '7', '--batch-size', '7']
+            positions:  0              1     2               3
+
+        argparse keeps the leftovers in order. This method thus walks `unknown`,
+        matches the leftovers against it, and finds the positions that this
+        workflow did not claim."""
+        positions = set()
+        cursor = 0
+        for i, token in enumerate(unknown):
+            if cursor < len(leftover) and token == leftover[cursor]:
+                positions.add(i)
+                cursor += 1
+        return positions
+
+    def _collect_workflow_args(self):
+        """{workflow_kls: parsed args or None}, validated together.
+
+        Only `show` and the interactive start call this. They parse the args of
+        each discovered workflow at one time. A headless run has one named
+        workflow and parses its args strictly (see `_handle_headless_run`), so
+        the collision between workflows that this method handles cannot occur
+        there."""
+        parsed = {
+            kls: self._parse_known_workflow_args(kls, self.unknown_args)
+            for kls in self.sorted_workflow_classes
+        }
+
+        # A token is unrecognized if no workflow claimed its position. A position
+        # that one workflow claimed leaves the intersection.
+        unclaimed = set(range(len(self.unknown_args)))
+        for _, leftover in parsed.values():
+            unclaimed &= self._leftover_indices(self.unknown_args, leftover)
+
+        if unclaimed:
+            tokens = [self.unknown_args[i] for i in sorted(unclaimed)]
+            raise MisconfigurationError(f"Unrecognized arguments: {' '.join(tokens)}")
+
+        return {kls: args for kls, (args, _) in parsed.items()}
+
+    def _display_workflow(self, idx, workflow, show_tasks):
+        self.logger.info(
+            f"{idx + 1}. {workflow.__class__.__name__} ({workflow.instance_name})"
+            f" - {workflow.module_directory}"
+        )
+
+        if show_tasks:
+            self._display_tasks(workflow)
+        else:
+            self._display_task_classes(workflow)
+
+    def _display_task_classes(self, workflow):
+        for i, kls in enumerate(
+            sorted(workflow.registry.classes, key=lambda k: k.get_name())
+        ):
+            parameterized = getattr(kls, "_is_parameterized", False)
+            marker = "  [parameterized]" if parameterized else ""
+            self.logger.info(f"{INDENT}{i + 1}. {kls.__name__}{marker}")
+
+            if parameterized:
+                for declared_name, param in kls._parameterization_meta.items():
+                    self.logger.info(
+                        f"{INDENT * 2}- {self._describe_parameter(declared_name, param)}"
+                    )
+
+    @classmethod
+    def _describe_parameter(cls, declared_name, param):
+        style = param.param_style.name.lower()
+        resolved = getattr(param, "_resolved_names", None)
+        if resolved:
+            return f"{declared_name} -> {', '.join(resolved)}  ({style})"
+        return f"{declared_name}  ({style})"
+
+    def _display_tasks(self, workflow):
+        for task in workflow.get_filtered_tasks():
+            self.logger.info(f"{INDENT}{task._index + 1}. {str(task)}")
+
+            if self.orchestrator_config.with_deps and task.dependent_tasks:
+                self.logger.info(f"{INDENT * 2}Dependencies:")
+                for dep in sorted(task.dependent_tasks, key=lambda d: d._index):
+                    self.logger.info(f"{INDENT * 3}{dep._index + 1}. {str(dep)}")
+
+    def check_filters(self, workflow):
+        wanted = getattr(self.orchestrator_config, "workflow", None)
+        return not wanted or workflow.get_name() == wanted
+
+    def _handle_show(self):
+        if self.orchestrator_config.initialize:
+            return self._handle_initialize()
+        self._list_workflow_classes()
+
+    def _list_workflow_classes(self):
+        self.logger.debug("Listing workflow classes")
+        workflow_args_map = self._collect_workflow_args()
+        workflows = []
+
+        for workflow_kls in self.sorted_workflow_classes:
+            if not workflow_kls.should_be_initialized(self.orchestrator_config):
+                continue
+
+            workflow = workflow_kls(
+                self.orchestrator_config, workflow_args_map[workflow_kls]
+            )
+
+            if not self.check_filters(workflow):
+                continue
+
+            workflow.registry.collect_classes(workflow.module_directory)
+            workflows.append(workflow)
+
+        for idx, workflow in enumerate(workflows):
+            self._display_workflow(idx, workflow, show_tasks=False)
+
+    def _handle_initialize(self):
+        self.logger.debug("Initializing a single workflow")
+        workflow_name = self.orchestrator_config.workflow
+
+        if not workflow_name:
+            raise MisconfigurationError(
+                "--initialize requires a single workflow - pass --workflow <name>."
+            )
+
+        if workflow_name not in self.workflow_registry:
+            raise MisconfigurationError(
+                f"{workflow_name} not found in the workflow registry"
+                f" - (available workflows: {self.workflow_registry.names})"
+            )
+
+        workflow_kls = self.workflow_registry[workflow_name]
+        workflow_args = self._parse_workflow_args(workflow_kls)
+
+        if not workflow_kls.should_be_initialized(self.orchestrator_config):
+            raise InitializationError(
+                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+            )
+
+        workflow = workflow_kls(self.orchestrator_config, workflow_args)
+        workflow.initialize_tasks()
+        self._display_workflow(0, workflow, show_tasks=True)
+
+    def _parse_workflow_args(self, workflow_kls):
+        """Parse strictly for the one workflow that is selected to run. `required`
+        and depends_on are thus enforced here. The lenient collective parse, which
+        only lists the workflows, does not enforce them."""
+        parser = workflow_kls.get_parser()
+        if parser is None:
+            if self.unknown_args:
+                raise MisconfigurationError(
+                    f"Unrecognized arguments: {' '.join(self.unknown_args)}"
+                )
+            return None
+        args = parser.parse_args(self.unknown_args)
+        workflow_kls.validate_option_dependencies(args)
+        return args
+
+    def _handle_run(self):
+        if self.orchestrator_config.mode is Mode.HEADLESS:
+            return self._handle_headless_run()
+        self._handle_interactive_run()
+
+    def _handle_headless_run(self):
+        self.logger.debug("Headless run")
+
+        workflow_name = self.orchestrator_config.workflow
+
+        if not workflow_name:
+            raise MisconfigurationError(
+                "Need to provide workflow name via --workflow parameter."
+            )
+
+        if workflow_name not in self.workflow_registry:
+            raise MisconfigurationError(
+                f"{workflow_name} not found in the workflow registry"
+                f" - (available workflows: {self.workflow_registry.names})"
+            )
+
+        workflow_kls = self.workflow_registry[workflow_name]
+        workflow_args = self._parse_workflow_args(workflow_kls)
+
+        if not workflow_kls.should_be_initialized(self.orchestrator_config):
+            raise InitializationError(
+                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+            )
+
+        workflow = workflow_kls(self.orchestrator_config, workflow_args)
+        workflow.initialize_tasks()
+        return workflow.headless_run()
+
+    def _handle_interactive_run(self):
+        self.logger.debug("Interactive run")
+
+        try:
+            from winslow.ui import Winslow
+        except ImportError as e:
+            raise MisconfigurationError(
+                "Interactive mode requires the UI extra - install with: pip install 'winslow[tui]'"
+            ) from e
+
+        # Validate the CLI args before any effect, so a typo fails immediately.
+        workflow_args_map = self._collect_workflow_args()
+
+        # Set up the winslow.runs sink and the propagate=False boundary BEFORE a
+        # workflow logger or a task logger starts to propagate. The run logs then
+        # go to the sink and not to the console. This is interactive only. A
+        # headless run keeps the console output.
+        setup_run_logging()
+
+        # The parsed workflow args fill the parameter forms of the UI.
+        workflow_context = {
+            kls: args
+            for kls, args in workflow_args_map.items()
+            if kls.should_be_initialized(self.orchestrator_config)
+        }
+
+        self.app = Winslow(
+            orchestrator_config=self.orchestrator_config,
+            orchestrator=self,
+            workflow_context=workflow_context,
+        )
+
+        # app.run() blocks until the TUI stops. Then flush and stop the
+        # run-logging listener. This is in a finally clause, so it also occurs
+        # after an error. If it does not occur, the listener thread and the open
+        # file handles stay, and the buffered lines are lost.
+        try:
+            self.app.run()
+        finally:
+            shutdown_run_logging()
+
+    def initialize_workflow(
+        self,
+        workflow_kls,
+        orchestrator_overrides,
+        workflow_values,
+        workflow_base=None,
+        task_store=None,
+        logger=LOGGER,
+    ):
+        # Put the UI values on the parsed base and do not build a new config from
+        # them. The base holds the default of each declared option, and also of
+        # an option with show_on_ui=False. The form path thus cannot drop an
+        # option that it did not show.
+        orchestrator_config = _merged_config(
+            self.orchestrator_config, orchestrator_overrides
+        )
+        workflow_params = _merged_config(workflow_base, workflow_values)
+
+        return workflow_kls(
+            orchestrator_config, workflow_params, store=task_store, logger=logger
+        )
+
+    def start(self):
+        """
+        Do the action that self.orchestrator_config (base_args) and unknown_args
+        select:
+
+        - Start the UI.
+        - Start a simple run.
+        - Show a summary of the workflows and the tasks.
+        """
+        self.validate_option_dependencies(
+            self.orchestrator_config, subcommand=self.orchestrator_config.action.value
+        )
+
+        self.workflow_registry.collect_classes(self.directory)
+
+        if self.orchestrator_config.action is Action.SHOW:
+            self._handle_show()
+        elif self.orchestrator_config.action is Action.RUN:
+            return self._handle_run()

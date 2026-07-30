@@ -1,0 +1,66 @@
+site_name: Winslow
+site_description: A state and workflow management framework with a terminal UI
+site_url: https://winslow-workflow.org/
+repo_url: https://github.com/winslow-workflow/winslow
+copyright: >
+  MIT licensed.
+  <a href="https://github.com/winslow-workflow/winslow/blob/main/LICENSE">LICENSE</a>
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - toc.integrate
+
+nav:
+  - Home: index.md
+  - Guide:
+      - Workflows: workflows.md
+      - Tasks: tasks.md
+      - Dependencies: dependencies.md
+      - Filters: filters.md
+      - Parameterization: parameterization.md
+      - Constraints: constraints.md
+      - Plugins: plugins.md
+      - UI plugins: ui-plugins.md
+      - Filter plugins: filter-plugins.md
+  - Reference:
+      - API: reference.md
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            show_source: true
+            show_root_heading: true
+            members_order: source
+            docstring_style: google
+
+markdown_extensions:
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true

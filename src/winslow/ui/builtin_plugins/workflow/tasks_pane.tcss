@@ -1,0 +1,49 @@
+TasksPaneWidget {
+
+    TaskBar {
+        padding-left: 1;
+        padding-right: 1;
+        width: 100%;
+
+        .search { width: 4fr; }
+
+        .checkboxes {
+            width: 5fr;
+            align: right middle;
+
+            .column { align: right middle; }
+        }
+
+        .actions {
+            width: 3fr;
+            align: right middle;
+
+            Button {
+                width: 9;
+                margin-left: 1;
+            }
+        }
+    }
+
+    TaskRow {
+        &.selected {
+            opacity: 100%;
+            background: $secondary-darken-1;
+        }
+
+        TaskButtons {
+            width: 1fr;
+            margin-right: 1;
+
+            .actions {
+                align: right middle;
+
+                TaskButton {
+                    margin-left: 1;
+                    min-width: 8;
+                    width: 8;
+                }
+            }
+        }
+    }
+}

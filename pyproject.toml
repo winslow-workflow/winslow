@@ -1,0 +1,66 @@
+[project]
+name = "winslow"
+version = "0.1.0"
+description = "A state and workflow management framework with a terminal UI"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Can Bascil", email = "ocanbascil@gmail.com" }
+]
+requires-python = ">=3.12"
+keywords = [
+    "workflow", "task-runner", "idempotent", "dependencies",
+    "orchestration", "tui", "terminal", "dag", "automation",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+]
+dependencies = [
+    "networkx>=3.4.2",
+    "python-decouple>=3.8",
+    "rich>=13.0.0",
+]
+
+[project.optional-dependencies]
+tui = [
+    "textual>=8.2.7",
+    "psutil>=6.1.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.32,<0.12.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9.0",
+    "pytest>=8.3.3",
+    "mkdocs-material>=9.7.7",
+    "mkdocstrings[python]>=1.0.6",
+]
+
+[project.urls]
+Homepage = "https://github.com/winslow-workflow/winslow"
+Repository = "https://github.com/winslow-workflow/winslow"
+Issues = "https://github.com/winslow-workflow/winslow/issues"
+Changelog = "https://github.com/winslow-workflow/winslow/blob/main/CHANGELOG.md"
+
+[project.scripts]
+winslow = "winslow.cli:main"
+
+[tool.ruff.lint]
+select = ["F"]
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["F401"]

@@ -1,0 +1,61 @@
+BatchDetailModal .modal-content { width: 80; height: 60%; padding: 0 2 1 2; }
+BatchDetailModal TabbedContent { height: 1fr; }
+
+RecordRow {
+    .runtime  { width: 3fr; color: $text-muted; }
+    .log      { color: $text-muted; }
+    .info-btn { min-width: 8; width: 8; margin-right: 1; }
+    &.selected { background: $secondary-darken-1; }
+}
+
+BatchCard {
+    height: auto;
+    border: round $primary-lighten-3;
+    margin: 1 1 0 1;
+    padding: 0 1 1 1;
+
+    .batch-header {
+        height: 3;
+        margin-bottom: 1;
+    }
+
+    .batch-tags {
+        width: 1fr;
+        height: 100%;
+        align: left middle;
+        padding-left: 1;
+    }
+
+    .tag.dry-run             { background: $warning; }
+    .tag.force-run           { background: $error; }
+    .tag.force-success       { background: $success; }
+    .tag.disable-concurrency { background: $primary; }
+
+    .details-btn { min-width: 10; width: 10; height: 3; }
+    .stop-btn    { min-width: 8; width: 8; height: 3; margin-left: 1; }
+
+    RecordRow { margin: 1 0 0 0; }
+}
+
+HistoryPane {
+    layout: vertical;
+
+    #search-section {
+        border: round $secondary-lighten-1;
+        padding: 0 1;
+
+        .checkboxes {
+            width: 7fr;
+            align: left middle;
+
+            .column { align: left top; }
+
+            .placeholder { visibility: hidden; }
+        }
+    }
+
+    #cards-section {
+        height: 1fr;
+        border: round $secondary-lighten-1;
+    }
+}

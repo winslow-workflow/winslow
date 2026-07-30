@@ -1,0 +1,57 @@
+TaskLogView {
+    padding-left: 1;
+}
+
+.attributes {
+    padding: 0 2 1 2;
+}
+
+.attributes .attr-section {
+    color: $text-accent;
+    text-style: bold;
+    margin-top: 1;
+    padding-bottom: 1;
+}
+
+.attributes AttributeTable {
+    height: auto;
+    max-height: 20;
+    margin-bottom: 1;
+}
+
+.attributes .attr-note {
+    color: $text-muted;
+    margin-bottom: 1;
+}
+
+.docs {
+    height: 1fr;
+}
+
+.docs MarkdownViewer {
+    height: 1fr;
+}
+
+SourceView {
+    height: 100%;
+}
+
+SourceView SourceTree {
+    width: 20%;
+}
+
+SourceView #source-pane {
+    height: 100%;
+    margin-left: 1;
+}
+
+SourceView #source-header {
+    height: 3;
+    padding: 0 1;
+    align: left middle;
+    border: round $primary-darken-1;
+}
+
+SourceView #source-path {
+    text-style: bold;
+}
