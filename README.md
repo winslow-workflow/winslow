@@ -1,5 +1,10 @@
 # Winslow
 
+[![PyPI](https://img.shields.io/pypi/v/winslow)](https://pypi.org/project/winslow/)
+[![Python](https://img.shields.io/pypi/pyversions/winslow)](https://pypi.org/project/winslow/)
+[![CI](https://github.com/winslow-workflow/winslow/actions/workflows/ci.yml/badge.svg)](https://github.com/winslow-workflow/winslow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **A state and workflow management framework with a terminal UI.**
 
 Winslow lets you describe work as a set of small, dependency-aware **tasks** and
@@ -169,8 +174,8 @@ disabled_filter_plugins = ["some-filter"]     # likewise enabled_filter_plugins
 
 ## Status
 
-Winslow is early (0.x) — the API may still shift between minor versions. A test
-suite and fuller documentation are on the way.
+Winslow is early (0.x) — the API may still shift between minor versions. Full
+documentation lives at [winslow-workflow.org](https://winslow-workflow.org).
 
 ## License
 

@@ -1,6 +1,6 @@
 [project]
 name = "winslow"
-version = "0.1.0"
+version = "0.2.0"
 description = "A state and workflow management framework with a terminal UI"
 readme = "README.md"
 license = "MIT"
@@ -51,7 +51,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/winslow-workflow/winslow"
+Homepage = "https://winslow-workflow.org"
+Documentation = "https://winslow-workflow.org"
 Repository = "https://github.com/winslow-workflow/winslow"
 Issues = "https://github.com/winslow-workflow/winslow/issues"
 Changelog = "https://github.com/winslow-workflow/winslow/blob/main/CHANGELOG.md"
