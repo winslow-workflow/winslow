@@ -39,6 +39,11 @@ continues to run as before. Winslow only observes it.
 that the method exists. The other tasks stay as checks. The workflow is usable at every step of the migration,
 and no step needs a large change.
 
+**Part automation, part human action.** The `run()` method can complete a part of the work and leave the
+rest to a person. A release task can open a pull request in `run()`. Its `check()` passes only when the
+change is in the main branch. Until a person merges the pull request, the task shows the `ACTION REQUIRED`
+state. The signal table in [Tasks](tasks.md) lists the `require_action` signal that reports this state.
+
 ## Is Winslow the right tool?
 
 Winslow is not the right tool for every situation. Many workflow tools exist, and they differ more
@@ -150,8 +155,14 @@ UI accepts the same language. See [Filters](filters.md).
     you trust.
 
 At startup Winslow searches the current directory and every subdirectory below it for a `workflow.py` file. It
-then imports each `workflow.py` file, and every other `.py` file in the same directory tree. Winslow ignores a
-directory whose name starts with a full stop or an underscore. These imports happen before the first prompt.
+then imports each `workflow.py` file, every other `.py` file in the same directory tree, and the top-level
+modules for the orchestrator discovery. Winslow ignores a directory whose name starts with a full stop or an
+underscore. These imports happen before the first prompt.
+
+Plugin autodiscovery is also opt-out. An installed package that exposes a winslow entry point loads at
+startup. The [plugin guide](plugins.md) shows how to constrain the discovery. The
+[security policy](https://github.com/winslow-workflow/winslow/blob/main/SECURITY.md) describes the full
+trust model and the report process for a vulnerability.
 
 ## Where to go next
 

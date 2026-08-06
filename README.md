@@ -50,8 +50,6 @@ class Etl(Workflow):
 
 
 class DownloadData(Task):
-    is_premier = True  # foundational step, runs first
-
     def run(self):
         # ... fetch the file ...
         download("s3://bucket/raw.csv", "/data/raw.csv")
@@ -98,6 +96,22 @@ left off. (Need to force a redo? `winslow run --force-run` skips the pre-check.)
 A task that only verifies state can omit `run()` entirely — it becomes a
 read-only **check**.
 
+## Start as a status board, automate later
+
+Because `run()` is optional, a workflow built only from checks changes
+nothing — it just reads your systems and reports what's true. That makes
+adoption incremental:
+
+1. Describe the runbook you already have as checks — one `check()` per step,
+   automated or manual. The TUI is now a live status board over your process
+   exactly as it exists today. Zero migration.
+2. Add `run()` to one task at a time, wherever automation pays off. The rest
+   stay checks, and the workflow is usable at every step in between.
+
+A task can even automate part of its work and leave the rest to a human —
+see [the docs](https://winslow-workflow.org/#adopt-winslow-one-task-at-a-time)
+for how that plays out.
+
 ## A few things you'll probably reach for
 
 Each of these is optional — start with `run`/`check` and add the rest as
@@ -142,40 +156,55 @@ you need it.
 ```bash
 winslow run                                    # interactive terminal UI
 winslow run --workflow etl                     # UI, pre-selecting a workflow
-winslow run --mode headless --workflow etl # headless run
-winslow run --mode headless --check ...    # check completion without running
+winslow run --mode headless --workflow etl     # headless run
+winslow run --mode headless --check ...        # check completion without running
 winslow run --dry-run ...                      # call dry_run() instead of run()
 winslow show                                   # list workflows
-winslow show --initialize --workflow etl      # initialize one workflow, list its tasks
+winslow show --initialize --workflow etl       # initialize one workflow, list its tasks
 winslow show --initialize --workflow etl --with-deps   # ...with each task's dependencies
 ```
 
 Winslow discovers your workflows from the current directory; defining an
 `Orchestrator` subclass to customize global options is optional.
 
+## How it compares
+
+Winslow is a **local-first** workflow tool. There is no server, no scheduler
+daemon, and no metadata database: done-ness is whatever `check()` observes
+right now — a file, a table, an API response, a merged PR — so if the world
+drifts, the next run sees it. Tasks run where you invoke `winslow`, and cron
+or CI is the intended trigger for unattended runs.
+
+If your situation calls for distributed workers, a built-in scheduler, or a
+central run history, a different tool will serve you better. The
+[tool selector](https://winslow-workflow.org/selector.html) compares Winslow
+with the common alternatives under the same rules — tick what your situation
+requires and see what fits.
+
 ## Trust model
 
 Treat a workflow directory like a `Makefile` or a `conftest.py`: **running
-`winslow` in a directory runs that directory's code.** On startup Winslow
-imports each workflow's `workflow.py` (and every `.py` beside it), plus the
-top-level modules used for orchestrator discovery — at import time, before any
-prompt. Only run winslow in directories you trust.
-
-Plugin and filter autodiscovery is **opt-out, not opt-in**: any installed
-package exposing `winslow.tui_plugins` / `winslow.filter_plugins` entry points is imported
-and its `autoload = True` classes registered on startup. Constrain this from
-your `pyproject.toml`:
-
-```toml
-[tool.winslow]
-disabled_tui_plugins = ["some-plugin"]     # or enabled_tui_plugins to allowlist
-disabled_filter_plugins = ["some-filter"]     # likewise enabled_filter_plugins
-```
+`winslow` in a directory runs that directory's code**, imported at startup
+before any prompt. Plugin and filter autodiscovery is likewise **opt-out** —
+installed packages exposing winslow entry points load on startup; the
+[plugin guide](https://winslow-workflow.org/plugins/) shows how to constrain
+or allowlist them. The full trust model and the vulnerability reporting
+process are in [SECURITY.md](SECURITY.md).
 
 ## Status
 
 Winslow is early (0.x) — the API may still shift between minor versions. Full
 documentation lives at [winslow-workflow.org](https://winslow-workflow.org).
+
+## Questions & feedback
+
+- Questions, use cases, and ideas →
+  [Discussions](https://github.com/winslow-workflow/winslow/discussions)
+- Reproducible bugs →
+  [Issues](https://github.com/winslow-workflow/winslow/issues)
+
+Real-world use cases are especially welcome while the API is still settling —
+what you automate, and what fought you, both shape what 0.x becomes.
 
 ## License
 
