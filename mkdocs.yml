@@ -40,6 +40,7 @@ nav:
       - Filter plugins: filter-plugins.md
   - Reference:
       - API: reference.md
+  - Tool selector: selector.html
 
 plugins:
   - search

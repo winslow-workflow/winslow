@@ -39,6 +39,14 @@ continues to run as before. Winslow only observes it.
 that the method exists. The other tasks stay as checks. The workflow is usable at every step of the migration,
 and no step needs a large change.
 
+## Is Winslow the right tool?
+
+Winslow is not the right tool for every situation. Many workflow tools exist, and they differ more
+than their descriptions show. The [tool selector](selector.html) compares Winslow with the common
+alternatives under the same rules. The grid shows how each tool knows that work is already done. It
+also covers fan-out, execution, scheduling, interfaces, and licenses. Select the properties that your
+situation requires. The grid removes the tools that do not fit.
+
 ## Install
 
 ```bash
@@ -155,3 +163,4 @@ directory whose name starts with a full stop or an underscore. These imports hap
 - [Constraints](constraints.md): package a gate rule as a class, and share it between tasks.
 - [Plugins](plugins.md): add a tab to the UI, replace a built-in pane, or add a filter command.
 - [API reference](reference.md): generated from the source docstrings.
+- [Tool selector](selector.html): compare Winslow with the alternative workflow tools.

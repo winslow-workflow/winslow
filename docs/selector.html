@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Workflow tool selector — Winslow</title>
+<meta name="description" content="Compare workflow tools by how they know work is done, fan-out, execution targets, scheduling, license, and more.">
+<script>
+/* follow the docs' Material palette toggle (index 0 = default, 1 = slate) */
+try {
+  var p = localStorage.getItem("/.__palette");
+  if (p) {
+    var idx = JSON.parse(p).index;
+    document.documentElement.setAttribute("data-theme", idx === 1 ? "dark" : "light");
+  }
+} catch (e) {}
+</script>
+<style>
+  /* Skinned to match Material for MkDocs: indigo primary, default/slate schemes */
+  :root {
+    --bg: #ffffff;
+    --surface: #f5f5f7;
+    --ink: rgba(0, 0, 0, 0.87);
+    --muted: rgba(0, 0, 0, 0.54);
+    --faint: rgba(0, 0, 0, 0.32);
+    --line: rgba(0, 0, 0, 0.12);
+    --line-soft: rgba(0, 0, 0, 0.07);
+    --primary: #4051b5;
+    --primary-ink: #4051b5;
+    --primary-contrast: #ffffff;
+    --primary-soft: rgba(64, 81, 181, 0.07);
+    --hover: rgba(0, 0, 0, 0.035);
+    --ok: #2e7d32;
+    --dim: 0.4;
+    --sans: Roboto, -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+    --mono: "Roboto Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1e2029;
+      --surface: #262a36;
+      --ink: rgba(228, 231, 245, 0.92);
+      --muted: rgba(184, 190, 214, 0.66);
+      --faint: rgba(184, 190, 214, 0.4);
+      --line: rgba(255, 255, 255, 0.14);
+      --line-soft: rgba(255, 255, 255, 0.07);
+      --primary-ink: #8a97f2;
+      --primary-soft: rgba(138, 151, 242, 0.1);
+      --hover: rgba(255, 255, 255, 0.04);
+      --ok: #81c784;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1e2029;
+    --surface: #262a36;
+    --ink: rgba(228, 231, 245, 0.92);
+    --muted: rgba(184, 190, 214, 0.66);
+    --faint: rgba(184, 190, 214, 0.4);
+    --line: rgba(255, 255, 255, 0.14);
+    --line-soft: rgba(255, 255, 255, 0.07);
+    --primary-ink: #8a97f2;
+    --primary-soft: rgba(138, 151, 242, 0.1);
+    --hover: rgba(255, 255, 255, 0.04);
+    --ok: #81c784;
+  }
+  :root[data-theme="light"] {
+    --bg: #ffffff;
+    --surface: #f5f5f7;
+    --ink: rgba(0, 0, 0, 0.87);
+    --muted: rgba(0, 0, 0, 0.54);
+    --faint: rgba(0, 0, 0, 0.32);
+    --line: rgba(0, 0, 0, 0.12);
+    --line-soft: rgba(0, 0, 0, 0.07);
+    --primary-ink: #4051b5;
+    --primary-soft: rgba(64, 81, 181, 0.07);
+    --hover: rgba(0, 0, 0, 0.035);
+    --ok: #2e7d32;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--primary-ink); }
+  a:focus-visible, button:focus-visible, input:focus-visible {
+    outline: 2px solid var(--primary-ink);
+    outline-offset: 2px;
+  }
+
+  /* ---------- Material-style app bar ---------- */
+  .appbar {
+    background: var(--primary);
+    color: var(--primary-contrast);
+    box-shadow: 0 0 0.2rem rgba(0,0,0,0.1), 0 0.2rem 0.4rem rgba(0,0,0,0.2);
+  }
+  .appbar-inner {
+    max-width: 1240px; margin: 0 auto; padding: 12px 24px;
+    display: flex; align-items: baseline; gap: 14px;
+  }
+  .logo { font-weight: 700; font-size: 16px; letter-spacing: 0.01em; }
+  .logo a { color: inherit; text-decoration: none; }
+  .bartitle { font-size: 14px; opacity: 0.75; }
+
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 32px 24px 72px; }
+
+  /* ---------- page head ---------- */
+  h1 {
+    font-weight: 300;
+    font-size: clamp(26px, 3.6vw, 34px);
+    letter-spacing: -0.01em;
+    margin: 0 0 10px;
+    text-wrap: balance;
+  }
+  .intro { color: var(--muted); max-width: 68ch; margin: 0 0 28px; font-size: 15px; }
+  .intro strong { color: var(--ink); font-weight: 500; }
+
+  /* ---------- layout ---------- */
+  .layout { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 32px; align-items: start; }
+  @media (max-width: 880px) { .layout { grid-template-columns: 1fr; } }
+
+  /* ---------- filter rail (styled like md-nav) ---------- */
+  .rail { position: sticky; top: 16px; display: flex; flex-direction: column; gap: 18px; font-size: 13px; }
+  @media (max-width: 880px) { .rail { position: static; } }
+
+  .facet h3 {
+    font-size: 12px; font-weight: 700;
+    color: var(--ink); margin: 0;
+  }
+  .facet .desc {
+    font-size: 11px; color: var(--faint);
+    margin: 1px 0 6px; line-height: 1.4;
+  }
+  .facet .opts { display: flex; flex-direction: column; gap: 1px; }
+  .opt {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 8px; border-radius: 2px; cursor: pointer;
+    color: var(--muted);
+  }
+  .opt:hover { background: var(--hover); color: var(--ink); }
+  .opt input { accent-color: var(--primary); margin: 0; cursor: pointer; }
+  .opt .n { color: var(--faint); margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  .search input {
+    width: 100%; padding: 8px 12px;
+    font-family: var(--sans); font-size: 13px;
+    color: var(--ink); background: var(--surface);
+    border: none; border-radius: 2px;
+  }
+  .search input::placeholder { color: var(--faint); }
+
+  .reset {
+    align-self: flex-start;
+    font-family: var(--sans); font-size: 13px; font-weight: 500;
+    color: var(--primary-ink); background: none;
+    border: 1px solid var(--primary-ink); border-radius: 2px;
+    padding: 6px 14px; cursor: pointer;
+  }
+  .reset:hover { background: var(--primary); color: var(--primary-contrast); border-color: var(--primary); }
+
+  /* ---------- results ---------- */
+  .statusline {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+  .count { font-size: 14px; }
+  .count b { color: var(--primary-ink); font-size: 17px; font-variant-numeric: tabular-nums; }
+  .hint { color: var(--faint); font-size: 12px; }
+
+  .gridbox { border: 1px solid var(--line); border-radius: 2px; overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; min-width: 1480px; font-size: 13px; }
+  .license { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
+  thead th {
+    position: sticky; top: 0;
+    text-align: left; font-size: 12px; font-weight: 700;
+    color: var(--muted);
+    background: var(--bg);
+    border-bottom: 1px solid var(--line);
+    padding: 11px 14px; white-space: nowrap;
+    cursor: pointer; user-select: none;
+  }
+  thead th:hover { color: var(--primary-ink); }
+  thead th .arrow { color: var(--primary-ink); }
+  tbody td {
+    padding: 10px 14px; border-bottom: 1px solid var(--line-soft);
+    vertical-align: top;
+  }
+  tbody tr:hover td { background: var(--hover); }
+  tbody tr:last-child td { border-bottom: none; }
+
+  .tool { font-weight: 500; white-space: nowrap; }
+  .tool a { color: var(--primary-ink); text-decoration: none; }
+  .tool a:hover { text-decoration: underline; }
+  .langtag {
+    display: inline-block; margin-left: 6px;
+    font-family: var(--mono); font-size: 10px; font-weight: 400;
+    color: var(--muted); background: var(--surface);
+    border-radius: 2px; padding: 1px 5px; vertical-align: 1px; white-space: nowrap;
+  }
+  .cat { white-space: nowrap; color: var(--muted); }
+  .checknote { max-width: 26ch; font-family: var(--mono); font-size: 12px; }
+  .resume { max-width: 26ch; color: var(--muted); }
+  .infra { white-space: nowrap; }
+  .schedy { color: var(--ok); }
+  .schedn { color: var(--faint); }
+  .pill {
+    display: inline-block; font-size: 11px; font-weight: 500;
+    border-radius: 2px; padding: 1px 8px; white-space: nowrap;
+  }
+  .pill.active { color: var(--ok); background: var(--primary-soft); }
+  .pill.maint { color: var(--muted); background: var(--surface); }
+
+  tr.hero td { background: var(--primary-soft); }
+  tr.hero td:first-child { border-left: 3px solid var(--primary); }
+  tr.hero:hover td { background: var(--primary-soft); }
+  .heretag {
+    display: inline-block; margin-left: 8px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--primary-ink);
+  }
+
+  tr.cut td { opacity: var(--dim); }
+  tr.divider td {
+    background: var(--surface); color: var(--muted);
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 6px 14px; border-bottom: 1px solid var(--line);
+  }
+
+  footer {
+    margin-top: 18px;
+    color: var(--muted); font-size: 12.5px; max-width: 72ch;
+  }
+  footer a { color: var(--primary-ink); }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .opt, .reset, tbody td { transition: background-color 100ms, color 100ms; }
+  }
+</style>
+</head>
+<body>
+
+<header class="appbar">
+  <div class="appbar-inner">
+    <span class="logo"><a href="./">winslow</a></span>
+    <span class="bartitle">Workflow tool selector</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <h1>Pick the right workflow tool</h1>
+  <p class="intro">
+    <strong><span class="ntotal">–</span> workflow tools in one grid.</strong> Select the properties that
+    your situation requires. The grid removes the tools that do not fit, and shows them dimmed below a
+    divider. Winslow is one row in the grid, under the same rules as every other tool.
+  </p>
+
+  <div class="layout">
+    <aside class="rail" id="rail">
+      <div class="search">
+        <input id="q" type="search" placeholder="Filter by name" aria-label="Filter tools by name">
+      </div>
+      <!-- facet groups injected here -->
+      <button class="reset" id="reset">Reset filters</button>
+    </aside>
+
+    <main>
+      <div class="statusline">
+        <span class="count"><b id="nmatch">–</b> of <span class="ntotal">–</span> tools match</span>
+        <span class="hint">click a column header to sort</span>
+      </div>
+      <div class="gridbox">
+        <table id="grid" aria-label="Workflow tool comparison grid">
+          <thead>
+            <tr>
+              <th data-sort="name">Tool <span class="arrow"></span></th>
+              <th data-sort="cat">Category <span class="arrow"></span></th>
+              <th data-sort="check">Done check <span class="arrow"></span></th>
+              <th>Resumability</th>
+              <th data-sort="fan">Fan-out <span class="arrow"></span></th>
+              <th data-sort="exec">Execution <span class="arrow"></span></th>
+              <th data-sort="auth">Authoring <span class="arrow"></span></th>
+              <th data-sort="hitl">Human steps <span class="arrow"></span></th>
+              <th data-sort="infra">Infrastructure <span class="arrow"></span></th>
+              <th data-sort="trig">Scheduling <span class="arrow"></span></th>
+              <th data-sort="ui">UI <span class="arrow"></span></th>
+              <th data-sort="license">License <span class="arrow"></span></th>
+            </tr>
+          </thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <footer>
+        The classifications follow the author's reading of each project's documentation in
+        August&nbsp;2026. Every tool in the grid is good software that fits some situations well.
+        Did you find an error? <a href="https://github.com/winslow-workflow/winslow/issues">Open an issue</a>.
+      </footer>
+    </main>
+  </div>
+</div>
+
+<script>
+const FACETS = {
+  cat: {
+    label: "Category",
+    values: {
+      orch:   "Data orchestrator",
+      durable:"Durable execution",
+      sci:    "Scientific / HPC",
+      runner: "Local task runner",
+      queue:  "Task queue",
+      ml:     "ML pipeline",
+      etl:    "ETL / ELT",
+      bpm:    "BPM / state machine",
+      auto:   "Integration / automation",
+    },
+  },
+  language: {
+    label: "Language",
+    desc: "What you author workflows in",
+    values: {
+      python:   "Python",
+      polyglot: "Polyglot SDKs",
+      yaml:     "YAML / JSON",
+      owndsl:   "Own DSL",
+      visual:   "Visual builder",
+    },
+  },
+  check: {
+    label: "Done check",
+    desc: "How it knows work is already done",
+    values: {
+      world:  "Inspects world state",
+      target: "File targets / timestamps",
+      hash:   "Content-hash memoization",
+      db:     "Orchestrator state DB",
+      log:    "Checkpoint / log replay",
+      broker: "Queue & broker state",
+      none:   "Nothing — always runs",
+    },
+  },
+  fan: {
+    label: "Fan-out",
+    desc: "Generating many tasks from one declaration",
+    values: {
+      native:  "Declarative mapping",
+      code:    "Imperative code loops",
+      limited: "Limited / partial",
+      none:    "None",
+    },
+  },
+  exec: {
+    label: "Execution",
+    desc: "Where tasks actually run",
+    values: {
+      local:   "Local process",
+      workers: "Distributed workers",
+      k8s:     "Kubernetes",
+      hpc:     "HPC schedulers",
+      cloud:   "Serverless / cloud batch",
+    },
+  },
+  auth: {
+    label: "Authoring",
+    values: {
+      dec:  "Decorators",
+      cls:  "Task classes",
+      func: "Plain functions",
+      dsl:  "Config / DSL",
+      bpmn: "BPMN diagrams",
+      visual: "Visual builder",
+    },
+  },
+  hitl: {
+    label: "Human steps",
+    desc: "Manual steps tracked in the workflow",
+    values: {
+      native:  "First-class",
+      partial: "Pause / signal hooks",
+      none:    "Not supported",
+    },
+  },
+  trig: {
+    label: "Scheduling",
+    desc: "How runs get started",
+    values: {
+      sched: "Built-in schedule",
+      event: "Event-driven",
+      ext:   "External cron / CI",
+    },
+  },
+  infra: {
+    label: "Infrastructure",
+    values: {
+      none:   "None — pip install",
+      one:    "One backing service",
+      server: "Server + database",
+      k8s:    "Kubernetes",
+      cloud:  "Cloud service",
+    },
+  },
+  cost: {
+    label: "Pricing",
+    values: {
+      free: "Fully free (open source)",
+      core: "Free core + paid tiers",
+      srcavail: "Source-available license",
+      paid: "Commercial service",
+    },
+  },
+  ui: {
+    label: "Interface",
+    values: {
+      web: "Web UI",
+      tui: "Terminal UI",
+      cli: "CLI / headless",
+    },
+  },
+};
+
+const UI_SHORT = { web: "Web", tui: "TUI", cli: "CLI" };
+const FAN_SHORT = { native: "Declarative", code: "Code loops", limited: "Limited", none: "—" };
+const EXEC_SHORT = { local: "Local", workers: "Workers", k8s: "K8s", hpc: "HPC", cloud: "Cloud" };
+const HITL_SHORT = { native: "First-class", partial: "Partial", none: "—" };
+const TRIG_SHORT = { sched: "Built-in", event: "Events", ext: "External cron / CI" };
+
+// name, url, cat, check, checkNote, resume, fan, fanNote, exec[], execNote, auth, hitl, hitlNote, trig[], trigNote, infra, sched, ui[], uiNote, license, cost, costNote, status, py, lang, language, hero
+const TOOLS = [
+  ["winslow","https://winslow-workflow.org","runner","world","check() verifies the actual outcome","Converges — reruns only what isn't done","native","Parameter \u2192 instances; zip & product",["local"],null,"cls","native","any check() can demand ACTION REQUIRED",["ext"],"headless by design","none",false,["tui","cli"],"TUI is an optional extra","MIT","free",null,"active",true,null,"python",true],
+  ["Apache Airflow","https://airflow.apache.org","orch","db","Task-instance rows in metadata DB","Retries & backfills from recorded state","native",".expand() dynamic task mapping",["local", "workers", "k8s"],"Celery / K8s executors","dec","partial","sensors await external action",["sched", "event"],"cron + asset triggers","server",true,["web"],null,"Apache-2.0","free","managed vendors exist","active",true,null,"python",false],
+  ["Prefect","https://www.prefect.io","orch","db","Run state in API + input-keyed cache","Retries; cached task results","native",".map() over iterables",["local", "workers", "k8s", "cloud"],"work pools","dec","native","pause + typed wait-for-input",["sched", "event"],"schedules + automations","server",true,["web"],null,"Apache-2.0","core","Prefect Cloud","active",true,null,"python",false],
+  ["Dagster","https://dagster.io","orch","db","Asset materialization records","Re-materializes stale assets","native","partitions + dynamic outputs",["local", "workers", "k8s"],"executors","dec","partial","sensors / manual runs",["sched", "event"],"schedules + sensors","server",true,["web"],null,"Apache-2.0","core","Dagster+","active",true,null,"python",false],
+  ["Luigi","https://github.com/spotify/luigi","orch","target","Target.exists() per task","Skips tasks whose targets exist","native","Parameter-driven instances",["local", "workers"],null,"cls","none",null,["ext"],null,"none",false,["web"],"basic visualiser","Apache-2.0","free",null,"maint",true,null,"python",false],
+  ["Flyte","https://flyte.org","orch","db","Run state + input-hash cache","Recovers runs; cached outputs","native","map tasks + dynamic workflows",["k8s"],null,"dec","native","approve / wait_for_input gates",["sched"],"launch-plan schedules","k8s",true,["web"],null,"Apache-2.0","core","Union.ai","active",false,"Go engine","python",false],
+  ["Metaflow","https://metaflow.org","ml","db","Artifacts persisted per step","resume restarts at failed step","native","foreach splits",["local", "k8s", "cloud"],"AWS Batch / Step Functions","cls","none",null,["ext"],"schedules via Argo / SFN deploy","none",false,["web","cli"],"UI is a separate deploy","Apache-2.0","core","Outerbounds","active",true,null,"python",false],
+  ["Mage","https://www.mage.ai","orch","db","Block-run state","Retries from recorded state","native","dynamic blocks",["local", "k8s", "cloud"],"ECS / GCP executors","dec","none",null,["sched", "event"],"schedule, event & API triggers","server",true,["web"],null,"Apache-2.0","core","Mage Pro","active",true,null,"python",false],
+  ["Kestra","https://kestra.io","orch","db","Execution state, event-sourced","Replays / restarts from state","native","ForEach / EachParallel",["workers", "k8s", "cloud"],"task runners","dsl","native","Pause + onResume inputs",["sched", "event"],"cron, webhooks, flow triggers","server",true,["web"],null,"Apache-2.0","core","Enterprise Edition","active",false,"Java","yaml",false],
+  ["Kedro","https://kedro.org","ml","none","No run state — structure only","Full re-run; slice manually","limited","static graph; namespaces only",["local"],"deploy plugins target orchestrators","func","none",null,["ext"],null,"none",false,["web","cli"],"via Kedro-Viz (DAG viewer)","Apache-2.0","free",null,"active",true,null,"python",false],
+  ["Ploomber","https://github.com/ploomber/ploomber","orch","target","Product timestamps vs. source","Skips up-to-date products","native","grid specs",["local", "k8s", "cloud"],"soopervisor export","dsl","none",null,["ext"],null,"none",false,["cli"],null,"Apache-2.0","core","Ploomber Cloud","maint",true,null,"python",false],
+  ["Windmill","https://windmill.dev","orch","db","Job state in Postgres","Retries; flow-level restart","native","for-loop flow steps",["workers"],null,"dsl","native","approval / suspend steps",["sched", "event"],"schedules + webhooks","server",true,["web"],null,"AGPL-3.0","core","Enterprise license","active",false,"Rust","polyglot",false],
+  ["gokart","https://github.com/m3dev/gokart","orch","target","Hashed output targets","Skips existing targets","native","Luigi-style parameters",["local"],null,"cls","none",null,["ext"],null,"none",false,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["Temporal","https://temporal.io","durable","log","Event-history replay","Exact resume via deterministic replay","code","loops + child workflows",["workers"],"your worker fleet","dec","partial","signals & updates",["sched"],"durable timers / cron","server",true,["web"],null,"MIT","core","Temporal Cloud","active",false,"Go engine","polyglot",false],
+  ["Restate","https://restate.dev","durable","log","Journaled invocation log","Resumes from journal","code","loops over durable calls",["workers", "cloud"],"services incl. Lambda","dec","partial","awakeables",["event"],"Kafka ingress, delayed calls","server",true,["web"],"bundled, port 9070","BUSL-1.1","srcavail","SDKs MIT; Restate Cloud","active",false,"Rust engine","polyglot",false],
+  ["DBOS","https://www.dbos.dev","durable","log","Step checkpoints in Postgres","Resumes after last completed step","code","loops over steps / queues",["local", "workers", "cloud"],"in-app; DBOS Cloud","dec","partial","workflow events / messages",["sched", "event"],"cron decorators + Kafka","one",true,["web","cli"],"via Conductor console","MIT","core","DBOS Cloud / Conductor","active",true,null,"python",false],
+  ["Hatchet","https://hatchet.run","durable","log","Durable event log in Postgres","Durable tasks resume at checkpoint","code","spawn child tasks in loops",["workers"],null,"dec","partial","wait-for-event",["sched", "event"],"cron + event triggers","one",true,["web"],null,"MIT","core","Hatchet Cloud","active",false,"Go engine","polyglot",false],
+  ["Inngest","https://www.inngest.com","durable","log","Step memoization per event","Replays completed steps","code","fan-out events / step loops",["workers", "cloud"],"calls your HTTP functions","dec","partial","waitForEvent",["sched", "event"],"event-native + cron","cloud",true,["web"],null,"SSPL","srcavail","→ Apache-2.0 after 3 yrs","active",false,"Go engine","polyglot",false],
+  ["Conductor (Orkes)","https://conductor-oss.org","durable","log","Workflow state store","Restart / rerun from a task","native","dynamic fork-join",["workers"],"polling workers","dsl","native","HUMAN task type",["sched", "event"],"scheduler + event handlers","server",true,["web"],null,"Apache-2.0","core","Orkes Cloud","active",false,"Java","polyglot",false],
+  ["Snakemake","https://snakemake.github.io","sci","target","Output files + mtime & param changes","Re-runs only stale outputs","native","wildcards + expand()",["local", "hpc", "k8s", "cloud"],"Slurm, K8s, cloud batch","dsl","none",null,["ext"],null,"none",false,["cli"],"HTML reports","MIT","free",null,"active",true,null,"python",false],
+  ["doit","https://pydoit.org","runner","target","Timestamps / checksums + custom uptodate","Skips up-to-date tasks","native","task-generator functions",["local"],null,"func","none",null,["ext"],null,"none",false,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["redun","https://github.com/insitro/redun","sci","hash","Hashes code + data recursively","Reuses cached results on hash match","code","plain Python map / loops",["local", "k8s", "cloud"],"AWS Batch executor","dec","none",null,["ext"],null,"none",false,["tui","cli"],"provenance Console","Apache-2.0","free",null,"active",true,null,"python",false],
+  ["pytask","https://pytask-dev.readthedocs.io","runner","target","File hashes, pytest-style","Skips unchanged tasks","code","@task inside loops",["local"],null,"func","none",null,["ext"],null,"none",false,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["Parsl","https://parsl-project.org","sci","hash","Input-keyed memoization + checkpoints","Restarts from checkpoint file","code","loops over app futures",["local", "hpc", "k8s", "cloud"],"providers: Slurm, PBS\u2026","dec","none",null,["ext"],null,"none",false,["web","cli"],"parsl-visualize dashboard","Apache-2.0","free",null,"active",true,null,"python",false],
+  ["Nextflow","https://www.nextflow.io","sci","hash","Task cache keyed on inputs","-resume reuses cached tasks","native","dataflow channels",["local", "hpc", "k8s", "cloud"],"executors galore","dsl","none",null,["ext"],"Seqera adds scheduling","none",false,["cli"],"Seqera Platform is commercial","Apache-2.0","core","Seqera Platform","active",false,"Groovy","owndsl",false],
+  ["Cylc","https://cylc.github.io","sci","db","Workflow DB over cycling graphs","Restarts from workflow DB","native","built-in task parameters",["local", "hpc"],"Slurm / PBS job runners","dsl","partial","xtriggers await external state",["sched"],"cycling is the core model","none",true,["tui","web"],"cylc tui + cylc gui","GPL-3.0","free",null,"active",true,null,"python",false],
+  ["Toil","https://toil.ucsc-cgl.org","sci","db","Job store on disk or cloud","--restart from job store","code","child jobs; CWL scatter",["local", "hpc", "k8s", "cloud"],null,"cls","none",null,["ext"],null,"none",false,["cli"],null,"Apache-2.0","free",null,"active",true,null,"python",false],
+  ["AiiDA","https://www.aiida.net","sci","db","Provenance graph in Postgres","Restarts daemon processes","code","loops in WorkChains",["local", "hpc"],"SSH to schedulers","cls","none",null,["ext"],null,"server",false,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["FireWorks","https://materialsproject.github.io/fireworks/","sci","db","State in MongoDB LaunchPad","Reruns fizzled fireworks","code","dynamic detours / additions",["local", "hpc"],"queue adapters","cls","none",null,["ext"],"qlaunch via cron","one",false,["web"],"lpad webgui","BSD","free",null,"maint",true,null,"python",false],
+  ["Invoke","https://www.pyinvoke.org","runner","none","Runs every time","None","none",null,["local"],null,"dec","none",null,["ext"],null,"none",false,["cli"],null,"BSD-2","free",null,"active",true,null,"python",false],
+  ["Fabric","https://www.fabfile.org","runner","none","Runs every time, over SSH","None","none",null,["local"],"SSH remotes","dec","none",null,["ext"],null,"none",false,["cli"],null,"BSD-2","free",null,"active",true,null,"python",false],
+  ["nox","https://nox.thea.codes","runner","none","Runs every time; env reuse only","None","native","@nox.parametrize",["local"],null,"dec","none",null,["ext"],null,"none",false,["cli"],null,"Apache-2.0","free",null,"active",true,null,"python",false],
+  ["poethepoet","https://poethepoet.natn.io","runner","none","Runs every time","None","none",null,["local"],null,"dsl","none",null,["ext"],null,"none",false,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["Celery","https://docs.celeryq.dev","queue","broker","Broker acks + result backend","Per-task retries","native","canvas group / chord / map",["workers"],null,"dec","none",null,["sched", "event"],"beat + app-driven enqueue","one",true,["web","cli"],"via Flower","BSD-3","free",null,"active",true,null,"python",false],
+  ["Dramatiq","https://dramatiq.io","queue","broker","Broker acks","Automatic retries","native","group composition",["workers"],null,"dec","none",null,["event"],"app-driven; periodiq for cron","one",false,["cli"],null,"LGPL-3.0","free",null,"active",true,null,"python",false],
+  ["Huey","https://huey.readthedocs.io","queue","broker","Queue state in Redis / SQLite","Retries","code","enqueue in loops",["workers"],null,"dec","none",null,["sched", "event"],"periodic tasks + enqueue","one",true,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["RQ","https://python-rq.org","queue","broker","Job registries in Redis","Requeue failed jobs","code","enqueue in loops",["workers"],null,"func","none",null,["event"],"app-driven; rq-scheduler for cron","one",false,["web","cli"],"via rq-dashboard","BSD-2","free",null,"active",true,null,"python",false],
+  ["Procrastinate","https://procrastinate.readthedocs.io","queue","broker","Job rows in Postgres","Retries; survives restarts","code","defer in loops",["workers"],null,"dec","none",null,["sched", "event"],"cron + app-driven defer","one",true,["cli"],null,"MIT","free",null,"active",true,null,"python",false],
+  ["dlt","https://dlthub.com","etl","db","Pipeline state + incremental cursors","Resumes incremental loads","limited","data-level, not task-level",["local"],"runs where invoked","dec","none",null,["ext"],null,"none",false,["web","cli"],"dlt pipeline show dashboard","Apache-2.0","core","dltHub platform","active",true,null,"python",false],
+  ["Meltano","https://meltano.com","etl","db","Singer state bookmarks","Incremental sync resume","none",null,["local"],null,"dsl","none",null,["ext"],"via Airflow plugin","none",false,["cli"],"web UI removed in v3","MIT","free",null,"active",true,null,"python",false],
+  ["SpiffWorkflow","https://www.spiffworkflow.org","bpm","log","Serialized BPMN state","Rehydrates and continues","native","BPMN multi-instance",["local"],"in-process library","bpmn","native","BPMN user tasks",["ext"],"library \u2014 host app decides","none",false,["cli"],"library; SpiffArena adds web UI","LGPL-3.0","free",null,"active",true,null,"python",false],
+  ["Apache Hamilton","https://hamilton.apache.org","ml","hash","Optional cache keyed on inputs","Reuses cached node results","native","Parallelizable / Collect",["local"],"Ray / Dask adapters","func","none",null,["ext"],null,"none",false,["web","cli"],"hamilton ui, open source","Apache-2.0","core","DAGWorks hosted UI","active",true,null,"python",false],
+  ["ZenML","https://www.zenml.io","ml","db","Metadata store + step caching","Cached steps skip re-run","limited","static step graphs",["local", "k8s", "cloud"],"orchestrator flavors","dec","none",null,["ext"],"via orchestrator backend","server",false,["web"],null,"Apache-2.0","core","ZenML Pro","active",true,null,"python",false],
+  ["Kubeflow Pipelines","https://www.kubeflow.org","ml","db","ML-metadata + step caching","Cached steps; retries","native","dsl.ParallelFor",["k8s"],null,"dec","none",null,["sched"],"recurring runs","k8s",true,["web"],null,"Apache-2.0","free",null,"active",false,"K8s-native","python",false],
+  ["GNU Make","https://www.gnu.org/software/make/","runner","target","Target mtime vs. prerequisites","Skips up-to-date targets","native","pattern rules",["local"],null,"dsl","none",null,["ext"],null,"none",false,["cli"],null,"GPL-3.0","free",null,"active",false,null,"owndsl",false],
+  ["just","https://just.systems","runner","none","Runs every time","None","none",null,["local"],null,"dsl","none",null,["ext"],null,"none",false,["cli"],null,"CC0-1.0","free",null,"active",false,"Rust","owndsl",false],
+  ["Task","https://taskfile.dev","runner","target","Checksums / timestamps of sources","Skips up-to-date tasks","native","for: / matrix loops",["local"],null,"dsl","none",null,["ext"],null,"none",false,["cli"],null,"MIT","free",null,"active",false,"Go","yaml",false],
+  ["Argo Workflows","https://argo-workflows.readthedocs.io","orch","db","Workflow CRD status in etcd","Retries; resubmit + step memoization","native","withItems / withParam",["k8s"],null,"dsl","partial","suspend templates",["sched", "event"],"CronWorkflow + Argo Events","k8s",true,["web"],null,"Apache-2.0","free",null,"active",false,"Go","yaml",false],
+  ["n8n","https://n8n.io","auto","none","Event-driven; executions logged","Retry failed executions","native","per-item fan-out",["workers", "cloud"],"queue-mode workers","visual","native","Wait / approval nodes",["sched", "event"],"cron + webhooks / triggers","server",true,["web"],null,"SUL-1.0","srcavail","Sustainable Use; paid cloud","active",false,"TypeScript","visual",false],
+  ["AWS Step Functions","https://aws.amazon.com/step-functions/","durable","log","Execution event history","Redrive failed executions","native","Map / Distributed Map",["cloud"],"Lambda & AWS integrations","dsl","partial","task-token callbacks",["event"],"via EventBridge","cloud",false,["web"],null,"Proprietary","paid","pay per state transition","active",false,"AWS","yaml",false],
+  ["Cromwell","https://cromwell.readthedocs.io","sci","hash","Call caching by input hash","Call-cached rerun of failed runs","native","WDL scatter",["local", "hpc", "cloud"],"Slurm, GCP, AWS backends","dsl","none",null,["ext"],null,"none",false,["cli"],"server mode: REST API","BSD-3","free",null,"active",false,"JVM","owndsl",false],
+].map(function (r) {
+  return { name:r[0], url:r[1], cat:r[2], check:r[3], checkNote:r[4], resume:r[5],
+           fan:r[6], fanNote:r[7], exec:r[8], execNote:r[9], auth:r[10], hitl:r[11], hitlNote:r[12],
+           trig:r[13], trigNote:r[14], infra:r[15], sched:r[16], ui:r[17], uiNote:r[18],
+           license:r[19], cost:r[20], costNote:r[21], status:r[22], py:r[23], lang:r[24], language:r[25], hero:r[26] };
+});
+
+const state = {
+  sets: { cat:new Set(), language:new Set(), check:new Set(), fan:new Set(), exec:new Set(), auth:new Set(),
+          hitl:new Set(), trig:new Set(), infra:new Set(), cost:new Set(), ui:new Set() },
+  q: "",
+  sortKey: null,
+  sortDir: 1,
+};
+
+function matches(t) {
+  if (state.q && !t.name.toLowerCase().includes(state.q)) return false;
+  for (const key of ["cat","language","check","fan","auth","hitl","infra","cost"]) {
+    const s = state.sets[key];
+    if (s.size && !s.has(t[key])) return false;
+  }
+  for (const key of ["ui","exec","trig"]) {
+    const s = state.sets[key];
+    if (s.size && !t[key].some(function (v) { return s.has(v); })) return false;
+  }
+  return true;
+}
+
+function sortVal(t, key) {
+  if (key === "sched") return t.sched ? 0 : 1;
+  if (key === "name") return t.name.toLowerCase();
+  if (["ui","exec","trig"].includes(key)) return t[key].map(function (v) { return FACETS[key].values[v]; }).join(" + ");
+  if (["cat","language","check","fan","auth","hitl","infra","cost"].includes(key)) return FACETS[key].values[t[key]];
+  return t[key];
+}
+
+function cmp(a, b) {
+  if (!state.sortKey) return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+  const va = sortVal(a, state.sortKey), vb = sortVal(b, state.sortKey);
+  if (va === vb) return a.name.toLowerCase() < b.name.toLowerCase() ? -1 : 1;
+  return (va < vb ? -1 : 1) * state.sortDir;
+}
+
+function esc(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
+}
+
+function rowHtml(t, cut) {
+  const cls = [t.hero ? "hero" : "", cut ? "cut" : ""].join(" ").trim();
+  return '<tr class="' + cls + '">' +
+    '<td class="tool"><a href="' + esc(t.url) + '" target="_blank" rel="noopener" referrerpolicy="no-referrer-when-downgrade">' + esc(t.name) + '</a>' +
+      (t.lang ? '<span class="langtag">' + esc(t.lang) + '</span>' : '') +
+      (t.hero ? '<span class="heretag">← you are here</span>' : '') + '</td>' +
+    '<td class="cat">' + esc(FACETS.cat.values[t.cat]) + '</td>' +
+    '<td class="checknote">' + esc(t.checkNote) + '</td>' +
+    '<td class="resume">' + esc(t.resume) + '</td>' +
+    '<td>' + esc(FAN_SHORT[t.fan]) +
+      (t.fanNote ? '<br><span class="langtag">' + esc(t.fanNote) + '</span>' : '') + '</td>' +
+    '<td>' + t.exec.map(function (v) { return esc(EXEC_SHORT[v]); }).join(" + ") +
+      (t.execNote ? '<br><span class="langtag">' + esc(t.execNote) + '</span>' : '') + '</td>' +
+    '<td>' + esc(FACETS.auth.values[t.auth]) + '</td>' +
+    '<td>' + esc(HITL_SHORT[t.hitl]) +
+      (t.hitlNote ? '<br><span class="langtag">' + esc(t.hitlNote) + '</span>' : '') + '</td>' +
+    '<td class="infra">' + esc(FACETS.infra.values[t.infra]) + '</td>' +
+    '<td>' + t.trig.map(function (v) { return esc(TRIG_SHORT[v]); }).join(" + ") +
+      (t.trigNote ? '<br><span class="langtag">' + esc(t.trigNote) + '</span>' : '') + '</td>' +
+    '<td>' + t.ui.map(function (v) { return esc(UI_SHORT[v]); }).join(" + ") +
+      (t.uiNote ? '<br><span class="langtag">' + esc(t.uiNote) + '</span>' : '') + '</td>' +
+    '<td class="license">' + esc(t.license) +
+      (t.costNote ? '<br><span class="langtag">' + esc(t.costNote) + '</span>' : '') + '</td>' +
+    '</tr>';
+}
+
+function render() {
+  const kept = [], cut = [];
+  for (const t of TOOLS) (matches(t) ? kept : cut).push(t);
+  kept.sort(cmp); cut.sort(cmp);
+
+  let html = kept.map(function (t) { return rowHtml(t, false); }).join("");
+  if (cut.length) {
+    html += '<tr class="divider"><td colspan="12">removed by your filters: ' + cut.length + '</td></tr>';
+    html += cut.map(function (t) { return rowHtml(t, true); }).join("");
+  }
+  document.getElementById("rows").innerHTML = html;
+  document.getElementById("nmatch").textContent = kept.length;
+
+  document.querySelectorAll("thead th[data-sort]").forEach(function (th) {
+    const on = th.dataset.sort === state.sortKey;
+    th.querySelector(".arrow").textContent = on ? (state.sortDir === 1 ? "▲" : "▼") : "";
+    th.setAttribute("aria-sort", on ? (state.sortDir === 1 ? "ascending" : "descending") : "none");
+  });
+}
+
+function buildRail() {
+  const rail = document.getElementById("rail");
+  const resetBtn = document.getElementById("reset");
+  for (const [key, facet] of Object.entries(FACETS)) {
+    const div = document.createElement("div");
+    div.className = "facet";
+    let opts = "";
+    const entries = Object.entries(facet.values).sort(function (a, b) {
+      return a[1].localeCompare(b[1]);
+    });
+    for (const [val, label] of entries) {
+      let n;
+      if (key === "ui" || key === "exec" || key === "trig") {
+        n = TOOLS.filter(function (t) { return t[key].includes(val); }).length;
+      } else {
+        n = TOOLS.filter(function (t) { return t[key] === val; }).length;
+      }
+      opts += '<label class="opt"><input type="checkbox" data-facet="' + key + '" data-val="' + val + '">' +
+              '<span>' + esc(label) + '</span><span class="n">' + n + '</span></label>';
+    }
+    div.innerHTML = "<h3>" + esc(facet.label) + "</h3>" +
+      (facet.desc ? "<p class='desc'>" + esc(facet.desc) + "</p>" : "") +
+      "<div class='opts'>" + opts + "</div>";
+    rail.insertBefore(div, resetBtn);
+  }
+
+  rail.addEventListener("change", function (e) {
+    const el = e.target;
+    if (!el.dataset || !el.dataset.facet) return;
+    const s = state.sets[el.dataset.facet];
+    el.checked ? s.add(el.dataset.val) : s.delete(el.dataset.val);
+    render();
+  });
+
+  document.getElementById("q").addEventListener("input", function (e) {
+    state.q = e.target.value.trim().toLowerCase();
+    render();
+  });
+
+  resetBtn.addEventListener("click", function () {
+    for (const s of Object.values(state.sets)) s.clear();
+    state.q = ""; state.sortKey = null; state.sortDir = 1;
+    document.getElementById("q").value = "";
+    rail.querySelectorAll("input[type=checkbox]").forEach(function (c) { c.checked = false; });
+    render();
+  });
+
+  document.querySelectorAll("thead th[data-sort]").forEach(function (th) {
+    th.addEventListener("click", function () {
+      const key = th.dataset.sort;
+      if (state.sortKey === key) state.sortDir *= -1;
+      else { state.sortKey = key; state.sortDir = 1; }
+      render();
+    });
+  });
+}
+
+document.querySelectorAll(".ntotal").forEach(function (el) { el.textContent = TOOLS.length; });
+buildRail();
+render();
+</script>
+
+</body>
+</html>
