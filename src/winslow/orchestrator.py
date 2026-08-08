@@ -10,8 +10,18 @@ from winslow.constants import Mode
 from winslow.descriptors import ConfigOption
 from winslow.util import iter_dir_module_names, classes_in_module
 
-from winslow.exceptions import MisconfigurationError, InitializationError
+from winslow.exceptions import (
+    MisconfigurationError,
+    InitializationError,
+    EligibilityError,
+)
 from winslow.logger import LOGGER, setup_run_logging, shutdown_run_logging
+from winslow.telemetry import (
+    TelemetryRegistry,
+    activate_telemetry_configurations,
+    emit_unscoped_error,
+    shutdown_telemetry_configurations,
+)
 
 
 INDENT = "\t"
@@ -63,6 +73,7 @@ def _merged_config(base, overrides):
 
 class Orchestrator(_ConfigBase):
     workflow_registry_class = WorkflowRegistry
+    telemetry_registry_class = TelemetryRegistry
 
     workflow = ConfigOption(
         help_text="Name of the workflow to view / run.",
@@ -219,6 +230,9 @@ class Orchestrator(_ConfigBase):
         super().__init__(orchestrator_config)
 
         self.workflow_registry = self.workflow_registry_class(self.orchestrator_config)
+        self.telemetry_registry = self.telemetry_registry_class(
+            self.orchestrator_config
+        )
 
         # Set later if the interactive mode is enabled.
         self.ui = None
@@ -548,13 +562,32 @@ class Orchestrator(_ConfigBase):
         workflow_args = self._parse_workflow_args(workflow_kls)
 
         if not workflow_kls.should_be_initialized(self.orchestrator_config):
-            raise InitializationError(
+            error = InitializationError(
                 f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
             )
+            emit_unscoped_error(
+                error, workflow_name=workflow_name, workflow_class=workflow_kls.__name__
+            )
+            raise error
 
         workflow = workflow_kls(self.orchestrator_config, workflow_args)
-        workflow.initialize_tasks()
-        return workflow.headless_run()
+
+        # A run that does not start is invisible under cron, so the telemetry
+        # hook must report it. The catch is narrow on purpose:
+        # MisconfigurationError is bad input, and a reraise_errors escape is
+        # already reported at the task boundary.
+        try:
+            workflow.initialize_tasks()
+            return workflow.headless_run()
+        except (EligibilityError, InitializationError) as e:
+            emit_unscoped_error(
+                e,
+                workflow_name=workflow.instance_name,
+                workflow_instance=str(workflow),
+                workflow_class=type(workflow).__name__,
+                session_id=workflow.session_id,
+            )
+            raise
 
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")
@@ -637,4 +670,13 @@ class Orchestrator(_ConfigBase):
         if self.orchestrator_config.action is Action.SHOW:
             self._handle_show()
         elif self.orchestrator_config.action is Action.RUN:
-            return self._handle_run()
+            # Runs only: a show produces no errors worth a backend. The finally
+            # flushes and unregisters, so an embedding process can start again.
+            self.telemetry_registry.collect_classes(self.directory)
+            active_telemetry = activate_telemetry_configurations(
+                self.telemetry_registry.classes, self.orchestrator_config
+            )
+            try:
+                return self._handle_run()
+            finally:
+                shutdown_telemetry_configurations(active_telemetry)

@@ -29,6 +29,7 @@ from winslow.task.context import (
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
 from winslow.task.eligibility import check_task_eligibility
+from winslow.telemetry import emit_task_error
 
 from .execution import ExecutionPhase
 
@@ -134,7 +135,10 @@ class BaseRunner(_Base):
         after the run (see TransientProperty for a full trace).
 
         The handlers below convert the escapes of the step body into ERROR:
-        sys.exit, an illegal task signal, and any other exception.
+        sys.exit, an illegal task signal, and any other exception. They also
+        report the error to the telemetry hook, even when reraise_errors is
+        set. The paths upstream must not report the exception again (see
+        telemetry.py).
         """
         with self.task_log_scope(task, batch_uuid):
             try:
@@ -154,6 +158,7 @@ class BaseRunner(_Base):
                 )
                 self.set_status(task, TaskStatus.ERROR, batch_uuid)
                 self.logger.error(f"{task} called sys.exit({e.code}) - marked errored")
+                emit_task_error(self.workflow, task, e, batch_uuid, phase)
 
                 if self.orchestrator_config.reraise_errors:
                     raise
@@ -167,6 +172,7 @@ class BaseRunner(_Base):
                 task.logger.error(msg, exc_info=True)
                 self.set_status(task, TaskStatus.ERROR, batch_uuid)
                 self.logger.error(f"{task}: {msg} - marked errored")
+                emit_task_error(self.workflow, task, e, batch_uuid, phase)
 
                 if self.orchestrator_config.reraise_errors:
                     # Do not raise the signal again. A handler upstream would
@@ -178,6 +184,7 @@ class BaseRunner(_Base):
                 self.logger.error(
                     f"{task} errored: {e} (full traceback visible in task logs)"
                 )
+                emit_task_error(self.workflow, task, e, batch_uuid, phase)
 
                 if self.orchestrator_config.reraise_errors:
                     raise

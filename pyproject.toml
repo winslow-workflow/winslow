@@ -37,6 +37,13 @@ tui = [
     "textual>=8.2.7",
     "psutil>=6.1.0",
 ]
+sentry = [
+    "sentry-sdk>=2.0",
+]
+otel = [
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
+]
 
 [build-system]
 requires = ["uv_build>=0.11.32,<0.12.0"]
@@ -48,6 +55,10 @@ dev = [
     "pytest>=8.3.3",
     "mkdocs-material>=9.7.7",
     "mkdocstrings[python]>=1.0.6",
+    # The contrib tests exercise the real SDKs against in-memory transports.
+    "sentry-sdk>=2.0",
+    "opentelemetry-sdk>=1.20",
+    "opentelemetry-exporter-otlp-proto-http>=1.20",
 ]
 
 [project.urls]
