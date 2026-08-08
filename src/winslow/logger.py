@@ -9,7 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from logging.handlers import QueueHandler, QueueListener
 
-from decouple import config
+from winslow.settings import config
 from rich.logging import RichHandler
 
 

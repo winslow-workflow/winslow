@@ -1,7 +1,10 @@
 """Process-wide run settings sourced from the environment (python-decouple)."""
 
-from decouple import config
+import os
 
+from decouple import AutoConfig
+
+config = AutoConfig(search_path=os.getcwd())
 
 env = config("WINSLOW_ENV", default="dev")
 
