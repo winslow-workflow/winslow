@@ -77,33 +77,29 @@ class LogContext:
     because a log record goes to a remote sink. The record carries values and
     never a live object.
 
-    - session_id:   identifies the full run, or session. It is the top-level
-                    grouping key for "all logs of this execution". It is None
-                    until a Session binds it to the runner, for example in a
-                    headless run before a session exists.
-    - workflow_name: a label with low cardinality, such as "alpha", to group the
-                    runs of the same workflow. It is a separate field, although
-                    it is also the prefix of session_id. The kebab name holds
-                    hyphens, and the UUID holds hyphens too, so the name is not
-                    cleanly recoverable from the id. It is also the dimension
-                    that you index and filter the streams by.
-    - task_name:    the true identity of the task, which is str(task): the class
-                    name and the parameter values. Two parameterized tasks of the
-                    same class are different tasks, so the parameters must be in
-                    the label to separate their logs. It is None for a log record
-                    of the run that has no task, for example the workflow init,
-                    the task generation and the eligibility checks. Such a record
-                    still needs the session_id and workflow_name labels, but it
-                    has no task.
-    - batch_uuid:   identifies the execution action, which is one run or check
-                    that a user started and which can hold many tasks. With
-                    task_name it identifies the execution of one task in the run.
-                    It is None outside a batch.
+    Each axis carries the declared name and the instance. The name is bounded,
+    so a sink can index and group by it; the instance is the display form with
+    the identifying values, so a filter can select one parameter row or one
+    configured run:
+
+    - session_id:   identifies one execution, the top-level grouping key. None
+                    until a Session binds it to the runner.
+    - workflow_name: the declared name, for example "etl".
+    - workflow_instance: str(workflow), for example "etl (client=acme)". Two
+                    configured runs of one workflow differ by it.
+    - task_name:    the declared name, for example "deploy". None for a record
+                    outside a task, for example the workflow init and the
+                    eligibility checks.
+    - task_instance: str(task), the declared name plus the parameter values.
+    - batch_uuid:   identifies the execution action, one run or check that a
+                    user started. None outside a batch.
     """
 
     session_id: Optional[str]
     workflow_name: Optional[str]
+    workflow_instance: Optional[str]
     task_name: Optional[str]
+    task_instance: Optional[str]
     batch_uuid: Optional[str]
 
 

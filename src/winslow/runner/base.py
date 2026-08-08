@@ -97,7 +97,9 @@ class BaseRunner(_Base):
         return LogContext(
             session_id=self.workflow.session_id,
             workflow_name=self.workflow.instance_name,
-            task_name=str(task),
+            workflow_instance=str(self.workflow),
+            task_name=task.instance_name,
+            task_instance=str(task),
             batch_uuid=batch_uuid,
         )
 

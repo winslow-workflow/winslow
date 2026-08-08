@@ -96,17 +96,15 @@ class Winslow(App):
         workflow_logger = logging.getLogger(run_logger_name(session_id))
         workflow_logger.propagate = True
 
-        # The log context at run level. It stamps session_id and workflow_name
-        # onto the logs of the init, the task generation and the eligibility,
-        # which run outside a task_scope. Those logs thus go to the log file of
-        # the session and not to _unscoped. task_name is None here, because these
-        # logs have no task. asyncio.to_thread copies the contextvar into the
-        # worker, so a log record from the worker is stamped too. The execution
-        # of a task later sets its own LogContext, which replaces this one.
+        # The log context at run level: it stamps the logs of the init, the
+        # task generation and the eligibility, which run outside a task_scope.
+        # The workflow instance is not built yet, so the name stands in for it.
         init_log_ctx = LogContext(
             session_id=session_id,
             workflow_name=workflow_name,
+            workflow_instance=workflow_name,
             task_name=None,
+            task_instance=None,
             batch_uuid=None,
         )
         with scoped_log_context(init_log_ctx):
