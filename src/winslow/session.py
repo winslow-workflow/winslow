@@ -5,6 +5,7 @@ from enum import Enum
 
 from winslow.exceptions import SessionEndingError
 from winslow.logger import release_session_logging
+from winslow.telemetry import emit_unscoped_error
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.util import generate_id
 
@@ -125,12 +126,21 @@ class Session:
         self.workflow.release_tasks()
         release_session_logging(self.session_id)
 
-    def mark_error(self):
+    def mark_error(self, exc=None):
         """Mark the session as failed after an init error. This freezes its
-        elapsed time."""
+        elapsed time. The caller passes the exception when it has one, so
+        the telemetry hook can report it (see telemetry.py)."""
         self.status = SessionStatus.ERROR
         if self.ended_at is None:
             self.ended_at = time.time()
+        if exc is not None:
+            emit_unscoped_error(
+                exc,
+                workflow_name=self.workflow_name,
+                workflow_instance=str(self.workflow),
+                workflow_class=type(self.workflow).__name__,
+                session_id=self.session_id,
+            )
 
     @property
     def screen_name(self):

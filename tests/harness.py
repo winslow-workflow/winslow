@@ -117,6 +117,18 @@ def build_workflow(directory, name, mode, *extra_argv):
     return workflow
 
 
+def headless_orchestrator(directory, name, *workflow_argv):
+    """The real CLI wiring minus argv: the orchestrator built the way
+    cli.main builds it, dispatching a headless run of `name`. workflow_argv
+    passes workflow options the way the CLI does (e.g. "--client", "acme")."""
+    parser = Orchestrator.get_base_parser()
+    config = parser.parse_args(
+        ["run", "--mode", Mode.HEADLESS.value, "--workflow", name],
+        namespace=OrchestratorConfig(),
+    )
+    return Orchestrator(config, directory=directory, unknown_args=list(workflow_argv))
+
+
 def ready(workflow):
     """Session + the eligibility pre-pass: the state a live workflow is in
     before its first batch (the UI does both at init)."""

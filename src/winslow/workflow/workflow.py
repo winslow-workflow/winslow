@@ -128,17 +128,31 @@ class Workflow(_ConfigBase):
         return self._session.session_id if self._session else None
 
     @property
-    def identifier_suffix(self):
-        """A key=value list of the config options with identifier=True. This part
-        makes two runs of the same workflow different. It is empty if the workflow
-        declares no such option. identifier implies required, so each option always
+    def identifiers_dict_safe(self):
+        """{option name: display value} for the config options with
+        identifier=True. identifier implies required, so each option always
         has a value and the code reads it directly."""
-        parts = [
-            f"{name}={option.format_value(getattr(self.workflow_config, name))}"
+        return {
+            name: option.format_value(getattr(self.workflow_config, name))
             for name, option in self.config_meta.items()
             if option.identifier
-        ]
-        return " | ".join(parts)
+        }
+
+    @property
+    def identifier_suffix(self):
+        """A key=value list of the identifier options. This part makes two
+        runs of the same workflow different; empty without such options."""
+        return " | ".join(f"{k}={v}" for k, v in self.identifiers_dict_safe.items())
+
+    def __str__(self):
+        """The display form of the run: the name plus the identifier options,
+        for example "etl (client=acme)" - the same shape as str(task)."""
+        # _Base.__init__ logs through __str__ before workflow_config is set.
+        if getattr(self, "workflow_config", None) is None:
+            return self.instance_name
+        if not self.identifier_suffix:
+            return self.instance_name
+        return f"{self.instance_name} ({self.identifier_suffix})"
 
     @classmethod
     def should_be_initialized(cls, orchestrator_config, parameters=None):

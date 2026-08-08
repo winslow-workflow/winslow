@@ -149,7 +149,7 @@ class Winslow(App):
                 )
                 session = self.session_store.pop(session_id, None)
                 if session is not None:
-                    session.mark_error()
+                    session.mark_error(e)
                 await row.remove()
                 await self.dashboard.add_failed_session(workflow_name, tb)
                 self.notify(
