@@ -32,6 +32,12 @@ The public API of Winslow: the names that `import winslow` exposes.
 
 ::: winslow.decorators.transient_property
 
+## Telemetry
+
+::: winslow.telemetry.TelemetryConfiguration
+
+::: winslow.telemetry.TelemetryHandler
+
 ## Orchestrator
 
 ::: winslow.Orchestrator

@@ -35,6 +35,7 @@ nav:
       - Filters: filters.md
       - Parameterization: parameterization.md
       - Constraints: constraints.md
+      - Telemetry: telemetry.md
       - Plugins: plugins.md
       - UI plugins: ui-plugins.md
       - Filter plugins: filter-plugins.md
