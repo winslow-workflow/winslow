@@ -62,10 +62,15 @@ def test_task_errors_reach_the_session_log(e2e_repo, mode, log_sink):
     # Exactly the two defects, stamped with this session and their tasks -
     # the session_id stamp is also the file sink's routing key, so correct
     # stamps mean correct per-session files.
-    assert [(r["session_id"], r["task_name"], r["level"]) for r in records] == [
+    assert [(r["session_id"], r["task_instance"], r["level"]) for r in records] == [
         (session_id, "boom", "ERROR"),
         (session_id, "partial-boom", "ERROR"),
     ]
+    # The bounded name fields, next to the instances: a sink indexes and
+    # groups by them (see LogContext).
+    for record in records:
+        assert record["workflow_name"] == "my-errors"
+        assert record["task_name"] == record["task_instance"]
     # The queue handler formats before the thread hop, so the full traceback
     # (raise site included) survives into the sink - errors are diagnosable
     # from the log alone.

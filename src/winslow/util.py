@@ -41,11 +41,13 @@ def get_is_abstract(klass):
 
 
 def safe_repr(value, limit=100):
-    """Return the repr of a value on one line. The whitespace is collapsed, the
-    length is limited, and an exception is caught, because the repr of a value
-    can raise. Use it to show an unknown attribute value where a long value would
-    break the layout: a table cell, a log label or the identity string of a
-    task."""
+    """One-line display form: collapsed whitespace, limited length, safe repr.
+    A string renders without quotes unless it would render as nothing."""
+    if isinstance(value, str):
+        s = " ".join(value.split())
+        if not s:
+            s = repr(value)
+        return s if len(s) <= limit else s[: limit - 1] + "…"
     try:
         s = repr(value)
     except Exception as exc:

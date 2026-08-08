@@ -87,7 +87,14 @@ class ContextStampFilter(logging.Filter):
     and always returns True. Each field is None outside the scope of a task, for
     example during the init or the orchestration."""
 
-    FIELDS = ("session_id", "workflow_name", "task_name", "batch_uuid")
+    FIELDS = (
+        "session_id",
+        "workflow_name",
+        "workflow_instance",
+        "task_name",
+        "task_instance",
+        "batch_uuid",
+    )
 
     def filter(self, record):
         # A lazy import. winslow.task.context and winslow.logger would otherwise
@@ -192,7 +199,9 @@ class StructuredFormatter(logging.Formatter):
                 "level": record.levelname,
                 "session_id": getattr(record, "session_id", None),
                 "workflow_name": getattr(record, "workflow_name", None),
+                "workflow_instance": getattr(record, "workflow_instance", None),
                 "task_name": getattr(record, "task_name", None),
+                "task_instance": getattr(record, "task_instance", None),
                 "batch_uuid": getattr(record, "batch_uuid", None),
                 "message": record.getMessage(),
             }
