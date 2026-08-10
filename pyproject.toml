@@ -1,6 +1,6 @@
 [project]
 name = "winslow"
-version = "0.2.0"
+version = "0.3.0"
 description = "A state and workflow management framework with a terminal UI"
 readme = "README.md"
 license = "MIT"
