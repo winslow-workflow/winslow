@@ -1,3 +1,4 @@
+import copy
 import json
 import queue
 import logging
@@ -135,6 +136,13 @@ class TaskLogDispatcher(logging.Handler):
             self._buffers.pop(task_id, None)
             self._listeners.pop(task_id, None)
 
+    def buffered(self, task_id):
+        """The buffered records of a task. A log view reads the backlog here
+        and then subscribes by the same uuid, so it never touches the task."""
+        with self._lock:
+            buffer = self._buffers.get(task_id)
+            return tuple(buffer) if buffer is not None else ()
+
     def add_listener(self, task_id, handler):
         with self._lock:
             self._listeners.setdefault(task_id, []).append(handler)
@@ -155,6 +163,23 @@ class TaskLogDispatcher(logging.Handler):
             for handler in handlers:
                 self.remove_listener(task_id, handler)
 
+    @classmethod
+    def _sanitize(cls, record):
+        """Render a record to text before it is buffered. An exception in msg
+        or exc_info retains the task through its traceback frames, and the
+        buffer outlives the execution (compare QueueHandler.prepare)."""
+        # not record.args, because a no-arg call carries (), never None.
+        if not record.args and record.exc_info is None and isinstance(record.msg, str):
+            return record
+        record = copy.copy(record)
+        record.msg = record.getMessage()
+        record.args = None
+        if record.exc_info:
+            if not record.exc_text:
+                record.exc_text = logging.Formatter().formatException(record.exc_info)
+            record.exc_info = None
+        return record
+
     def emit(self, record):
         task_id = getattr(record, "task_id", None)
         if task_id is None:
@@ -162,6 +187,9 @@ class TaskLogDispatcher(logging.Handler):
         with self._lock:
             buffer = self._buffers.get(task_id)
             listeners = list(self._listeners.get(task_id, ()))
+        if buffer is None and not listeners:
+            return
+        record = self._sanitize(record)
         if buffer is not None:
             buffer.append(record)
         for handler in listeners:
