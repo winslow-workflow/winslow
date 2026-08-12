@@ -21,7 +21,7 @@ A plugin declares a slot and a label, and builds one widget:
 | --- | --- | --- |
 | Dashboard | `DashboardRenderContext` | `orchestrator`, `orchestrator_config` |
 | Workflow | `WorkflowRenderContext` | `workflow`, `workflow_config`, `orchestrator_config` |
-| Task info modal | `TaskDetailRenderContext` | `task`, `logs` |
+| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs` |
 | Confirmation modal | `WorkflowConfirmationRenderContext` | `workflow_kls`, `form_values` |
 
 A slot with one plugin shows the widget directly. A slot with two or more plugins becomes a tab bar, and

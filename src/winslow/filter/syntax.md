@@ -1,5 +1,10 @@
 # Filter Syntax
 
+Filter queries apply to the Tasks pane. The History pane accepts the same
+syntax, but only with the builtin name and group filters: a history row is a
+value record, not a live task, so a project filter cannot run there. A query
+with a project filter shows a warning in the History pane.
+
 ## Name filter
 
 Bare text matches task names (case-insensitive).
