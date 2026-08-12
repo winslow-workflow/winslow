@@ -30,6 +30,7 @@ from winslow.ui.workflow_events import (
 
 from winslow.ui.builtin_plugins.workflow.task_list import TaskRow, TaskButton
 from winslow.exceptions import SessionEndingError
+from winslow.task.info import TaskInfo
 from winslow.task.status import TaskStatus, PASSING_STATUSES
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 
@@ -166,16 +167,18 @@ class WorkflowScreen(SlottedScreen):
     def propagate_batch_completed(self, batch):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(batch))
 
-    def propagate_task_log(self, task, batch_uuid, line):
-        batch = self.runner.execution_batches_map.get(batch_uuid)
-        if batch:
-            self._dispatch_to_slot(Slots.TASKS_PANE, TaskLogUpdated(batch, task, line))
-
-    def propagate_execution_status(self, task, status, batch_uuid):
+    def propagate_task_log(self, task_uuid, batch_uuid, line):
         batch = self.runner.execution_batches_map.get(batch_uuid)
         if batch:
             self._dispatch_to_slot(
-                Slots.TASKS_PANE, ExecutionStatusChanged(batch, task, status)
+                Slots.TASKS_PANE, TaskLogUpdated(batch, task_uuid, line)
+            )
+
+    def propagate_execution_status(self, task_uuid, status, batch_uuid):
+        batch = self.runner.execution_batches_map.get(batch_uuid)
+        if batch:
+            self._dispatch_to_slot(
+                Slots.TASKS_PANE, ExecutionStatusChanged(batch, task_uuid, status)
             )
 
     async def _select_row(self, task_row):
@@ -243,7 +246,11 @@ class WorkflowScreen(SlottedScreen):
         await self._handle_bulk_action("Checking", self.runner.submit_check)
 
     async def _handle_task_info(self, task):
-        self.app.push_screen(TaskDetail(task, registry=self.plugin_registry))
+        # The on-demand capture point: the user asked, so the getters evaluate.
+        info = TaskInfo.from_task(
+            task, evaluate=True, root_dir=self.app.orchestrator.directory
+        )
+        self.app.push_screen(TaskDetail(info, registry=self.plugin_registry))
 
     def _clear_filter_preview(self):
         clear_filter_highlight(self.query(TaskRow).results())

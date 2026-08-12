@@ -56,7 +56,7 @@ class TaskSummary(Widget):
     # object.
     ATTRIBUTE_CONTEXT = {
         "task": "label",
-        "groups": None,
+        "groups": "groups_readable",
         "class": "task_class",
         "parameters": lambda task_info: (
             Pretty(task_info.parameters) if task_info.parameters else None
@@ -109,16 +109,17 @@ class TaskSummary(Widget):
 
 
 class TaskDependencyRow(Widget):
-    task_info = var(None)
+    # A TaskRef: what the row renders. The status arrives by uuid.
+    ref = var(None)
     initial_status = var(None)
 
     def compose(self):
         with Horizontal(classes="dependency-row"):
-            icon = TaskStatusIcon(task=self.task_info.task, classes="icon")
+            icon = TaskStatusIcon(classes="icon")
             icon.status = self.initial_status
 
             yield icon
-            yield Label(self.task_info.label, classes="name")
+            yield Label(self.ref.label, classes="name")
 
 
 class TaskDependencies(Widget):
@@ -135,6 +136,10 @@ class TaskDependencies(Widget):
             return None
         return self.dependency_getter(self.task_info)
 
+    def _statuses_by_uuid(self):
+        # Empty after the session end: the lookup misses, the icon goes blank.
+        return {task.uuid: status for task, status in self.store.items()}
+
     def watch_dependencies(self, dependencies):
         if not dependencies:
             self.add_class("hidden")
@@ -144,10 +149,11 @@ class TaskDependencies(Widget):
 
             container.remove_children(TaskDependencyRow)
 
-            for dep in dependencies:
+            statuses = self._statuses_by_uuid()
+            for ref in dependencies:
                 dep_row = TaskDependencyRow()
-                dep_row.task_info = dep.info
-                dep_row.initial_status = self.store[dep]
+                dep_row.ref = ref
+                dep_row.initial_status = statuses.get(ref.uuid)
                 container.mount(dep_row)
 
     @cached_property
@@ -181,7 +187,7 @@ class TaskInfo(Widget):
     @on(TaskStatusChanged)
     def on_task_status_changed(self, event):
         for row in self.query(TaskDependencyRow).results():
-            if row.task_info is not None and row.task_info.task is event.task:
+            if row.ref is not None and row.ref.uuid == event.task.uuid:
                 for icon in row.query(TaskStatusIcon).results():
                     icon.status = event.status
 

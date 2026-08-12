@@ -182,15 +182,12 @@ class Workflow(_ConfigBase):
         self.graph = None
 
     def release_tasks(self):
-        # Drop the references of the workflow to its tasks, so the garbage
-        # collector can free each task that nothing else holds. A session calls
-        # this when it ends. The store is then the only owner of each task,
-        # because the graph is dropped after the init. A clear of the store thus
-        # frees each task that an execution-history batch record does not keep,
-        # directly or as a dependency of such a record. dict.clear does not take
-        # the write lock of the store. This is safe only because the session
-        # lifecycle guarantees that no batch runs and that no batch can be
-        # admitted here.
+        # The single release point, at session end: history holds values and
+        # uuids, so the store is the last owner of each task. Batch errors go
+        # first, because their traceback frames reference tasks. The lock-free
+        # clear is safe only because the session lifecycle guarantees that no
+        # batch runs and that no batch can be admitted here.
+        self.runner.release_batch_errors()
         self.store.clear()
 
     def check_pipeline_eligibility(self, logger=LOGGER):

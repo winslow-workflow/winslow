@@ -1,6 +1,7 @@
 """The parameterization logic. It is in this module to keep the graph clear."""
 
 import collections
+import uuid as _uuid
 from functools import cached_property
 from itertools import product
 from types import SimpleNamespace
@@ -126,6 +127,9 @@ class _ParameterizationMeta(_DeclarationMeta):
 class _ParameterizationBase(_Base, metaclass=_ParameterizationMeta):
     def __init__(self, parameters: SimpleNamespace = None):
         self._params = parameters
+        # The opaque transport identity: every structure that must not hold
+        # the task references it by this string (see TaskInfo).
+        self.uuid = str(_uuid.uuid4())
 
     @property
     def _parameters_dict(self):

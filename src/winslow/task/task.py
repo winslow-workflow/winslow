@@ -147,12 +147,11 @@ class Task(_ParameterizationBase):
         self._priority = None
         self._workflow_name = None
 
-        # All tasks share one logger. The adapter stamps the id of this instance
-        # onto each record, so the dispatcher can route the record back to this
-        # task. Records propagate to the winslow.runs sink, which stamps
-        # task_name.
+        # All tasks share one logger. The adapter stamps the task uuid onto
+        # each record, so the dispatcher and a log view route by the uuid
+        # alone. Records propagate to the winslow.runs sink.
         self.logger = logging.LoggerAdapter(
-            logging.getLogger(TASK_LOGGER_NAME), {"task_id": id(self)}
+            logging.getLogger(TASK_LOGGER_NAME), {"task_id": self.uuid}
         )
 
         self._log_buffer = None
@@ -169,8 +168,8 @@ class Task(_ParameterizationBase):
         therefore frees its buffer, and a task that history retains keeps it."""
         self._log_buffer = collections.deque(maxlen=TASK_LOG_BUFFER_SIZE)
         dispatcher = get_task_dispatcher()
-        dispatcher.register_buffer(id(self), self._log_buffer)
-        weakref.finalize(self, dispatcher.unregister, id(self))
+        dispatcher.register_buffer(self.uuid, self._log_buffer)
+        weakref.finalize(self, dispatcher.unregister, self.uuid)
 
     @property
     def buffered_logs(self):

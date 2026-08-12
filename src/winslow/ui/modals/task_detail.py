@@ -7,9 +7,9 @@ SLOT = Slots.TASK_DETAIL
 
 class TaskDetail(BaseModal):
     def __init__(
-        self, task, registry, logs=None, transient_snapshots=None, *args, **kwargs
+        self, info, registry, logs=None, transient_snapshots=None, *args, **kwargs
     ):
-        self.w_task = task
+        self.w_info = info
         self.registry = registry
         self._logs = logs
         self._transient_snapshots = transient_snapshots
@@ -17,11 +17,11 @@ class TaskDetail(BaseModal):
 
     @property
     def modal_title(self):
-        return str(self.w_task)
+        return str(self.w_info)
 
     def compose_content(self):
         context = TaskDetailRenderContext(
-            task=self.w_task,
+            info=self.w_info,
             logs=self._logs,
             transient_snapshots=self._transient_snapshots,
         )

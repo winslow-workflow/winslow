@@ -33,8 +33,9 @@ class ForceEndModal(BaseModal):
                     f"{batch.action.value.upper()} · {batch.task_count} task(s)",
                     classes="force-batch",
                 )
-                for task in store_map.get(batch.uuid, []):
-                    yield Label(f"  {task}", classes="force-task")
+                store = store_map.get(batch.uuid)
+                for record in store.records if store else ():
+                    yield Label(f"  {record.info}", classes="force-task")
         with Horizontal(classes="actions"):
             yield Button("Cancel", id="force-cancel")
             yield Button.error("Force end", id="force-confirm")

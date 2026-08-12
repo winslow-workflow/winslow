@@ -10,6 +10,7 @@ from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, Label, TabbedContent, TabPane
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
+from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.runner.execution import ExecutionStatus
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.ui.css import package_css
@@ -46,6 +47,9 @@ _FLAG_PILLS = (
 
 
 class RecordRow(TaskRowBase):
+    """A history row: w_task holds the TaskInfo of the record, never the task,
+    so a row of an ended session retains nothing."""
+
     status = reactive(None, layout=False)
 
     class Selected(Message):
@@ -53,16 +57,16 @@ class RecordRow(TaskRowBase):
             self.record_row = record_row
             super().__init__()
 
-    def __init__(self, store, task, *args, **kwargs):
+    def __init__(self, store, info, *args, **kwargs):
         self.exec_store = store
-        super().__init__(task, *args, **kwargs)
+        super().__init__(info, *args, **kwargs)
 
     def on_click(self, event):
         self.post_message(self.Selected(self))
 
     @property
     def record(self):
-        return self.exec_store.get_record(self.w_task)
+        return self.exec_store.get_record(self.w_task.uuid)
 
     @classmethod
     def _fmt_runtime(cls, record):
@@ -75,7 +79,7 @@ class RecordRow(TaskRowBase):
     def compose(self) -> ComposeResult:
         with Horizontal(classes="row-content"):
             yield Label("", classes="icon")
-            yield Label(f"{self.w_task.info.index + 1}.", classes="index")
+            yield Label(f"{self.w_task.index + 1}.", classes="index")
             yield Label(str(self.w_task), classes="name")
             yield Label("", classes="runtime")
             yield Label("", classes="status")
@@ -83,7 +87,7 @@ class RecordRow(TaskRowBase):
         yield Button("info", classes="info-btn")
 
     def on_mount(self):
-        self.status = self.exec_store.get(self.w_task)
+        self.status = self.exec_store.get(self.w_task.uuid)
         self.log_line = self.record.last_log
 
     def watch_status(self, status):
@@ -93,12 +97,14 @@ class RecordRow(TaskRowBase):
 
     @on(Button.Pressed, ".info-btn")
     def show_info(self):
+        # The record info, not the row info: the sweep replaced the stub there.
+        record = self.record
         self.app.push_screen(
             TaskDetail(
-                self.w_task,
+                record.info,
                 registry=self.screen.plugin_registry,
-                logs=self.record.logs,
-                transient_snapshots=self.record.transient_snapshots,
+                logs=record.logs,
+                transient_snapshots=record.transient_snapshots,
             )
         )
 
@@ -169,8 +175,8 @@ class BatchCard(Widget):
                     disabled=not stoppable,
                 )
 
-        for task in self.exec_store:
-            yield RecordRow(store=self.exec_store, task=task)
+        for record in self.exec_store.records:
+            yield RecordRow(store=self.exec_store, info=record.info)
 
     def on_mount(self):
         self._refresh_title()
@@ -197,13 +203,31 @@ class HistoryPane(Widget):
         self._hide_completed = False
         super().__init__(*args, **kwargs)
 
-    def _matching_tasks(self, query: str) -> set:
-        rows = list(self.query(RecordRow).results())
-        tasks = [row.w_task for row in rows]
+    def _matching_tasks(self, query: str, warn=True) -> set:
+        """The row infos that the query matches. Only the builtin filters can
+        run on an info; a project filter is refused, with a warning on submit.
+        The typing preview passes warn=False, so it does not toast per tick."""
+        infos = [row.w_task for row in self.query(RecordRow).results()]
         try:
-            return set(self.workflow.filter_registry.parse(query).apply(tasks))
+            parsed = self.workflow.filter_registry.parse(query)
         except ValueError:
             return set()
+        foreign = sorted(
+            {
+                type(f).get_name()
+                for f in parsed.filters()
+                if not isinstance(f, BUILTIN_FILTERS)
+            }
+        )
+        if foreign:
+            if warn:
+                self.notify(
+                    f"History search supports only the builtin filters "
+                    f"(name, group) - not: {', '.join(foreign)}",
+                    severity="warning",
+                )
+            return set()
+        return set(parsed.apply(infos))
 
     def _clear_preview(self):
         clear_filter_highlight(self.query(RecordRow).results())
@@ -213,7 +237,7 @@ class HistoryPane(Widget):
             self._clear_preview()
             return
         apply_filter_highlight(
-            self.query(RecordRow).results(), self._matching_tasks(query)
+            self.query(RecordRow).results(), self._matching_tasks(query, warn=False)
         )
 
     def _apply_filter(self, query: str):
@@ -270,7 +294,7 @@ class HistoryPane(Widget):
 
     def _register_rows(self, widget):
         for row in widget.query(RecordRow):
-            self._rows[(row.exec_store.batch_uuid, row.w_task)] = row
+            self._rows[(row.exec_store.batch_uuid, row.w_task.uuid)] = row
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="search-section", classes="pane-header"):
@@ -307,7 +331,8 @@ class HistoryPane(Widget):
     def on_record_selected(self, event):
         self.query(RecordRow).remove_class("selected")
         event.record_row.add_class("selected")
-        self.screen.show_task_detail(event.record_row.w_task.info)
+        # The record info, not the row info: the sweep replaced the stub there.
+        self.screen.show_task_detail(event.record_row.record.info)
 
     @on(BatchCreated)
     async def on_batch_created(self, event):
@@ -330,7 +355,7 @@ class HistoryPane(Widget):
 
     @on(ExecutionStatusChanged)
     def on_execution_status_changed(self, event):
-        row = self._rows.get((event.batch.uuid, event.task))
+        row = self._rows.get((event.batch.uuid, event.task_uuid))
         if row:
             row.status = event.status
             row.display = self._row_visible(row)
@@ -341,7 +366,7 @@ class HistoryPane(Widget):
 
     @on(TaskLogUpdated)
     def on_task_log_updated(self, event):
-        row = self._rows.get((event.batch.uuid, event.task))
+        row = self._rows.get((event.batch.uuid, event.task_uuid))
         if row:
             row.log_line = event.line
 

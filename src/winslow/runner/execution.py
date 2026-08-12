@@ -8,10 +8,10 @@ from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
 
 from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE
-from winslow.task.task import Task
 
 if TYPE_CHECKING:
     from winslow.task.context import TaskExecutionContext
+    from winslow.task.info import TaskInfo
     from winslow.runner.store import ExecutionRecordStore
 
 
@@ -92,7 +92,9 @@ class PhaseSpan:
 
 @dataclass(eq=False)
 class ExecutionRecord:
-    task: Task
+    # A value snapshot, never the task: the record outlives the session. The
+    # batch-completion sweep replaces the registration stub (see TaskInfo).
+    info: "TaskInfo"
     store: "Optional[ExecutionRecordStore]" = field(default=None, repr=False)
     logs: collections.deque = field(
         default_factory=lambda: collections.deque(
@@ -107,12 +109,12 @@ class ExecutionRecord:
     transient_snapshots: dict = field(default_factory=dict)
 
     def __hash__(self):
-        return hash(self.task)
+        return hash(self.info.uuid)
 
     def __eq__(self, other):
         if not isinstance(other, ExecutionRecord):
             return NotImplemented
-        return self.task is other.task
+        return self.info.uuid == other.info.uuid
 
     @property
     def last_log(self) -> str:
@@ -146,7 +148,7 @@ class ExecutionRecord:
 
     def notify_display_log(self, line: str):
         if self.store:
-            self.store.emit_log_appended(self.task, line)
+            self.store.emit_log_appended(self.info.uuid, line)
 
 
 @dataclass
@@ -161,8 +163,8 @@ class ExecutionBatch:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     execution_context: Optional["TaskExecutionContext"] = None
-    # Batch-scoped, so no defect record outlives the batch. The durable data
-    # stays in the TaskStatus values, which fill this set again each batch.
+    # Task uuids, batch-scoped. The durable data stays in the TaskStatus
+    # values, which fill this set again each batch.
     errored: set = field(default_factory=set)
 
     def __post_init__(self):
@@ -175,6 +177,20 @@ class ExecutionBatch:
 
     def record_error(self, exc):
         self._error = exc
+
+    def release_traceback(self):
+        """Drop the tracebacks of a recorded error, through its cause and
+        context chain. The frames retain the tasks, and the batch stays in
+        history; the session end calls this. wait() still raises the error."""
+        stack = [self._error]
+        seen = set()
+        while stack:
+            exc = stack.pop()
+            if exc is None or id(exc) in seen:
+                continue
+            seen.add(id(exc))
+            exc.__traceback__ = None
+            stack.extend((exc.__cause__, exc.__context__))
 
     def wait(self, timeout=None):
         """Block until the worker of the batch finishes. The blocking runner APIs

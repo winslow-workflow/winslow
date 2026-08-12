@@ -15,10 +15,15 @@ class TasksPaneWidget(Widget):
     def __init__(self, workflow, *args, **kwargs):
         self.workflow = workflow
         self._row_map: dict = {}
+        self._rows_by_uuid: dict = {}
         super().__init__(*args, **kwargs)
 
     def on_mount(self):
-        self._row_map = {row.w_task: row for row in self.query(TaskRow).results()}
+        rows = list(self.query(TaskRow).results())
+        self._row_map = {row.w_task: row for row in rows}
+        # The execution events name a task by its uuid (see StoreListener), so
+        # the log routing needs this second key.
+        self._rows_by_uuid = {row.w_task.uuid: row for row in rows}
 
     @on(TaskStatusChanged)
     def on_task_status_changed(self, event):
@@ -30,7 +35,7 @@ class TasksPaneWidget(Widget):
 
     @on(TaskLogUpdated)
     def on_task_log_updated(self, event):
-        if row := self._row_map.get(event.task):
+        if row := self._rows_by_uuid.get(event.task_uuid):
             row.log_line = event.line
 
     def compose(self):

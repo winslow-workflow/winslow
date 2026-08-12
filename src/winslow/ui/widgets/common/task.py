@@ -9,9 +9,10 @@ from .logs import InlineLog
 
 
 class TaskStatusWidget(Widget):
+    # task is optional: a dependency row has none, its status arrives by uuid.
     status = reactive(TaskStatus.INITIALIZED)
 
-    def __init__(self, task, *args, **kwargs):
+    def __init__(self, task=None, *args, **kwargs):
         self.w_task = task
         super().__init__(*args, **kwargs)
 
