@@ -10,7 +10,9 @@ class Delivery(Workflow):
     legacy flag makes the skipped-task case observable."""
 
     legacy = ConfigOption(
-        action="store_true", default=False, help_text="Make the legacy ingest task eligible."
+        action="store_true",
+        default=False,
+        help_text="Make the legacy ingest task eligible.",
     )
 
 
