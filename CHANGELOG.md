@@ -8,6 +8,8 @@ versions may include breaking changes).
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-08-12
+
 ### Changed
 
 - Execution history is task-free: batch records, execution events and history
