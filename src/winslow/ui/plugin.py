@@ -44,7 +44,9 @@ class DashboardRenderContext(RenderContext):
 
 @dataclass
 class TaskDetailRenderContext(RenderContext):
-    task: object
+    # The TaskInfo value, never the task. The rename from `task` breaks an old
+    # plugin loudly on the missing attribute.
+    info: object
     logs: list | None = None
     # The transient_property snapshots of this task, per phase, in one batch:
     # {ExecutionPhase: {name: value}}. It is set only for a detail view at row

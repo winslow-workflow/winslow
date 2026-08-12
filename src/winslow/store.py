@@ -23,12 +23,17 @@ class StoreListener:
     A slow body in step 3, for example a synchronous render of the task
     table, stalls the runner at each write. A wait on the UI thread can
     deadlock: the worker holds the store lock and waits for the UI thread,
-    while the UI thread waits for the store lock to read a status."""
+    while the UI thread waits for the store lock to read a status.
+
+    The parameter type encodes the scope of an event. A live-store event
+    (on_task_status) carries the task: its consumers die with the session. An
+    execution event carries the task uuid: it feeds structures that outlive
+    the batch. A batch event carries the ExecutionBatch, which holds no task."""
 
     def on_task_status(self, task, status):
         pass
 
-    def on_execution_status(self, task, status, batch_uuid):
+    def on_execution_status(self, task_uuid, status, batch_uuid):
         pass
 
     def on_batch_created(self, batch):
@@ -37,7 +42,7 @@ class StoreListener:
     def on_batch_completed(self, batch):
         pass
 
-    def on_log_appended(self, task, batch_uuid, line):
+    def on_log_appended(self, task_uuid, batch_uuid, line):
         pass
 
 
@@ -100,8 +105,9 @@ class ReactiveDict(dict):
 
 class StatusHistoryMixin:
     """Record each status that a key had, and also the initial value from the
-    seed. An observer can thus assert the full sequence of the transitions, and
-    not only the final state."""
+    seed. An observer can thus assert the full sequence of the transitions.
+    The history keys by str(item): it outlives a clear of the store, so an
+    item key would retain each task past release_tasks."""
 
     def __init__(self, *args, **kwargs):
         self.history = {}
@@ -109,16 +115,16 @@ class StatusHistoryMixin:
         # A store that the plain dict constructor seeds, for example a per-batch
         # record store, does not call __setitem__. Capture the seed here.
         for item, status in self.items():
-            self.history[item] = [status]
+            self.history[str(item)] = [status]
 
     def callback(self, item, status):
-        self.history.setdefault(item, []).append(status)
+        self.history.setdefault(str(item), []).append(status)
         super().callback(item, status)
 
     def assert_history_equals(self, item, expected):
         """One statement that tests the full status history of an item, with the
         seed, against `expected`."""
-        actual = self.history.get(item, [])
+        actual = self.history.get(str(item), [])
         expected = list(expected)
         if actual != expected:
             raise AssertionError(

@@ -29,9 +29,9 @@ class BatchCompleted(Message):
 class ExecutionStatusChanged(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task, status):
+    def __init__(self, batch, task_uuid, status):
         self.batch = batch
-        self.task = task
+        self.task_uuid = task_uuid
         self.status = status
         super().__init__()
 
@@ -39,9 +39,9 @@ class ExecutionStatusChanged(Message):
 class TaskLogUpdated(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task, line):
+    def __init__(self, batch, task_uuid, line):
         self.batch = batch
-        self.task = task
+        self.task_uuid = task_uuid
         self.line = line
         super().__init__()
 

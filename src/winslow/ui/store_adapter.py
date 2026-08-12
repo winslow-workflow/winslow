@@ -43,8 +43,8 @@ class TuiStoreAdapter(StoreListener):
         self._screen.propagate_task_status(task, status)
 
     @on_ui_thread
-    def on_execution_status(self, task, status, batch_uuid):
-        self._screen.propagate_execution_status(task, status, batch_uuid)
+    def on_execution_status(self, task_uuid, status, batch_uuid):
+        self._screen.propagate_execution_status(task_uuid, status, batch_uuid)
 
     @on_ui_thread
     def on_batch_created(self, batch):
@@ -55,8 +55,8 @@ class TuiStoreAdapter(StoreListener):
         self._screen.propagate_batch_completed(batch)
 
     @on_ui_thread
-    def on_log_appended(self, task, batch_uuid, line):
-        self._screen.propagate_task_log(task, batch_uuid, line)
+    def on_log_appended(self, task_uuid, batch_uuid, line):
+        self._screen.propagate_task_log(task_uuid, batch_uuid, line)
 
 
 class SessionLifecycleEvent(Message):

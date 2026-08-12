@@ -8,6 +8,10 @@ class FilterNode:
     def flatten(self):
         return self
 
+    def leaves(self):
+        """Every filter instance under this node, in syntax order."""
+        raise NotImplementedError
+
 
 class LeafNode(FilterNode):
     def __init__(self, filter_instance):
@@ -18,6 +22,9 @@ class LeafNode(FilterNode):
 
     def explain(self):
         return self.filter.explain()
+
+    def leaves(self):
+        return (self.filter,)
 
 
 class NotNode(FilterNode):
@@ -32,6 +39,9 @@ class NotNode(FilterNode):
 
     def flatten(self):
         return NotNode(self.child.flatten())
+
+    def leaves(self):
+        return self.child.leaves()
 
 
 class AndNode(FilterNode):
@@ -62,6 +72,9 @@ class AndNode(FilterNode):
                 children.append(flat)
         return AndNode(children)
 
+    def leaves(self):
+        return tuple(f for child in self.children for f in child.leaves())
+
 
 class OrNode(FilterNode):
     def __init__(self, children):
@@ -82,3 +95,6 @@ class OrNode(FilterNode):
             else:
                 children.append(flat)
         return OrNode(children)
+
+    def leaves(self):
+        return tuple(f for child in self.children for f in child.leaves())

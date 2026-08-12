@@ -17,7 +17,7 @@ def wait_for_record_status(workflow, batch, task, status, timeout=5.0):
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         store = workflow.runner.execution_record_store_map.get(batch.uuid)
-        if store is not None and store.get(task) is status:
+        if store is not None and store.get(task.uuid) is status:
             return store
         time.sleep(0.005)
     raise AssertionError(f"{task} never reached {status} in batch {batch.uuid[:8]}")
@@ -46,7 +46,7 @@ def test_busy_task_waits_for_release(e2e_repo):
     assert batch_b.status is ExecutionStatus.FINISHED
     # B's verdict is the passing-status shortcut's mirror: waited, then
     # confirmed done - no second run.
-    assert record_b[tasks["Gated"]] is S.COMPLETED
+    assert record_b[tasks["Gated"].uuid] is S.COMPLETED
     for name in ("Gated", "TailOne", "TailTwo"):
         workflow.store.assert_history_equals(tasks[name], COMPLETED_LADDER)
 
@@ -69,7 +69,7 @@ def test_stop_while_waiting_aborts_batch_locally(e2e_repo):
     batch_b.wait()
 
     assert batch_b.status is ExecutionStatus.STOPPED
-    assert record_b[tasks["Gated"]] is S.ABORTED
+    assert record_b[tasks["Gated"].uuid] is S.ABORTED
 
     gate.set()
     batch_a.wait()

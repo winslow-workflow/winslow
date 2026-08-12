@@ -94,6 +94,12 @@ class BaseRunner(_Base):
             if b.completed_at is None
         ]
 
+    def release_batch_errors(self):
+        """Drop the error tracebacks of every retained batch, so no raise-path
+        frame keeps a task alive past the session end."""
+        for batch in list(self.execution_batches_map.values()):
+            batch.release_traceback()
+
     def _log_context(self, task, batch_uuid):
         return LogContext(
             session_id=self.workflow.session_id,
@@ -196,9 +202,9 @@ class BaseRunner(_Base):
         batch = self.execution_batches_map.get(batch_uuid)
         if batch is not None:
             if status is TaskStatus.RUNNING:
-                batch.errored.discard(task)
+                batch.errored.discard(task.uuid)
             elif status is TaskStatus.ERROR:
-                batch.errored.add(task)
+                batch.errored.add(task.uuid)
         self.store[task] = status
 
     def _mirror_batch_status(self, task, status, batch_uuid):
@@ -283,7 +289,7 @@ class BaseRunner(_Base):
                     # A check that passes does not remove a defect. A task that
                     # errored after its last run attempt stays flagged.
                     batch = self.execution_batches_map.get(batch_uuid)
-                    flagged = batch is not None and task in batch.errored
+                    flagged = batch is not None and task.uuid in batch.errored
                     if flagged:
                         stat = TaskStatus.COMPLETED_WITH_ERROR
                     elif task.is_noop or task._has_been_run:

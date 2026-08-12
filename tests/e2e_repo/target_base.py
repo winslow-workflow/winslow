@@ -15,6 +15,41 @@ class HistoryInteractiveStore(StatusHistoryMixin, InteractiveStore):
     pass
 
 
+def _value_key(key):
+    """The target outlives the session, so it must not retain a task: a task
+    key becomes the task label, which is unique per pipeline."""
+    if isinstance(key, Task):
+        return str(key)
+    if isinstance(key, tuple):
+        return tuple(_value_key(part) for part in key)
+    return key
+
+
+class TargetDict(dict):
+    """The fixture world: keys normalize through _value_key, so a lookup with
+    a task and a lookup with its label find the same entry."""
+
+    def __setitem__(self, key, value):
+        super().__setitem__(_value_key(key), value)
+
+    def __getitem__(self, key):
+        return super().__getitem__(_value_key(key))
+
+    def __contains__(self, key):
+        return super().__contains__(_value_key(key))
+
+    def get(self, key, default=None):
+        return super().get(_value_key(key), default)
+
+    def __eq__(self, other):
+        if isinstance(other, dict):
+            other = {_value_key(k): v for k, v in other.items()}
+        return dict(self) == other
+
+    def __ne__(self, other):
+        return not self.__eq__(other)
+
+
 class TargetWorkflow(Workflow):
     """E2E fixture base - both modes get history-recording stores; each
     instance owns a fresh target dict its tasks write to."""
@@ -28,7 +63,7 @@ class TargetWorkflow(Workflow):
         super().__init__(*args, **kwargs)
         # The per-run "world": tasks mark work done here, checks read it back.
         # On workflow_config because that's the one object every task carries.
-        self.workflow_config.target = {}
+        self.workflow_config.target = TargetDict()
 
     @property
     def target(self):

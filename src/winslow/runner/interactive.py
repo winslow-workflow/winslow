@@ -48,14 +48,14 @@ class InteractiveRunner(HeadlessRunner):
         # A dependency that is probed for the batch is not part of the batch.
         # Only the tasks of the batch get an execution record.
         store = self.execution_record_store_map.get(batch_uuid) if batch_uuid else None
-        if store is not None and task in store:
-            store[task] = status
+        if store is not None and task.uuid in store:
+            store[task.uuid] = status
 
     def _track(self, batch_uuid, task, phase):
         store = self.execution_record_store_map[batch_uuid]
-        if task not in store:
+        if task.uuid not in store:
             return nullcontext()
-        return store.get_record(task).track_phase(phase)
+        return store.get_record(task.uuid).track_phase(phase)
 
     def _claim_free_or_stopped(self, task, batch_uuid):
         return self._active_tasks.get(task) is None or self._stop_requested(batch_uuid)
@@ -122,17 +122,17 @@ class InteractiveRunner(HeadlessRunner):
 
     def _mirror_batch_status(self, task, status, batch_uuid):
         store = self.execution_record_store_map[batch_uuid]
-        if task in store:
-            store[task] = status
+        if task.uuid in store:
+            store[task.uuid] = status
 
     @contextmanager
     def task_log_scope(self, task, batch_uuid):
         store = self.execution_record_store_map[batch_uuid]
-        if task not in store:
+        if task.uuid not in store:
             with super().task_log_scope(task, batch_uuid):
                 yield
             return
-        record = store.get_record(task)
+        record = store.get_record(task.uuid)
         handlers = (
             InteractiveLogHandler(record.append_log),
             InteractiveLogHandler(
@@ -141,7 +141,7 @@ class InteractiveRunner(HeadlessRunner):
         )
         dispatcher = get_task_dispatcher()
         with (
-            dispatcher.listen(id(task), *handlers),
+            dispatcher.listen(task.uuid, *handlers),
             super().task_log_scope(task, batch_uuid),
         ):
             yield
@@ -159,11 +159,11 @@ class InteractiveRunner(HeadlessRunner):
             # still complete here. Snapshot the values that this phase
             # materialized.
             store = self.execution_record_store_map[batch_uuid]
-            if task in store:
+            if task.uuid in store:
                 if snapshot := snapshot_transients(
                     task, peek_phase_cache(task, batch_uuid)
                 ):
-                    store.get_record(task).transient_snapshots[phase] = snapshot
+                    store.get_record(task.uuid).transient_snapshots[phase] = snapshot
 
     def _stop_requested(self, batch_uuid):
         batch = self.execution_batches_map.get(batch_uuid)
@@ -201,7 +201,12 @@ class InteractiveRunner(HeadlessRunner):
         self.execution_record_store_map[batch.uuid] = exec_store
         self.store.emit_batch_created(batch)
 
-    def _batch_finished(self, batch):
+    def _batch_finished(self, batch, tasks):
+        # The sweep replaces each stub with a full capture, so history shows
+        # the attribute values after this execution (see TaskInfo.from_task).
+        store = self.execution_record_store_map[batch.uuid]
+        for task in tasks:
+            store.capture(task)
         self.store.emit_batch_completed(batch)
 
     def eligible_tasks(self, tasks):
@@ -239,7 +244,7 @@ class InteractiveRunner(HeadlessRunner):
     def _abort_unstarted(self, tasks, batch):
         store = self.execution_record_store_map[batch.uuid]
         for task in tasks:
-            if store.get(task) is TaskStatus.READY_TO_PROCESS:
+            if store.get(task.uuid) is TaskStatus.READY_TO_PROCESS:
                 self.set_status(task, TaskStatus.ABORTED, batch.uuid)
 
     # The stop sweep is interactive only. A headless batch has no way to request
