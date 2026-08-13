@@ -178,19 +178,11 @@ class ExecutionBatch:
     def record_error(self, exc):
         self._error = exc
 
-    def release_traceback(self):
-        """Drop the tracebacks of a recorded error, through its cause and
-        context chain. The frames retain the tasks, and the batch stays in
-        history; the session end calls this. wait() still raises the error."""
-        stack = [self._error]
-        seen = set()
-        while stack:
-            exc = stack.pop()
-            if exc is None or id(exc) in seen:
-                continue
-            seen.add(id(exc))
-            exc.__traceback__ = None
-            stack.extend((exc.__cause__, exc.__context__))
+    def release_error(self):
+        """Replace a recorded error at session end with a type-and-message copy:
+        frames, args and attributes such as AttributeError.obj retain tasks."""
+        if self._error is not None:
+            self._error = _detached_error(self._error)
 
     def wait(self, timeout=None):
         """Block until the worker of the batch finishes. The blocking runner APIs
@@ -224,6 +216,15 @@ class ExecutionBatch:
         if self.status != ExecutionStatus.STOPPED:
             self.status = ExecutionStatus.FINISHED
         self.completed_at = datetime.now()
+
+
+def _detached_error(exc):
+    """A new exception that keeps only the type and the message of exc. A
+    constructor that refuses one string argument gets a RuntimeError."""
+    try:
+        return type(exc)(str(exc))
+    except Exception:
+        return RuntimeError(f"{type(exc).__name__}: {exc}")
 
 
 def new_batch(action, tasks):

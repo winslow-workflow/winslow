@@ -104,10 +104,12 @@ class ReactiveDict(dict):
 
 
 class StatusHistoryMixin:
-    """Record each status that a key had, and also the initial value from the
-    seed. An observer can thus assert the full sequence of the transitions.
-    The history keys by str(item): it outlives a clear of the store, so an
-    item key would retain each task past release_tasks."""
+    """Record every status of each key, seed included. The key is the item uuid,
+    or str(item): an item key would retain each task past release_tasks."""
+
+    @classmethod
+    def _history_key(cls, item):
+        return getattr(item, "uuid", None) or str(item)
 
     def __init__(self, *args, **kwargs):
         self.history = {}
@@ -115,16 +117,16 @@ class StatusHistoryMixin:
         # A store that the plain dict constructor seeds, for example a per-batch
         # record store, does not call __setitem__. Capture the seed here.
         for item, status in self.items():
-            self.history[str(item)] = [status]
+            self.history[self._history_key(item)] = [status]
 
     def callback(self, item, status):
-        self.history.setdefault(str(item), []).append(status)
+        self.history.setdefault(self._history_key(item), []).append(status)
         super().callback(item, status)
 
     def assert_history_equals(self, item, expected):
         """One statement that tests the full status history of an item, with the
         seed, against `expected`."""
-        actual = self.history.get(str(item), [])
+        actual = self.history.get(self._history_key(item), [])
         expected = list(expected)
         if actual != expected:
             raise AssertionError(

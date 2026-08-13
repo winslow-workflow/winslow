@@ -188,7 +188,8 @@ class InteractiveRunner(HeadlessRunner):
         super()._check_task_success(task, batch_uuid, phase)
 
     def _batch_started(self, batch, tasks):
-        exec_store = ExecutionRecordStore(batch.uuid, [])
+        root_dir = getattr(self.orchestrator_config, "directory", None)
+        exec_store = ExecutionRecordStore(batch.uuid, [], root_dir=root_dir)
         # The same observers as the main store. They receive the execution events
         # of this batch (on_execution_status and on_log_appended) with the live
         # status.

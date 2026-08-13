@@ -11,6 +11,7 @@ from pathlib import Path
 from logging.handlers import QueueHandler, QueueListener
 
 from winslow.settings import config
+from winslow.util import safe_repr
 from rich.logging import RichHandler
 
 
@@ -25,6 +26,10 @@ RUNS_LOGGER_NAME = "winslow.runs"
 # The attribute on a control record that tells a sink to free the resources of a
 # session that ended. A sink must test it before it reads the record as data.
 RELEASE_MARKER = "winslow_release_session"
+
+# The attribute values that a buffered record can carry as they are. Any other
+# value, for example an object in `extra`, becomes its safe repr (see _sanitize).
+_PLAIN_ATTRS = (str, int, float, bool, type(None))
 
 
 def run_logger_name(session_id):
@@ -165,11 +170,21 @@ class TaskLogDispatcher(logging.Handler):
 
     @classmethod
     def _sanitize(cls, record):
-        """Render a record to text before it is buffered. An exception in msg
-        or exc_info retains the task through its traceback frames, and the
-        buffer outlives the execution (compare QueueHandler.prepare)."""
-        # not record.args, because a no-arg call carries (), never None.
-        if not record.args and record.exc_info is None and isinstance(record.msg, str):
+        """Render a record to text before it is buffered. The buffer outlives
+        the execution, so an exception or an extra object retains the task."""
+        # not record.args, because a no-arg call carries (), never None. msg,
+        # args and exc_info have their own tests, so the attribute scan skips them.
+        plain = (
+            not record.args
+            and record.exc_info is None
+            and isinstance(record.msg, str)
+            and all(
+                isinstance(v, _PLAIN_ATTRS)
+                for k, v in vars(record).items()
+                if k not in ("msg", "args", "exc_info")
+            )
+        )
+        if plain:
             return record
         record = copy.copy(record)
         record.msg = record.getMessage()
@@ -178,6 +193,13 @@ class TaskLogDispatcher(logging.Handler):
             if not record.exc_text:
                 record.exc_text = logging.Formatter().formatException(record.exc_info)
             record.exc_info = None
+        vars(record).update(
+            {
+                name: safe_repr(value)
+                for name, value in vars(record).items()
+                if not isinstance(value, _PLAIN_ATTRS)
+            }
+        )
         return record
 
     def emit(self, record):

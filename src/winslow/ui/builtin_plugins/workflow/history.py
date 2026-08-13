@@ -36,6 +36,15 @@ _CSS = package_css(__package__, "_pane_header.tcss", "history.tcss")
 
 RECORD_SEARCH_PREVIEW_DELAY = 0.5
 
+
+def _foreign_filter_names(filters):
+    """The names of the filters that history cannot run. The test is by exact
+    type: a subclass of a builtin filter can touch live-task API."""
+    return sorted(
+        {type(f).get_name() for f in filters if type(f) not in BUILTIN_FILTERS}
+    )
+
+
 # (execution-context attribute, pill label, css class). The UI shows a pill on
 # the header of the batch card if the flag is set.
 _FLAG_PILLS = (
@@ -212,13 +221,7 @@ class HistoryPane(Widget):
             parsed = self.workflow.filter_registry.parse(query)
         except ValueError:
             return set()
-        foreign = sorted(
-            {
-                type(f).get_name()
-                for f in parsed.filters()
-                if not isinstance(f, BUILTIN_FILTERS)
-            }
-        )
+        foreign = _foreign_filter_names(parsed.filters())
         if foreign:
             if warn:
                 self.notify(

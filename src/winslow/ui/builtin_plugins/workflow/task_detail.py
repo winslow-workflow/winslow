@@ -41,6 +41,8 @@ class TaskLogView(LogView):
             for line in self._logs:
                 self.write(line)
         else:
+            # A record between the backlog read and the subscribe is lost. The
+            # gap costs one display line at most, so the view accepts it.
             dispatcher = get_task_dispatcher()
             for record in dispatcher.buffered(self._task_uuid):
                 self.write(INTERACTIVE_FORMATTER.format(record))
