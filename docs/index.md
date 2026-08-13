@@ -54,9 +54,17 @@ situation requires. The grid removes the tools that do not fit.
 
 ## Install
 
-```bash
-uv add "winslow[tui]"      # or: pip install 'winslow[tui]'
-```
+=== "uv"
+
+    ```bash
+    uv add "winslow[tui]"
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install 'winslow[tui]'
+    ```
 
 Winslow needs Python 3.12 or later. The `tui` extra installs the terminal UI. For headless runs in cron or CI,
 the `winslow` package alone is sufficient.

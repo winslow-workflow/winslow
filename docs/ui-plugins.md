@@ -97,6 +97,7 @@ The `winslow-sample-tui-plugin` package holds the two plugins of this page:
 winslow-sample-tui-plugin/
 ├── pyproject.toml
 └── winslow_sample_tui_plugin/
+    ├── __init__.py
     ├── dashboard.py     # adds a tab
     └── mood.py          # replaces the system resources pane
 ```
@@ -112,21 +113,29 @@ The `pyproject.toml` declares the entry points:
 Install the package into the workflow project. An editable install keeps a local plugin live while
 you work on it:
 
-```bash
-uv add --editable ../winslow-sample-tui-plugin
-```
+=== "uv"
 
-The command adds the dependency and a local source to the `pyproject.toml` of the project:
+    ```bash
+    uv add --editable ../winslow-sample-tui-plugin
+    ```
 
-```toml title="pyproject.toml of the workflow project"
-[project]
-dependencies = [
-    "winslow-sample-tui-plugin",
-]
+    The command adds the dependency and a local source to the `pyproject.toml` of the project:
 
-[tool.uv.sources]
-winslow-sample-tui-plugin = { path = "../winslow-sample-tui-plugin", editable = true }
-```
+    ```toml title="pyproject.toml of the workflow project"
+    [project]
+    dependencies = [
+        "winslow-sample-tui-plugin",
+    ]
+
+    [tool.uv.sources]
+    winslow-sample-tui-plugin = { path = "../winslow-sample-tui-plugin", editable = true }
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install -e ../winslow-sample-tui-plugin
+    ```
 
 A plugin package can also add a command to the filter language (see
 [Filter plugins](filter-plugins.md)).

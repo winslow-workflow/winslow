@@ -5,10 +5,11 @@ operator needs to act on it: the workflow, the session, the task and its paramet
 the execution phase.
 
 Two backends ship with Winslow, [Sentry](#sentry) and [OpenTelemetry](#opentelemetry), and both
-follow the same model: they activate implicitly when their environment values are present, and a
-repo changes their behavior by subclassing their configuration class. This page explains what is
-reported, walks through both backends, and ends with the seam for
-[writing your own](#write-a-custom-backend).
+follow the same five steps: install the extra, configure the environment, run the workflow,
+observe the errors in the backend, and customize by subclassing when the defaults are not enough.
+There is no bootstrap code at any step. This page walks both backends through these steps,
+explains [how activation works](#how-activation-works) underneath, and ends with the seam for
+[writing your own backend](#write-a-custom-backend).
 
 ## What is reported
 
@@ -22,27 +23,7 @@ A backend receives defects, and only defects:
 Expected outcomes stay out: a failed check and a task signal (skip, block, fail, action required)
 are verdicts, not defects.
 
-## Activation
-
-Both backends activate configuration first. When the environment carries their values, a DSN for
-Sentry or an OTLP endpoint for OpenTelemetry, the backend activates on its own for each run: no
-class, no import, no bootstrap code. Without the values, the backend stays inactive and adds no
-cost.
-
-An active backend is safe for the run itself: a backend that fails while reporting is logged and
-never reaches the batch.
-
-When the defaults are not enough, the repo declares a subclass of the built-in configuration class
-in a `telemetry.py` file. Winslow collects these files the way it collects `workflow.py` files, and
-among the collected classes only the most derived one activates. A subclass therefore replaces the
-built-in it inherits from, and never doubles the reports.
-
-!!! info "A configured backend needs its extra installed"
-
-    When the environment activates a backend whose extra is not installed, the run does not start
-    (`MisconfigurationError`).
-
-## The running example
+## Set up a failing task
 
 Every example on this page reports the same defect: a parameterized task that raises in `run()`.
 To follow along, add it to the [etl workflow](workflows.md):
@@ -63,16 +44,27 @@ class Boom(Task):
 
 ## Sentry
 
-The Sentry backend turns each error into one Sentry event. Install the extra first:
+The Sentry backend turns each error into one Sentry event.
 
-```bash
-pip install 'winslow[sentry]'
-```
+### Install the extra
 
-### Implicit activation
+=== "uv"
 
-Setting `SENTRY_DSN` is the whole integration: with the DSN present, the built-in
-`SentryConfiguration` activates for each run and flushes its events before the process exits.
+    ```bash
+    uv add "winslow[sentry]"
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install 'winslow[sentry]'
+    ```
+
+### Configure the environment
+
+Set `SENTRY_DSN`; that is the whole integration. With the DSN present, the built-in
+`SentryConfiguration` activates for each run and flushes its events before the process exits
+(see [How activation works](#how-activation-works)).
 
 | Environment value    | Purpose                                        | When unset                 |
 | -------------------- | ---------------------------------------------- | -------------------------- |
@@ -80,16 +72,22 @@ Setting `SENTRY_DSN` is the whole integration: with the DSN present, the built-i
 | `SENTRY_ENVIRONMENT` | The `environment` tag of each event.           | Falls back to `WINSLOW_ENV`. |
 | `SENTRY_RELEASE`     | The `release` of each event.                   | The SDK detects it (git, CI values). |
 
-The values are read through python-decouple: the search for a `.env` file starts in the working
-directory and walks up its parents, and an exported variable always wins over the file.
+Export the values, or put them in a `.env` file: the search for the file starts in the working
+directory and walks up its parents, and an exported variable always wins over the file
+(python-decouple).
+
+### Run the workflow
 
 ```bash
 export SENTRY_DSN="https://examplePublicKey@o0.ingest.sentry.io/0"
 winslow run --mode headless --workflow etl
 ```
 
-The run above reports one event per parameter row of `Boom`. Each event carries these tags to
-search and filter on (the environment arrives through the native SDK field, not a tag):
+### Observe the events
+
+The run reports one event per parameter row of `Boom`: the Sentry project shows two new issues,
+`boom (eu)` and `boom (us)`. Each event carries these tags to search and filter on (the
+environment arrives through the native SDK field, not a tag):
 
 | Tag                 | Value                                              | Example              |
 | ------------------- | -------------------------------------------------- | -------------------- |
@@ -115,11 +113,11 @@ combination, and one issue per task class would hide which combination fails.
 
 A workflow that does not start reports the same way, with the workflow and session tags only.
 
-### Override by subclassing
+### Customize: report from production only
 
 The built-in activates wherever the DSN is set. To decide differently, subclass
 `SentryConfiguration` in a `telemetry.py` file and override `get_handler`: the subclass replaces
-the built-in, and nothing else changes. This example reports from production only:
+the built-in, and nothing else changes.
 
 ```python title="telemetry.py"
 from winslow import settings
@@ -141,31 +139,43 @@ Run the workflow again: no events arrive, because `WINSLOW_ENV` defaults to `dev
 ## OpenTelemetry
 
 The OpenTelemetry backend turns each error into one short span with the exception recorded on it.
-Install the extra first:
 
-```bash
-pip install 'winslow[otel]'
-```
+### Install the extra
 
-### Implicit activation
+=== "uv"
 
-Setting an OTLP traces endpoint is the whole integration: with an endpoint present, the built-in
-`OpenTelemetryConfiguration` activates for each run and flushes its spans before the process exits.
-`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used exactly as given; the more general
-`OTEL_EXPORTER_OTLP_ENDPOINT` gets `/v1/traces` appended, following the OTLP http convention. Both
-are read through python-decouple, like the Sentry values.
+    ```bash
+    uv add "winslow[otel]"
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install 'winslow[otel]'
+    ```
+
+### Configure the endpoint
+
+Set an OTLP traces endpoint; that is the whole integration. With an endpoint present, the built-in
+`OpenTelemetryConfiguration` activates for each run and flushes its spans before the process exits
+(see [How activation works](#how-activation-works)). `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used
+exactly as given; the more general `OTEL_EXPORTER_OTLP_ENDPOINT` gets `/v1/traces` appended,
+following the OTLP http convention. Both are read through python-decouple, like the Sentry values.
+
+### Run the workflow
 
 ```bash
 export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://localhost:4318/v1/traces"
 winslow run --mode headless --workflow etl
 ```
 
-The run above exports one span per errored `Boom` instance: the span is named
-`winslow.task_error`, its status is `ERROR`, and the exception is recorded on it as the standard
-exception event. A workflow that does not start exports the same shape under the name
-`winslow.unscoped_error`.
+### Observe the spans
 
-The spans arrive under the service name `winslow` (set `OTEL_SERVICE_NAME` to change it). The
+The run exports one span per errored `Boom` instance: the span is named `winslow.task_error`, its
+status is `ERROR`, and the exception is recorded on it as the standard exception event. A workflow
+that does not start exports the same shape under the name `winslow.unscoped_error`.
+
+Look for the spans under the service name `winslow` (set `OTEL_SERVICE_NAME` to change it). The
 service identifies the winslow process, not a workflow: one process can run many workflows, and
 the spans of all of them share its service name. To select one workflow, filter on the span
 attributes:
@@ -186,12 +196,12 @@ attributes:
 | `winslow.phase`              | The execution phase of the errored step.           | `run`                |
 | `winslow.env`                | `WINSLOW_ENV`.                                     | `prod`               |
 
-### Override by subclassing
+### Customize: replace the tracer provider
 
 The built-in builds its tracer provider from the environment alone. To change the exporter, the
-resource or the processor, subclass `OpenTelemetryConfiguration` and override
-`get_tracer_provider`. This example replaces the service name and stamps the owning team onto the
-resource, so every span carries both:
+resource or the processor, subclass `OpenTelemetryConfiguration` in a `telemetry.py` file and
+override `get_tracer_provider`. This example replaces the service name and stamps the owning team
+onto the resource, so every span carries both:
 
 ```python title="telemetry.py"
 from decouple import config
@@ -228,11 +238,32 @@ class TaggedTelemetry(OpenTelemetryConfiguration):
 Run the workflow again: every span now carries the `team` resource attribute. For a change beyond
 the provider, other span names or other attributes, override `get_handler` instead.
 
+## How activation works
+
+Both backends activate configuration first. When the environment carries their values, a DSN for
+Sentry or an OTLP endpoint for OpenTelemetry, the backend activates on its own for each run: no
+class, no import, no bootstrap code. Without the values, the backend stays inactive and adds no
+cost.
+
+An active backend is safe for the run itself: a backend that fails while reporting is logged and
+never reaches the batch.
+
+When the defaults are not enough, the repo declares a subclass of the built-in configuration class
+in a `telemetry.py` file. Winslow collects these files the way it collects `workflow.py` files, and
+among the collected classes only the most derived one activates. A subclass therefore replaces the
+built-in it inherits from, and never doubles the reports.
+
+!!! info "A configured backend needs its extra installed"
+
+    When the environment activates a backend whose extra is not installed, the run does not start
+    (`MisconfigurationError`).
+
 ## Write a custom backend
 
-The built-ins cover Sentry and OpenTelemetry, but the seam behind them is open. A direct subclass
-of `TelemetryConfiguration` adds a backend next to the built-ins: the configuration decides when
-its backend is active and builds the handler, and the handler consumes the errors.
+The built-ins cover Sentry and OpenTelemetry, but the seam behind them is open. To add a backend
+next to the built-ins, declare a direct subclass of `TelemetryConfiguration` in a `telemetry.py`
+file: the configuration decides when its backend is active and builds the handler, and the handler
+consumes the errors.
 
 ```python title="telemetry.py"
 from winslow import settings

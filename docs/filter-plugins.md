@@ -48,6 +48,7 @@ The `winslow-sample-filter-plugin` package holds the filter of this page:
 winslow-sample-filter-plugin/
 ├── pyproject.toml
 └── winslow_sample_filter_plugin/
+    ├── __init__.py
     └── filters.py       # adds the !needs command
 ```
 
@@ -62,18 +63,26 @@ The `pyproject.toml` declares the entry point:
 Install the package into the workflow project. An editable install keeps a local plugin live while
 you work on it:
 
-```bash
-uv add --editable ../winslow-sample-filter-plugin
-```
+=== "uv"
 
-The command adds the dependency and a local source to the `pyproject.toml` of the project:
+    ```bash
+    uv add --editable ../winslow-sample-filter-plugin
+    ```
 
-```toml title="pyproject.toml of the workflow project"
-[project]
-dependencies = [
-    "winslow-sample-filter-plugin",
-]
+    The command adds the dependency and a local source to the `pyproject.toml` of the project:
 
-[tool.uv.sources]
-winslow-sample-filter-plugin = { path = "../winslow-sample-filter-plugin", editable = true }
-```
+    ```toml title="pyproject.toml of the workflow project"
+    [project]
+    dependencies = [
+        "winslow-sample-filter-plugin",
+    ]
+
+    [tool.uv.sources]
+    winslow-sample-filter-plugin = { path = "../winslow-sample-filter-plugin", editable = true }
+    ```
+
+=== "pip"
+
+    ```bash
+    pip install -e ../winslow-sample-filter-plugin
+    ```

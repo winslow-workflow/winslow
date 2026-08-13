@@ -24,6 +24,7 @@ theme:
     - navigation.top
     - navigation.footer
     - content.code.copy
+    - content.tabs.link
     - toc.integrate
 
 nav:
@@ -63,6 +64,8 @@ markdown_extensions:
       anchor_linenums: true
   - pymdownx.superfences
   - pymdownx.inlinehilite
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.snippets:
       base_path: ["."]
       check_paths: true
