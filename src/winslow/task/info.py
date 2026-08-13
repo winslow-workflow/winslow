@@ -24,6 +24,8 @@ def _display_parameters(task):
     }
 
 
+# The class-keyed caches are safe only because the scoped import machinery
+# reuses modules, so each class is created one time. A re-import must clear them.
 @lru_cache(maxsize=None)
 def _safe_source(cls):
     """The source of a class, or None if it has none, such as object or a C-level
@@ -95,7 +97,8 @@ def _docs_in(directory):
     ordered by file name and independent of the case. The title is the file name
     with no extension. The result is cached per directory: the docs do not change
     during a session, and many tasks share a directory, so each file is read one
-    time (compare _safe_source)."""
+    time (compare _safe_source). The session end clears this cache, so the
+    next session reads an edited doc again (see release_session_caches)."""
     try:
         names = sorted(os.listdir(directory), key=str.lower)
     except OSError:
@@ -112,6 +115,12 @@ def _docs_in(directory):
             text = f"*Could not read `{name}`: {exc}*"
         docs.append((os.path.splitext(name)[0], text))
     return tuple(docs)
+
+
+def release_session_caches():
+    """Clear the caches whose data can change between two sessions of one
+    process. The class-keyed source caches stay (see _safe_source)."""
+    _docs_in.cache_clear()
 
 
 def _task_docs(task):

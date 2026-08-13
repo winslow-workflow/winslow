@@ -34,9 +34,12 @@ class ExecutionRecordStore(InteractiveStore):
 
     item_class = str
 
-    def __init__(self, batch_uuid, items):
+    def __init__(self, batch_uuid, items, root_dir=None):
         super().__init__(items)
         self.batch_uuid = batch_uuid
+        # The project root, so the sweep labels a source the same way as the
+        # live detail view (see TaskInfo.from_task).
+        self.root_dir = root_dir
         self._records: dict[str, ExecutionRecord] = {}
 
     def register(self, task):
@@ -50,7 +53,7 @@ class ExecutionRecordStore(InteractiveStore):
         this outside every store write, which runs under the store lock."""
         record = self._records.get(task.uuid)
         if record is not None:
-            record.info = TaskInfo.from_task(task, full=True)
+            record.info = TaskInfo.from_task(task, full=True, root_dir=self.root_dir)
 
     def get_record(self, task_uuid) -> ExecutionRecord:
         return self._records[task_uuid]

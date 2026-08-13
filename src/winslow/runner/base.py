@@ -95,10 +95,10 @@ class BaseRunner(_Base):
         ]
 
     def release_batch_errors(self):
-        """Drop the error tracebacks of every retained batch, so no raise-path
-        frame keeps a task alive past the session end."""
+        """Replace the error of each retained batch with a value-only copy, so
+        nothing on it keeps a task alive (see ExecutionBatch.release_error)."""
         for batch in list(self.execution_batches_map.values()):
-            batch.release_traceback()
+            batch.release_error()
 
     def _log_context(self, task, batch_uuid):
         return LogContext(

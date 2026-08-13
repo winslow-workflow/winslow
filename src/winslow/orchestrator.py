@@ -224,6 +224,9 @@ class Orchestrator(_ConfigBase):
 
     def __init__(self, orchestrator_config, directory=None, unknown_args=None):
         self.directory = directory or os.getcwd()
+        # The workflows and the runner see only the config, so the project
+        # root travels on it (see ExecutionRecordStore.capture).
+        orchestrator_config.directory = self.directory
         # argparse reads sys.argv if this is None. Normalize it at the boundary.
         self.unknown_args = list(unknown_args or ())
 

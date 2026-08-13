@@ -82,9 +82,8 @@ def test_session_end_frees_every_task_while_history_stays(
 
 
 def test_session_end_frees_tasks_after_a_reraise(e2e_repo, isolated_winslow_logs):
-    """A batch stores the reraise error for wait(); its traceback frames
-    reference the tasks. The session end must release the traceback and keep
-    the error (see ExecutionBatch.release_traceback)."""
+    """A batch stores the reraise error for wait(). The session end must
+    release it and keep its type and message (see ExecutionBatch.release_error)."""
     workflow = build_workflow(
         e2e_repo, "my-errors", Mode.TUI, "--reraise-errors", "--disable-concurrency"
     )
@@ -100,6 +99,32 @@ def test_session_end_frees_tasks_after_a_reraise(e2e_repo, isolated_winslow_logs
 
     assert all(ref() is None for ref in refs), "a task survived the session end"
     assert any(batch._error is not None for batch in batches)
+
+
+def test_session_end_frees_tasks_after_an_attribute_error(
+    e2e_repo, isolated_winslow_logs
+):
+    """AttributeError.obj holds the object of the failed lookup, which is the
+    task. The release must detach it too (see ExecutionBatch.release_error)."""
+    workflow = build_workflow(
+        e2e_repo,
+        "my-attr-errors",
+        Mode.TUI,
+        "--reraise-errors",
+        "--disable-concurrency",
+    )
+    with pytest.raises(AttributeError):
+        run_all(workflow)
+
+    refs = [weakref.ref(task) for task in workflow.tasks]
+    batches = list(workflow.runner.execution_batches_map.values())
+    assert any(isinstance(batch._error, AttributeError) for batch in batches)
+
+    workflow.session.end()
+    gc.collect()
+
+    assert all(ref() is None for ref in refs), "a task survived the session end"
+    assert any(isinstance(batch._error, AttributeError) for batch in batches)
 
 
 def test_task_info_asdict_json_round_trips(e2e_repo):
@@ -240,6 +265,49 @@ def test_sanitize_passes_a_plain_record_through():
     assert sanitized.exc_info is None
     assert "ValueError: boom" in sanitized.exc_text
     assert rich.exc_info is exc_info
+
+
+def test_buffered_record_with_object_extra_cannot_retain_it():
+    """A record logged with an object in `extra` is coerced to text in the
+    buffer, so a task in a custom attribute cannot outlive its release."""
+    import collections
+
+    from winslow.logger import TaskLogDispatcher
+
+    class _Payload:
+        pass
+
+    payload = _Payload()
+    ref = weakref.ref(payload)
+
+    dispatcher = TaskLogDispatcher()
+    buffer = collections.deque()
+    dispatcher.register_buffer("t-1", buffer)
+    record = logging.LogRecord("n", logging.INFO, "p", 1, "plain", (), None)
+    record.task_id = "t-1"
+    record.payload = payload
+    dispatcher.emit(record)
+
+    stored = buffer[0]
+    assert stored is not record
+    assert isinstance(stored.payload, str)
+
+    del payload, record
+    gc.collect()
+    assert ref() is None, "the buffered record retained the extra object"
+
+
+def test_history_search_refuses_a_builtin_filter_subclass():
+    """The search gate is by exact type: a project subclass of a builtin
+    filter can touch live-task API, so history must refuse it."""
+    from winslow.filter.builtin import GroupFilter, NameFilter
+    from winslow.ui.builtin_plugins.workflow.history import _foreign_filter_names
+
+    class ProjectFilter(NameFilter):
+        long_command = "project"
+
+    filters = [NameFilter("a"), GroupFilter("b"), ProjectFilter("c")]
+    assert _foreign_filter_names(filters) == ["project"]
 
 
 class _EventRecorder(StoreListener):

@@ -77,10 +77,11 @@ def test_tandem_history_equivalence(e2e_repo, name):
     for mode in (Mode.HEADLESS, Mode.TUI):
         workflow = build_workflow(e2e_repo, name, mode)
         run_all(workflow)
-        # Keyed by str(task): each leg builds its own workflow, so the task
-        # instances differ but their labels don't.
+        # Re-keyed by label: each leg builds its own workflow, so the task
+        # instances and their uuids differ but their labels don't.
+        store = workflow.store
         histories[mode] = {
-            str(task): statuses for task, statuses in workflow.store.history.items()
+            str(task): store.history[store._history_key(task)] for task in store
         }
 
     # Not just the same terminal statuses: the full transition sequences must

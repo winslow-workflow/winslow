@@ -127,8 +127,8 @@ class _ParameterizationMeta(_DeclarationMeta):
 class _ParameterizationBase(_Base, metaclass=_ParameterizationMeta):
     def __init__(self, parameters: SimpleNamespace = None):
         self._params = parameters
-        # The opaque transport identity: every structure that must not hold
-        # the task references it by this string (see TaskInfo).
+        # The opaque transport identity: history holds this string, never the
+        # task (see TaskInfo). A copy would duplicate it, so never copy a task.
         self.uuid = str(_uuid.uuid4())
 
     @property

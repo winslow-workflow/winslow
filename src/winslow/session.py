@@ -6,6 +6,7 @@ from enum import Enum
 from winslow.exceptions import SessionEndingError
 from winslow.logger import release_session_logging
 from winslow.telemetry import emit_unscoped_error
+from winslow.task.info import release_session_caches
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.util import generate_id
 
@@ -124,6 +125,7 @@ class Session:
         # Release each task that execution history does not retain, so the
         # garbage collector can free it.
         self.workflow.release_tasks()
+        release_session_caches()
         release_session_logging(self.session_id)
 
     def mark_error(self, exc=None):
