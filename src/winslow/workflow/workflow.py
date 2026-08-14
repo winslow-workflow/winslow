@@ -1,7 +1,16 @@
+import hashlib
+import json
 import operator
 from argparse import ArgumentParser, Namespace
 
 from winslow._config import _ConfigBase
+from winslow.cache import (
+    CacheContainer,
+    WorkflowCacheRegistry,
+    initialize_global_cache,
+    populate_eager_entries,
+    workflow_cache_context,
+)
 from winslow.filter import FilterRegistry
 from winslow.task import TaskRegistry, TaskStatus
 from winslow.task.context import BatchOptions
@@ -12,6 +21,7 @@ from winslow.graph import Graph
 from winslow.runner import HeadlessRunner, InteractiveRunner
 from winslow.session import Session
 from winslow.logger import LOGGER
+from winslow.util import slugify
 from winslow.exceptions import MisconfigurationError, InitializationError
 
 
@@ -39,6 +49,8 @@ class Workflow(_ConfigBase):
 
     filter_registry_class = FilterRegistry
 
+    cache_registry_class = WorkflowCacheRegistry
+
     def __init__(
         self, orchestrator_config, workflow_config=None, store=None, logger=LOGGER
     ):
@@ -48,6 +60,10 @@ class Workflow(_ConfigBase):
         self.workflow_config = (
             workflow_config if workflow_config is not None else Namespace()
         )
+        # The caches see only the workflow config, so the identity travels on
+        # it (see WorkflowCache._storage_namespace). The name is safe: a config
+        # option cannot bind it, because it clashes with the property.
+        self.workflow_config.cache_namespace = self.cache_namespace
         self.registry = self.registry_class(
             orchestrator_config=orchestrator_config,
             workflow_config=self.workflow_config,
@@ -64,6 +80,10 @@ class Workflow(_ConfigBase):
         # The Session does not exist at construction time. It is created after
         # the workflow init and attaches itself here.
         self._session = None
+
+        # initialize_tasks builds the containers, before it builds the graph.
+        self._workflow_cache = None
+        self._global_cache = None
 
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
@@ -144,6 +164,33 @@ class Workflow(_ConfigBase):
         runs of the same workflow different; empty without such options."""
         return " | ".join(f"{k}={v}" for k, v in self.identifiers_dict_safe.items())
 
+    @property
+    def identity_prefix(self):
+        """A readable prefix: the instance name plus the scalar identifier
+        values. Not unique - a structured value (a multiselect list, a tuple)
+        is dropped, so pair it with identity_hash, which covers the full dict."""
+        scalars = [
+            formatted
+            for name, formatted in self.identifiers_dict_safe.items()
+            if isinstance(getattr(self.workflow_config, name), (str, int, float, bool))
+        ]
+        return slugify("-".join([self.instance_name, *scalars]))
+
+    @property
+    def identity_hash(self):
+        """A digest of the full identity: two runs collide only when the name
+        and every identifier match, however identity_prefix flattened them."""
+        payload = json.dumps(
+            [self.instance_name, self.identifiers_dict_safe], sort_keys=True
+        )
+        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
+
+    @property
+    def cache_namespace(self):
+        """The directory of the persistent cache tiers of this run (see
+        JsonFileStorage): readable prefix plus digest, stable across sessions."""
+        return f"{self.identity_prefix}-{self.identity_hash}"
+
     def __str__(self):
         """The display form of the run: the name plus the identifier options,
         for example "etl (client=acme)" - the same shape as str(task)."""
@@ -158,6 +205,43 @@ class Workflow(_ConfigBase):
     def should_be_initialized(cls, orchestrator_config, parameters=None):
         return True
 
+    @property
+    def global_cache(self):
+        if self._global_cache is None:
+            raise InitializationError(
+                f"{self} caches read before initialize_tasks built them."
+            )
+        return self._global_cache
+
+    @property
+    def workflow_cache(self):
+        if self._workflow_cache is None:
+            raise InitializationError(
+                f"{self} caches read before initialize_tasks built them."
+            )
+        return self._workflow_cache
+
+    def _initialize_caches(self):
+        """Build and populate the containers of both scopes: the graph and the
+        pre-graph hooks read them (see docs/caching.md)."""
+        self._global_cache = initialize_global_cache(
+            self.orchestrator_config,
+            self.disable_concurrency,
+            clear=self.orchestrator_config.clear_cache,
+        )
+        registry = self.cache_registry_class(self.orchestrator_config)
+        registry.collect_classes(self.module_directory)
+        instances = {
+            kls.get_name(): kls(self.workflow_config) for kls in registry.classes
+        }
+        self._workflow_cache = CacheContainer(instances)
+        if self.orchestrator_config.clear_cache:
+            # Before the population, so the eager loaders run fresh and a
+            # persistent tier rewrites. A memory tier is cold anyway.
+            for cache in instances.values():
+                cache.invalidate_all()
+        populate_eager_entries(instances.values(), self.disable_concurrency)
+
     def initialize_tasks(self, logger=LOGGER):
         if self.graph is None:
             raise InitializationError(
@@ -166,10 +250,19 @@ class Workflow(_ConfigBase):
 
         logger.debug(f"{self} initializing tasks.")
 
+        self._initialize_caches()
         self.registry.collect_classes(self.module_directory)
-        tasks = self.graph.generate_pipeline(self.registry)
+
+        # The context serves the classmethod hooks that run before a task
+        # instance exists (see winslow.cache.get_workflow_cache).
+        with workflow_cache_context(self._workflow_cache):
+            tasks = self.graph.generate_pipeline(self.registry)
 
         for task in tasks:
+            # A batch thread reads the stamp, because the thread pool does not
+            # propagate a context variable.
+            task._workflow_cache_container = self._workflow_cache
+            task._global_cache_container = self._global_cache
             self.store[task] = TaskStatus.INITIALIZED
 
         logger.debug(f"{self} initialized {len(self.store)} tasks.")
@@ -189,6 +282,9 @@ class Workflow(_ConfigBase):
         # batch runs and that no batch can be admitted here.
         self.runner.release_batch_errors()
         self.store.clear()
+        # The container dies with the session. Only a new session builds fresh
+        # WorkflowCache instances.
+        self._workflow_cache = None
 
     def check_pipeline_eligibility(self, logger=LOGGER):
         tasks = self.tasks

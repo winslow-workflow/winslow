@@ -18,6 +18,7 @@ from winslow._parameterization import (
     _GetParametersNotImplemented,
 )
 from winslow.task.context import get_execution_context
+from winslow.cache import CacheContainerRef, get_global_cache, get_workflow_cache
 from winslow import exceptions
 from winslow.exceptions import TaskActionRequired
 
@@ -147,6 +148,16 @@ class Task(_ParameterizationBase):
         self._priority = None
         self._workflow_name = None
 
+        # The workflow stamps these at graph build (see
+        # Workflow.initialize_tasks).
+        self._workflow_cache_container = None
+        self._global_cache_container = None
+
+        # True after run() of this instance started at least once, in any batch
+        # of this workflow. dry_run does not set it. The completion check uses
+        # it to separate COMPLETED from COMPLETED_PREVIOUSLY.
+        self._has_been_run = False
+
         # All tasks share one logger. The adapter stamps the task uuid onto
         # each record, so the dispatcher and a log view route by the uuid
         # alone. Records propagate to the winslow.runs sink.
@@ -196,10 +207,10 @@ class Task(_ParameterizationBase):
     is_force_run = _ExecutionFlag("force_run")
     is_force_success = _ExecutionFlag("force_success")
 
-    # True after run() of this instance started at least once, in any batch
-    # of this workflow. dry_run does not set it. The completion check uses
-    # it to separate COMPLETED from COMPLETED_PREVIOUSLY.
-    _has_been_run = False
+    # The stamp attributes are set in __init__; the fallback serves the
+    # graph-build hooks.
+    workflow_cache = CacheContainerRef("_workflow_cache_container", get_workflow_cache)
+    global_cache = CacheContainerRef("_global_cache_container", get_global_cache)
 
     @property
     def is_noop(self):
