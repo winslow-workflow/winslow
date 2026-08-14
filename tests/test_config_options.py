@@ -1,6 +1,7 @@
 import pytest
 
 from winslow import ConfigOption, Workflow
+from winslow.exceptions import MisconfigurationError
 
 
 class Selecting(Workflow):
@@ -70,3 +71,12 @@ class Demanding(Workflow):
 def test_required_without_default_is_demanded():
     with pytest.raises(SystemExit):
         Demanding.get_parser().parse_args([])
+
+
+def test_cache_namespace_option_is_reserved():
+    """cache_namespace is the framework property behind the storage identity
+    (see Workflow.cache_namespace), so a project option cannot bind the name."""
+    with pytest.raises(MisconfigurationError, match="cache_namespace.*clashes"):
+
+        class Reserved(Workflow):
+            cache_namespace = ConfigOption(default="x")
