@@ -135,6 +135,9 @@ The first `check` computes `remote_rows`, and `run` reads the same value. A seco
 with the check. The final `check` computes the value again, so the confirmation reads the state that the run
 produced.
 
+For a value that outlives one execution pass - shared reference data, an expensive lookup that many tasks
+read - declare a [cache](caching.md) instead.
+
 ## A complete example
 
 The `release` workflow shows every gate in one flow. It builds an artifact, tests it, verifies the report, and

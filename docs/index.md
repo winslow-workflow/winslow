@@ -180,6 +180,8 @@ trust model and the report process for a vulnerability.
 - [Filters](filters.md): select a subset of the tasks by name or by group.
 - [Parameterization](parameterization.md): turn one task class into many task instances.
 - [Constraints](constraints.md): package a gate rule as a class, and share it between tasks.
+- [Caching](caching.md): share expensive data between tasks and workflows with declarative cache classes.
+- [Telemetry](telemetry.md): report task and workflow errors to Sentry or OpenTelemetry.
 - [Plugins](plugins.md): add a tab to the UI, replace a built-in pane, or add a filter command.
 - [API reference](reference.md): generated from the source docstrings.
 - [Tool selector](selector.html): compare Winslow with the alternative workflow tools.
