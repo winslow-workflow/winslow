@@ -141,6 +141,16 @@ you need it.
   subclassing `TaskFilter`: define a `!command` and what it matches, and it's
   available everywhere filters are.
 
+- **Declarative caching.** Share expensive data — station lists, calendars,
+  reference tables — through `GlobalCache` (process scope) and `WorkflowCache`
+  (session scope) classes. Declare fields with `@entry` (lazy, eager,
+  `depends_on`, `ttl`); eager fields load in parallel before the graph is
+  built, and `JsonFileStorage` keeps a cache warm across processes.
+
+- **Error telemetry.** Report task and workflow errors to Sentry
+  (`winslow[sentry]`) or OpenTelemetry (`winslow[otel]`) by setting their
+  environment values — each error reaches the backends exactly once.
+
 - **Live terminal UI.** Watch tasks change state in real time, stream per-task
   logs, browse execution history, and run or re-check individual tasks by hand —
   all from the dashboard. Everything also works headless in `--mode headless`.
@@ -159,6 +169,7 @@ winslow run --workflow etl                     # UI, pre-selecting a workflow
 winslow run --mode headless --workflow etl     # headless run
 winslow run --mode headless --check ...        # check completion without running
 winslow run --dry-run ...                      # call dry_run() instead of run()
+winslow run --clear-cache ...                  # invalidate every cache entry first
 winslow show                                   # list workflows
 winslow show --initialize --workflow etl       # initialize one workflow, list its tasks
 winslow show --initialize --workflow etl --with-deps   # ...with each task's dependencies
