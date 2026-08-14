@@ -6,8 +6,17 @@ on:
 
 jobs:
   test:
-    name: Lint & test
+    name: Lint & test (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
+    strategy:
+      # The classifiers promise 3.12 through 3.14, so CI tests each one. The
+      # 3.14 functools.partial descriptor change is the proof this matters.
+      matrix:
+        python-version: ["3.12", "3.13", "3.14"]
+    env:
+      # Every uv command must agree on the interpreter: a bare `uv run` would
+      # otherwise follow .python-version and rebuild the venv without extras.
+      UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v3
