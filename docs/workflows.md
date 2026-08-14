@@ -172,8 +172,8 @@ file, even when the project root holds a `tasks.py` file too.
 
 ## Share a base class
 
-A base class that Winslow must not run declares `abstract` in a `Meta` class. This applies to a `Workflow` and
-to a `Task`:
+A base class that is not a concrete part of a workflow declares `abstract` in a `Meta` class. This applies
+to a `Workflow`, to a `Task` and to a [cache class](caching.md):
 
 ```python title="shared/base.py"
 from winslow import Workflow
