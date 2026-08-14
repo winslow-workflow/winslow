@@ -108,6 +108,7 @@ class BaseRunner(_Base):
             task_name=task.instance_name,
             task_instance=str(task),
             batch_uuid=batch_uuid,
+            task_uuid=task.uuid,
         )
 
     @contextmanager

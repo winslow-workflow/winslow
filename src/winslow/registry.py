@@ -9,7 +9,10 @@ from winslow.logger import LOGGER
 
 class Registry(_Base):
     item_class = None
+    # file_filter holds file names, dir_filter holds directory names. A module
+    # is scanned when either filter matches it (see util._module_matches).
     file_filter = None
+    dir_filter = None
 
     def __init__(self, orchestrator_config):
         super().__init__(orchestrator_config)
@@ -78,7 +81,9 @@ class Registry(_Base):
 
     def collect_classes(self, directory):
         LOGGER.debug(f"{self} collecting {self.item_class} classes from {directory}.")
-        for module in iter_dir_modules(directory, only=self.file_filter):
+        for module in iter_dir_modules(
+            directory, only=self.file_filter, under=self.dir_filter
+        ):
             for kls in classes_in_module(module, self.item_class):
                 self.register(kls)
         LOGGER.debug(f"Collection complete - {len(self.classes)} items collected.")

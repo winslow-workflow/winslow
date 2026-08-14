@@ -66,6 +66,21 @@ class CyclicalDependencyError(WinslowError):
         super().__init__(error_msg)
 
 
+class CacheReentrancyError(WinslowError):
+    """A cache loader re-entered a field that its own thread computes: an
+    undeclared read cycle or a loader invalidation, which would deadlock."""
+
+
+class SerializationError(WinslowError):
+    """A storage backend cannot serialize a value. The write is strict on
+    purpose: a silent coercion would make a persisted record lossy."""
+
+
+class DeserializationError(WinslowError):
+    """A storage backend cannot decode a stored record. JsonFileStorage catches
+    its own and serves a cold miss; a custom layer can let it propagate."""
+
+
 class IllegalTaskOutcomeError(WinslowError):
     """A task hook raised a TaskSignal that is not legal for the step that it ran
     in, for example skip outside eligibility. It is raised on the reraise_errors
