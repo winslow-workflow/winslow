@@ -1,5 +1,19 @@
 # AGENTS.md
 
+## Documentation style
+
+Do not document failure paths in `docs/`: no lists of what raises, no exception class names, no
+error-message walkthroughs. The docs teach the working path. The error itself must carry enough
+context and direction to point the user to a solution - write that context into the exception
+message, at the raise site.
+
+Describe only behavior that happens. Do not document what does not happen ("an undeclared read
+does not cascade", "the framework never refreshes in the background"). State the positive rule
+instead, or leave it out.
+
+State each fact once per page. When two sections need the same fact, one section owns it and the
+other links to it.
+
 ## Code style
 
 Prefer a declarative and functional style over a procedural and imperative one. Keep functions free of
