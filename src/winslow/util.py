@@ -10,6 +10,7 @@ import importlib
 import importlib.util
 import importlib.machinery
 import inspect
+import contextvars
 
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
@@ -84,10 +85,25 @@ def flatten(iterable):
     return tuple(_flat(iterable))
 
 
-def camel_to_kebab(s):
-    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1-\2", s)
-    s = re.sub(r"([a-z\d])([A-Z])", r"\1-\2", s)
+def _camel_split(s, sep):
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", rf"\g<1>{sep}\g<2>", s)
+    s = re.sub(r"([a-z\d])([A-Z])", rf"\g<1>{sep}\g<2>", s)
     return s.lower()
+
+
+def camel_to_kebab(s):
+    return _camel_split(s, "-")
+
+
+def camel_to_snake(s):
+    return _camel_split(s, "_")
+
+
+def slugify(s, max_length=48):
+    """Reduce a display string to [a-z0-9_-], for a path or a label. Lossy on
+    purpose - pair it with a digest where uniqueness matters."""
+    s = re.sub(r"[^a-z0-9_-]+", "-", s.lower()).strip("-")
+    return s[:max_length].rstrip("-") or "_"
 
 
 def _ensure_package(name, path):
@@ -241,9 +257,23 @@ def isolated_scopes():
             sys.path[:] = path_before
 
 
-def iter_dir_module_names(directory, recursive=True, only=None):
+def _module_matches(rel_dir, file, only, under):
+    """The location filter of a module scan. `only` holds file names, `under`
+    holds directory names. A file matches `under` when a component of its
+    relative directory is in the set, at any depth."""
+    if only is None and under is None:
+        return True
+    if only is not None and file in only:
+        return True
+    return under is not None and any(
+        part in under for part in rel_dir.split(os.sep) if part not in (".", "")
+    )
+
+
+def iter_dir_module_names(directory, recursive=True, only=None, under=None):
     """Prepare the import scope of the directory and yield the scoped module name
-    of each .py file. The caller does the import and sets the error policy."""
+    of each .py file. The caller does the import and sets the error policy.
+    `only` and `under` select the modules (see _module_matches)."""
     directory = os.path.abspath(directory)
     if not os.path.isdir(directory):
         raise ValueError(f"'{directory}' is not a directory.")
@@ -279,18 +309,19 @@ def iter_dir_module_names(directory, recursive=True, only=None):
         if not recursive and root != directory:
             break
         dirs[:] = [d for d in dirs if not d.startswith(ignore)]
+        rel_dir = os.path.relpath(root, directory)
         for file in files:
             if file.startswith(ignore) or not file.endswith(".py"):
                 continue
-            if only is not None and file not in only:
+            if not _module_matches(rel_dir, file, only, under):
                 continue
             rel = os.path.relpath(os.path.join(root, file), directory)
             module_name = rel.replace(os.sep, ".")[:-3]
             yield f"{scope_prefix}.{module_name}"
 
 
-def iter_dir_modules(directory, recursive=True, only=None):
-    for scoped_name in iter_dir_module_names(directory, recursive, only):
+def iter_dir_modules(directory, recursive=True, only=None, under=None):
+    for scoped_name in iter_dir_module_names(directory, recursive, only, under):
         # import_module drives the standard machinery: the scoped parent
         # packages, __package__ and the scoped __import__. It returns a cached
         # module without a change.
@@ -313,6 +344,9 @@ def execute_in_threads(func, items, max_workers=None):
     Execute a function or a method in parallel with a ThreadPoolExecutor. All
     threads complete their work before this function returns.
 
+    Each call runs in a copy of the context of the caller, so a worker reads
+    the same ContextVar values (see winslow.task.context).
+
     Args:
         func (Callable): The function or the method to execute. It takes one argument.
         items (List): The items to give to the function as arguments.
@@ -325,9 +359,11 @@ def execute_in_threads(func, items, max_workers=None):
     """
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = [
-            executor.submit(func, *item)
-            if isinstance(item, tuple)
-            else executor.submit(func, item)
+            executor.submit(
+                contextvars.copy_context().run,
+                func,
+                *(item if isinstance(item, tuple) else (item,)),
+            )
             for item in items
         ]
         for future in futures:

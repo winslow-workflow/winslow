@@ -4,6 +4,7 @@ import networkx as nx
 
 from winslow._base import _Base
 from winslow.logger import LOGGER
+from winslow.cache import CacheContainerRef, get_global_cache, get_workflow_cache
 from winslow.task import Task
 from winslow.task.eligibility import check_task_eligibility
 
@@ -24,10 +25,19 @@ class Graph(_Base):
     3. It builds the pipeline in the correct run order.
     """
 
+    # generate_pipeline runs inside the cache context of the workflow, on the
+    # initializing thread, so the fallbacks of these descriptors resolve there.
+    workflow_cache = CacheContainerRef("_workflow_cache_container", get_workflow_cache)
+    global_cache = CacheContainerRef("_global_cache_container", get_global_cache)
+
     def __init__(self, orchestrator_config, workflow_config):
         super().__init__(orchestrator_config)
 
         self.workflow_config = workflow_config
+
+        # Nothing stamps a graph, so the descriptors always use the fallbacks.
+        self._workflow_cache_container = None
+        self._global_cache_container = None
 
         # A parameterized task class can have more than one instance.
         # key: task_kls, value: one or more task objects

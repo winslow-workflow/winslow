@@ -1,9 +1,15 @@
 import os
+import sys
 import copy
 import argparse
 import importlib
 from enum import Enum
 
+from winslow.cache import (
+    GlobalCacheRegistry,
+    set_global_cache_registry,
+    stray_workflow_caches,
+)
 from winslow.workflow import WorkflowRegistry
 from winslow._config import _ConfigBase
 from winslow.constants import Mode
@@ -74,6 +80,7 @@ def _merged_config(base, overrides):
 class Orchestrator(_ConfigBase):
     workflow_registry_class = WorkflowRegistry
     telemetry_registry_class = TelemetryRegistry
+    global_cache_registry_class = GlobalCacheRegistry
 
     workflow = ConfigOption(
         help_text="Name of the workflow to view / run.",
@@ -164,6 +171,19 @@ class Orchestrator(_ConfigBase):
         subcommands=Action.RUN.value,
     )
 
+    clear_cache = ConfigOption(
+        action="store_true",
+        required=False,
+        help_text=(
+            "Invalidate every cache entry at workflow initialization, before "
+            "the eager population. Meaningful for persistent cache storage; "
+            "a memory cache starts cold anyway. A read-only storage tier "
+            "keeps its records, and a later read can promote them back."
+        ),
+        default=False,
+        subcommands=Action.RUN.value,
+    )
+
     dry_run = ConfigOption(
         action="store_true",
         required=False,
@@ -234,6 +254,9 @@ class Orchestrator(_ConfigBase):
 
         self.workflow_registry = self.workflow_registry_class(self.orchestrator_config)
         self.telemetry_registry = self.telemetry_registry_class(
+            self.orchestrator_config
+        )
+        self.global_cache_registry = self.global_cache_registry_class(
             self.orchestrator_config
         )
 
@@ -655,6 +678,22 @@ class Orchestrator(_ConfigBase):
             orchestrator_config, workflow_params, store=task_store, logger=logger
         )
 
+    def _collect_caches(self):
+        """Collect the GlobalCache classes for the workflow initializations. A
+        WorkflowCache outside every workflow directory only gets a warning."""
+        self.global_cache_registry.collect_classes(self.directory)
+        set_global_cache_registry(self.global_cache_registry)
+
+        workflow_directories = [
+            os.path.dirname(os.path.abspath(sys.modules[kls.__module__].__file__))
+            for kls in self.workflow_registry.classes
+        ]
+        for kls in stray_workflow_caches(self.directory, workflow_directories):
+            LOGGER.warning(
+                f"WorkflowCache {kls.__name__} is outside every workflow "
+                f"directory - no workflow collects it."
+            )
+
     def start(self):
         """
         Do the action that self.orchestrator_config (base_args) and unknown_args
@@ -669,6 +708,7 @@ class Orchestrator(_ConfigBase):
         )
 
         self.workflow_registry.collect_classes(self.directory)
+        self._collect_caches()
 
         if self.orchestrator_config.action is Action.SHOW:
             self._handle_show()
