@@ -237,7 +237,9 @@ class ComposedStorage(BaseStorage):
             if (exc := _tier_delete_error(tier, key)) is not None
         ]
         if failures:
-            details = "; ".join(f"{label}: {exc}" for label, exc in failures)
+            details = "; ".join(
+                f"{label}: {type(exc).__name__}: {exc}" for label, exc in failures
+            )
             raise StorageError(
                 f"Cache '{self.cache_name}', entry '{key}': "
                 f"delete failed on {details}.",

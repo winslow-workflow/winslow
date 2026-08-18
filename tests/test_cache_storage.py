@@ -293,6 +293,8 @@ def test_a_failed_drop_quarantines_and_a_recompute_heals(
     assert info.state is EntryState.ERRORED
     assert info.error.origin is ErrorOrigin.DELETE
     assert info.error.tier == "FailingDeleteStorage"
+    # The context names the tier's exception type, not only its text.
+    assert "ConnectionError: backend down" in info.error.message
     assert cache.peek("values").value == 7
     assert cache.values == 7
     assert loads == ["values", "values"]
