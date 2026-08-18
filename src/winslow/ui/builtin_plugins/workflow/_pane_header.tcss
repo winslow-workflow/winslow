@@ -1,13 +1,13 @@
-/* Shared header styling for the workflow Tasks and History panes. Applied via
+/* Shared header styling for the workflow Tasks, History and Caches panes. Applied via
    the `pane-header` class on each pane's header row, so the search box, help/
-   params buttons and checkboxes stay identical across the two panes and can't
+   params buttons and checkboxes stay identical across the panes and can't
    silently drift. Pane-specific bits (checkboxes width/align, actions, border)
    stay in each pane's own stylesheet. */
 .pane-header {
     height: 5;
 
     .search {
-        width: 5fr;
+        width: 40%;
 
         Input { width: 1fr; }
 

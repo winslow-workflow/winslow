@@ -11,23 +11,28 @@ from textual.widgets import (
     TabbedContent,
     TabPane,
 )
-from textual.timer import Timer
 from textual.css.query import NoMatches
 
 
 import winslow.ui.builtin_plugins.workflow as workflow_plugins
 
+from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import WorkflowRenderContext, Slots
 from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.workflow_events import (
     TaskStatusChanged,
     BatchCreated,
     BatchCompleted,
+    CacheSelected,
+    CacheUpdated,
     ExecutionStatusChanged,
     TaskLogUpdated,
     TaskSelected,
 )
 
+from winslow.ui.builtin_plugins.workflow.caches import CachesPane
+from winslow.ui.builtin_plugins.workflow.cache_overview import CacheOverviewPlugin
+from winslow.ui.builtin_plugins.workflow.task_overview import TaskOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_list import TaskRow, TaskButton
 from winslow.exceptions import SessionEndingError
 from winslow.task.info import TaskInfo
@@ -35,13 +40,9 @@ from winslow.task.status import TaskStatus, PASSING_STATUSES
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 
 from winslow.ui.modals import TaskDetail, FilterHelp, WorkflowParams
-from winslow.ui.filtering import apply_filter_highlight, clear_filter_highlight
 
 from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
 from winslow.ui.store_adapter import StoreEvent
-
-
-FILTER_PREVIEW_DELAY = 0.5
 
 
 def refuse_if_ending(method):
@@ -60,7 +61,7 @@ def refuse_if_ending(method):
     return wrapper
 
 
-class WorkflowScreen(SlottedScreen):
+class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     PLUGINS_MODULE = workflow_plugins
 
     BINDINGS = [
@@ -70,7 +71,7 @@ class WorkflowScreen(SlottedScreen):
     def __init__(self, session):
         self.session = session
         self.workflow = session.workflow
-        self._filter_preview_timer: Timer | None = None
+        self._init_search()
         self._filter_matching = None  # tasks matched by the search filter (None = all)
         self._asyncio_tasks: set[asyncio.Task] = set()
 
@@ -105,11 +106,11 @@ class WorkflowScreen(SlottedScreen):
             self.propagate_task_status(task, status)
 
     async def on_screen_resume(self):
-        # A session that ended is read-only history. Remove the live Tasks tab, so
-        # only the execution History stays. This is idempotent: the tab is gone
-        # after the first view of a workflow that ended.
+        # A session that ended is read-only history. Remove the live Tasks and
+        # Caches tabs, so only the execution History stays. This is idempotent:
+        # the tabs are gone after the first view of a workflow that ended.
         if self.session.has_ended:
-            await self._remove_tasks_tab()
+            await self._remove_live_tabs()
         elif self.session.is_ending:
             # The end starts from the dashboard, so the user can enter this screen
             # again only with a resume. A lock here thus covers each path.
@@ -123,17 +124,18 @@ class WorkflowScreen(SlottedScreen):
                 button.disabled = True
                 button.tooltip = SESSION_ENDING_MESSAGE
 
-    async def _remove_tasks_tab(self):
-        try:
-            tasks_widget = self.query_one(TasksPaneWidget)
-        except NoMatches:
-            return
-        pane = next((a for a in tasks_widget.ancestors if isinstance(a, TabPane)), None)
-        tabbed = next(
-            (a for a in tasks_widget.ancestors if isinstance(a, TabbedContent)), None
-        )
-        if pane is not None and tabbed is not None:
-            await tabbed.remove_pane(pane.id)
+    async def _remove_live_tabs(self):
+        for widget_type in (TasksPaneWidget, CachesPane):
+            try:
+                widget = self.query_one(widget_type)
+            except NoMatches:
+                continue
+            pane = next((a for a in widget.ancestors if isinstance(a, TabPane)), None)
+            tabbed = next(
+                (a for a in widget.ancestors if isinstance(a, TabbedContent)), None
+            )
+            if pane is not None and tabbed is not None:
+                await tabbed.remove_pane(pane.id)
 
     def compose(self):
         yield Header()
@@ -187,6 +189,14 @@ class WorkflowScreen(SlottedScreen):
 
     def show_task_detail(self, task_info):
         self._dispatch_to_slot(Slots.TASK_OVERVIEW, TaskSelected(task_info))
+        self.activate_plugin_tab(TaskOverviewPlugin)
+
+    def show_cache_detail(self, cache):
+        self._dispatch_to_slot(Slots.TASK_OVERVIEW, CacheSelected(cache))
+        self.activate_plugin_tab(CacheOverviewPlugin)
+
+    def propagate_cache_update(self):
+        self._dispatch_to_slot(Slots.TASKS_PANE, CacheUpdated())
 
     @on(TaskRow.Selected)
     async def handle_task_selection(self, event):
@@ -252,53 +262,21 @@ class WorkflowScreen(SlottedScreen):
         )
         self.app.push_screen(TaskDetail(info, registry=self.plugin_registry))
 
-    def _clear_filter_preview(self):
-        clear_filter_highlight(self.query(TaskRow).results())
+    def search_rows(self):
+        return self.query(TaskRow).results()
 
-    def _apply_filter_preview(self, query):
+    def search_matches(self, query):
+        # None marks an unparseable query: the preview clears (see
+        # SearchFlowMixin._preview_now).
         self._validate_filter_input(query)
-        if not query:
-            self._clear_filter_preview()
-            return
         try:
-            matching = set(
+            return set(
                 self.workflow.filter_registry.parse(query).apply(self.workflow.tasks)
             )
         except ValueError:
-            self._clear_filter_preview()
-            return
-        apply_filter_highlight(self.query(TaskRow).results(), matching)
+            return None
 
-    def _validate_filter_input(self, query):
-        self.query_one("#filter-input", Input).validate(query)
-
-    @on(Input.Changed, "#filter-input")
-    def handle_filter_changed(self, event):
-        if self._filter_preview_timer is not None:
-            self._filter_preview_timer.stop()
-        query = event.value.strip()
-        if not query:
-            self._clear_filter_preview()
-            self._validate_filter_input(query)
-            return
-        self._filter_preview_timer = self.set_timer(
-            FILTER_PREVIEW_DELAY, lambda: self._apply_filter_preview(query)
-        )
-
-    @on(Button.Pressed, ".search-help")
-    def handle_filter_help(self, event):
-        self.app.push_screen(FilterHelp())
-
-    @on(Button.Pressed, ".workflow-params")
-    def handle_workflow_params(self, event):
-        self.app.push_screen(WorkflowParams(self.workflow))
-
-    @on(Input.Submitted, "#filter-input")
-    def handle_filter(self, event):
-        query = event.value.strip()
-        if self._filter_preview_timer is not None:
-            self._filter_preview_timer.stop()
-        self._clear_filter_preview()
+    def apply_search(self, query):
         try:
             matching = (
                 None
@@ -313,6 +291,27 @@ class WorkflowScreen(SlottedScreen):
             return
         self._filter_matching = matching
         self._apply_visibility()
+
+    def _validate_filter_input(self, query):
+        self.query_one("#filter-input", Input).validate(query)
+
+    @on(Input.Changed, "#filter-input")
+    def handle_filter_changed(self, event):
+        self.preview_search(event.value)
+        if not event.value.strip():
+            self._validate_filter_input("")
+
+    @on(Button.Pressed, ".search-help")
+    def handle_filter_help(self, event):
+        self.app.push_screen(FilterHelp())
+
+    @on(Button.Pressed, ".workflow-params")
+    def handle_workflow_params(self, event):
+        self.app.push_screen(WorkflowParams(self.workflow))
+
+    @on(Input.Submitted, "#filter-input")
+    def handle_filter(self, event):
+        self.submit_search(event.value)
 
     @on(Checkbox.Changed, "#hide-completed")
     @on(Checkbox.Changed, "#hide-skipped")

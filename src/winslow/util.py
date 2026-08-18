@@ -1,3 +1,4 @@
+import logging
 import os
 import re
 import sys
@@ -379,3 +380,44 @@ def human_readable_size(size, decimal_places=2):
             break
         size /= 1000
     return f"{size:.{decimal_places}f} {unit}"
+
+
+class ListenerMixin:
+    """Listener registration and emission for an observable component. The
+    host calls _init_listeners() in its __init__. The state is written with
+    object.__setattr__, so a host that blocks attribute writes stays valid."""
+
+    def _init_listeners(self):
+        object.__setattr__(self, "_listener_lock", threading.Lock())
+        object.__setattr__(self, "_listeners", [])
+
+    def add_listener(self, listener):
+        with self._listener_lock:
+            self._listeners.append(listener)
+
+    def remove_listener(self, listener):
+        """Unsubscribe the listener. An unknown listener is a no-op, so a
+        teardown path can run twice."""
+        with self._listener_lock:
+            if listener in self._listeners:
+                self._listeners.remove(listener)
+
+    @property
+    def listeners(self):
+        with self._listener_lock:
+            return tuple(self._listeners)
+
+    def _emit(self, event, *args):
+        """Send one event to every listener; `event` is the unbound listener
+        method. A raising listener is logged and skipped: an observer must
+        not break the operation it observes."""
+        # A snapshot of the listeners: another thread can unsubscribe one
+        # while the emission iterates.
+        for listener in self.listeners:
+            try:
+                getattr(listener, event.__name__)(*args)
+            except Exception:
+                logging.getLogger(__name__).error(
+                    f"Listener {listener!r} failed on {event.__name__}.",
+                    exc_info=True,
+                )

@@ -11,6 +11,7 @@ from winslow.exceptions import (
     DeserializationError,
     MisconfigurationError,
     SerializationError,
+    StorageError,
 )
 from winslow.logger import LOGGER
 from winslow.settings import config
@@ -63,6 +64,16 @@ class BaseStorage:
         """Return the StorageRecord of the key, or the MISSING sentinel. None
         cannot mark a miss: it is a legal cached value."""
         raise NotImplementedError
+
+    def peek(self, key):
+        """Return the record of the key, or MISSING, with no side effect. The
+        default delegates to read; a backend whose read has a side effect
+        overrides this, so an observation never changes the stored state."""
+        return self.read(key)
+
+    def describe(self):
+        """The human label of the backend for the UI projections."""
+        return type(self).__name__
 
     def write(self, key, record):
         """Store the record and return the stored record. The caller serves
@@ -121,10 +132,11 @@ class JsonFileStorage(BaseStorage):
             return self._decode(self._path(key).read_text(encoding="utf-8"))
         except FileNotFoundError:
             return MISSING
-        except (OSError, DeserializationError) as exc:
-            LOGGER.warning(
-                f"Cache file {self._path(key)} is unreadable ({exc}) - "
-                f"treating the entry as cold."
+        except (OSError, DeserializationError):
+            LOGGER.error(
+                f"Cache file {self._path(key)} is unreadable - "
+                f"treating the entry as cold.",
+                exc_info=True,
             )
             return MISSING
 
@@ -180,9 +192,7 @@ class ComposedStorage(BaseStorage):
     def __init__(self, cache_name, namespace):
         super().__init__(cache_name, namespace)
         self._tiers = [kls(cache_name, namespace) for kls in self.storage_classes]
-        self._writable = [
-            tier for tier in self._tiers if not getattr(tier, "read_only", False)
-        ]
+        self._writable = [tier for tier in self._tiers if not tier.read_only]
 
     def read(self, key):
         """The first hit wins. It is promoted verbatim into the writable tiers
@@ -196,6 +206,20 @@ class ComposedStorage(BaseStorage):
                 return record
         return MISSING
 
+    def peek(self, key):
+        """The first hit wins, without the promotion of read: an observation
+        must not change the tiers."""
+        for tier in self._tiers:
+            record = tier.peek(key)
+            if record is not MISSING:
+                return record
+        return MISSING
+
+    def describe(self):
+        """The tier labels in read order, joined for the UI. The generated
+        class is always named ComposedStorage, so the label uses the tiers."""
+        return " over ".join(tier.describe() for tier in self._tiers)
+
     def write(self, key, record):
         """Bottom-up: every tier stores what the tier below persisted, so each
         tier serves the most constrained representation."""
@@ -204,16 +228,31 @@ class ComposedStorage(BaseStorage):
         return record
 
     def delete(self, key):
-        # Attempt every tier: a raise mid-loop would leave the tiers below
-        # inconsistent silently. A partial delete is logged instead.
-        for tier in self._writable:
-            try:
-                tier.delete(key)
-            except Exception as exc:
-                LOGGER.warning(
-                    f"Cache tier {type(tier).__name__} failed to delete '{key}' "
-                    f"({exc}) - a later read can promote the old record back."
-                )
+        """Attempt every tier, then raise one StorageError naming each
+        failing tier: a raise mid-loop would leave the tiers below in a
+        silent, half-deleted state. The cache quarantines the entry."""
+        failures = [
+            (tier.describe(), exc)
+            for tier in self._writable
+            if (exc := _tier_delete_error(tier, key)) is not None
+        ]
+        if failures:
+            details = "; ".join(f"{label}: {exc}" for label, exc in failures)
+            raise StorageError(
+                f"Cache '{self.cache_name}', entry '{key}': "
+                f"delete failed on {details}.",
+                tiers=[label for label, _ in failures],
+            )
+
+
+def _tier_delete_error(tier, key):
+    """The exception of one tier's delete, or None. Every tier must run
+    before the aggregate raises (see ComposedStorage.delete)."""
+    try:
+        tier.delete(key)
+    except Exception as exc:
+        return exc
+    return None
 
 
 def compose(*storage_classes):

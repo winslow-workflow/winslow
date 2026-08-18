@@ -18,7 +18,7 @@ def test_builtin_discovery_registers_and_orders(make_registry, plugins_package):
     # priority 3 (beta) sorts before priority 5 (alpha)
     assert _names(reg.for_slot(Slots.TASK_OVERVIEW)) == ["beta", "alpha"]
     # two plugins in the slot -> the slot renders tabbed
-    assert reg.any_tabbed(Slots.TASK_OVERVIEW) is True
+    assert reg.any_tabbed(None, Slots.TASK_OVERVIEW) is True
 
 
 def test_installed_discovery_registers(make_registry, install_entrypoint):

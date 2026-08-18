@@ -2,32 +2,71 @@ import re
 import time
 import inspect
 import threading
+import traceback
 
+from enum import StrEnum
 from functools import cached_property
 
 import networkx as nx
 
-from winslow.exceptions import CacheReentrancyError, MisconfigurationError
+from winslow.exceptions import (
+    CacheReentrancyError,
+    MisconfigurationError,
+    StorageError,
+)
 from winslow.logger import LOGGER
 from winslow.util import camel_to_snake, to_tuple
+from winslow.cache.inspection import (
+    CacheEntryError,
+    CacheEntryInfo,
+    EntryState,
+    ErrorOrigin,
+)
+from winslow.cache.listener import CacheListener
 from winslow.cache.log import cache_logger, emit_lazy_error
 from winslow.cache.storage import MemoryStorage, MISSING, StorageRecord
 
 
 # The name of a cache is an attribute on a container, so it must be a valid
 # Python identifier: stricter than _NAME_PATTERN, which allows a dash.
-_CACHE_NAME_PATTERN = re.compile(r"[a-z_][a-z0-9_]*\Z")
+_CACHE_NAME_PATTERN = re.compile(r"[a-z][a-z0-9_]*\Z")
+
+
+# The scope labels, declared as `scope` on the two cache bases.
+GLOBAL_SCOPE = "global"
+WORKFLOW_SCOPE = "workflow"
+
+# A peek waits this long for a field lock. A warm read or a drop holds a lock
+# for microseconds; only a loader and its write hold one longer.
+_PEEK_GRACE_SECONDS = 0.1
+
+
+class DisplayStyle(StrEnum):
+    """The rendering strategy of an entry value in a value view. A callable
+    on display_style is a custom strategy: it takes the value and returns a
+    string."""
+
+    RAW = "raw"
+    TREE = "tree"
 
 
 class Entry:
     """One cached field of a cache class, declared with @entry. A descriptor
     in the style of TransientProperty (see BaseCache._entry_value)."""
 
-    def __init__(self, func, eager=False, depends_on=(), ttl=None):
+    def __init__(
+        self,
+        func,
+        eager=False,
+        depends_on=None,
+        ttl=None,
+        display_style=DisplayStyle.RAW,
+    ):
         self.func = func
         self.eager = eager
         self.depends_on = to_tuple(depends_on) if depends_on else ()
         self.ttl = ttl
+        self.display_style = display_style
         self.__doc__ = func.__doc__
 
     def __set_name__(self, owner, name):
@@ -51,11 +90,18 @@ class Entry:
         return time.time() - record.written_at >= self.ttl
 
 
-def entry(func=None, *, eager=False, depends_on=(), ttl=None):
+def entry(
+    func=None, *, eager=False, depends_on=None, ttl=None, display_style=DisplayStyle.RAW
+):
     """Declare a cached field: cached_property plus a lock (see docs/caching.md).
     Treat every value as immutable: a fresh value comes from a recomputation."""
     if func is not None:
-        if eager or depends_on or ttl is not None:
+        if (
+            eager
+            or depends_on
+            or ttl is not None
+            or display_style is not DisplayStyle.RAW
+        ):
             raise MisconfigurationError(
                 "entry(func, ...) drops the options - decorate with "
                 "@entry(eager=..., depends_on=..., ttl=...) so they apply."
@@ -63,7 +109,9 @@ def entry(func=None, *, eager=False, depends_on=(), ttl=None):
         return Entry(func)
 
     def wrap(f):
-        return Entry(f, eager=eager, depends_on=depends_on, ttl=ttl)
+        return Entry(
+            f, eager=eager, depends_on=depends_on, ttl=ttl, display_style=display_style
+        )
 
     return wrap
 
@@ -95,6 +143,13 @@ def eager_fields(klass):
     return list(nx.lexicographical_topological_sort(_dependency_graph(eager)))
 
 
+def _trigger_label(trigger):
+    """The action label of one invalidation, for the log line and the event."""
+    if trigger is None:
+        return "invalidate_all()"
+    return f"invalidate({', '.join(repr(n) for n in trigger)})"
+
+
 class BaseCache:
     """The base of the declarative caches: the registries discover the
     concrete subclasses and validate them at collection (see docs/caching.md)."""
@@ -105,9 +160,16 @@ class BaseCache:
     # The attribute name on the container (see get_name).
     name = None
 
+    # The scope label of the cache. The scope bases declare it.
+    scope = None
+
     # The backend for the values of one instance, in line with graph_class and
     # registry_class on Workflow.
     storage_class = MemoryStorage
+
+    # The byte cap of one rendered read in history. None resolves to the
+    # WINSLOW_CACHE_SNAPSHOT_SIZE_BYTES setting; 0 records a summary only.
+    snapshot_size_bytes = None
 
     def __init__(self):
         self._entries = declared_entries(type(self))
@@ -118,6 +180,20 @@ class BaseCache:
         # The fields a thread is computing right now, per thread. _entry_value
         # reads it to turn an undeclared read cycle into a loud error.
         self._reading = threading.local()
+        # The error context per entry (see CacheEntryError). Mutated under the
+        # entry's field lock; a successful write of the entry clears it.
+        self._errors = {}
+        # The container attaches itself after the construction. A cache built
+        # outside a container keeps None and emits into the void.
+        self._container = None
+
+    def _attach_container(self, container):
+        self._container = container
+
+    def _emit(self, event, *args):
+        """Send one listener event through the container (see CacheListener)."""
+        if self._container is not None:
+            self._container._emit(event, *args)
 
     def __str__(self):
         return self.get_name()
@@ -131,7 +207,7 @@ class BaseCache:
             )
         if not _CACHE_NAME_PATTERN.match(name):
             raise MisconfigurationError(
-                f"Invalid cache name '{name}' for {cls}: must match [a-z_][a-z0-9_]*, "
+                f"Invalid cache name '{name}' for {cls}: must match [a-z][a-z0-9_]*, "
                 f"because the name is an attribute on the cache container."
             )
         return name
@@ -142,6 +218,97 @@ class BaseCache:
         ambient context - never stored, because a GlobalCache outlives every
         session (see cache_logger)."""
         return cache_logger()
+
+    def peek(self, name):
+        """Return the storage record of the entry, MISSING, or
+        EntryState.COMPUTING. No computation, no tier promotion, and a bounded
+        wait: a running loader cannot stall an observer."""
+        if name not in self._entries:
+            raise AttributeError(
+                f"Cache '{self}' has no entry {name!r} - "
+                f"known entries: {sorted(self._entries)}"
+            )
+        if self._locks[name].acquire(timeout=_PEEK_GRACE_SECONDS):
+            try:
+                return self._storage.peek(name)
+            finally:
+                self._locks[name].release()
+        # The grace absorbs every brief hold: only a loader holds a lock
+        # longer (see _PEEK_GRACE_SECONDS).
+        return EntryState.COMPUTING
+
+    def _set_error(self, name, origin, tier, message):
+        """Record the error context of the entry and report it. The caller
+        runs inside an except block, so the traceback formats here. The next
+        successful write of the entry clears the context."""
+        error = CacheEntryError(
+            origin=origin,
+            tier=tier,
+            message=message,
+            at=time.time(),
+            traceback=traceback.format_exc(),
+        )
+        self._errors[name] = error
+        self._emit(
+            CacheListener.on_entry_error, self.scope, self.get_name(), name, error
+        )
+
+    def describe_storage(self):
+        """The human label of the storage of this cache. It reads no entry
+        and takes no lock (see BaseStorage.describe)."""
+        return self._storage.describe()
+
+    def _failing_tier(self, exc):
+        """The storage layer reference for a failed drop's error context."""
+        if isinstance(exc, StorageError) and exc.tiers:
+            return ", ".join(exc.tiers)
+        return self.describe_storage()
+
+    def inspect(self):
+        """Return one CacheEntryInfo per declared entry. The values stay out;
+        a detail view fetches one on demand with peek."""
+        return tuple(self._entry_info(name, self.peek(name)) for name in self._entries)
+
+    def _entry_info(self, name, record):
+        """Build the projection from a record the caller peeked. No lock: an
+        emission caller holds the field lock, and the inspect path accepts a
+        record and an error context from different instants."""
+        entry = self._entries[name]
+        error = self._errors.get(name)
+        state = self._entry_state(entry, record, error)
+        return CacheEntryInfo(
+            scope=self.scope,
+            cache_name=self.get_name(),
+            entry_name=name,
+            state=state,
+            # An ERRORED entry keeps its raw record observable: the UI shows
+            # the quarantined value next to the error context.
+            written_at=record.written_at if isinstance(record, StorageRecord) else None,
+            ttl=entry.ttl,
+            eager=entry.eager,
+            depends_on=entry.depends_on,
+            storage=self.describe_storage(),
+            # Only an ERRORED entry carries its context: a healthy state next
+            # to an error would contradict itself.
+            error=error if state is EntryState.ERRORED else None,
+        )
+
+    @classmethod
+    def _entry_state(cls, entry, record, error):
+        """The freshness of one entry. One classifier serves the projection
+        and the serve decision, so the two cannot diverge (see _entry_value)."""
+        if record is EntryState.COMPUTING:
+            return EntryState.COMPUTING
+        # A record left behind by a failed drop is untrusted: it must not
+        # serve, the same way an expired record must not.
+        distrusted = error is not None and error.origin is ErrorOrigin.DELETE
+        if record is not MISSING and not distrusted and not entry.is_expired(record):
+            return EntryState.WARM
+        if error is not None:
+            return EntryState.ERRORED
+        if record is MISSING:
+            return EntryState.COLD
+        return EntryState.STALE
 
     def _storage_namespace(self):
         """The key prefix that separates the scopes and the workflows in a
@@ -164,10 +331,14 @@ class BaseCache:
             )
         with self._locks[name]:
             record = self._storage.read(name)
-            if record is not MISSING:
-                if not entry.is_expired(record):
-                    return record.value
-                cache_logger().info(
+            error = self._errors.get(name)
+            state = self._entry_state(entry, record, error)
+            if state is EntryState.WARM:
+                # The serve proves the value: a load mark cannot survive it.
+                self._errors.pop(name, None)
+                return record.value
+            if state is EntryState.STALE:
+                self.logger.info(
                     f"Cache '{self}': entry '{name}' went stale "
                     f"(age {time.time() - record.written_at:.1f}s, ttl {entry.ttl}s) - recomputing."
                 )
@@ -177,7 +348,14 @@ class BaseCache:
             except Exception as exc:
                 # Only the outermost frame emits: a nested read raises again
                 # through its caller, and each error reaches the backends once.
+                # The quarantine comes first: a raising log handler or
+                # telemetry backend must not leave the entry unmarked.
                 if not chain:
+                    self._set_error(name, ErrorOrigin.LOAD, None, str(exc))
+                    self.logger.error(
+                        f"Cache '{self}': the loader of '{name}' failed.",
+                        exc_info=True,
+                    )
                     emit_lazy_error(self, name, exc)
                 raise
             finally:
@@ -187,6 +365,14 @@ class BaseCache:
             stored = self._storage.write(
                 name, StorageRecord(value=value, written_at=time.time())
             )
+            # The write proves every writable tier holds the fresh value, so
+            # any error context of the entry is obsolete.
+            self._errors.pop(name, None)
+            # The container guard keeps a bare cache free of the projection
+            # cost; _emit would drop the event anyway.
+            if self._container is not None:
+                info = self._entry_info(name, stored)
+                self._emit(CacheListener.on_entry_computed, info, state)
             return stored.value
 
     def invalidate(self, *names):
@@ -205,16 +391,33 @@ class BaseCache:
         graph = _dependency_graph(self._entries)
         affected = set(names).union(*(nx.descendants(graph, n) for n in names))
         order = [n for n in nx.topological_sort(graph) if n in affected]
-        self._drop_entries(order, trigger=names)
+        self._emit_invalidated(self._drop_entries(order, trigger=names), names)
 
     def invalidate_all(self):
         """Drop every entry of the instance."""
+        self._emit_invalidated(self._drop_all(), None)
+
+    def _drop_all(self):
+        """Drop every entry and return the live drops, without an emission:
+        clear_all on the container aggregates the caches into one event."""
         order = list(nx.topological_sort(_dependency_graph(self._entries)))
-        self._drop_entries(order, trigger=None)
+        return self._drop_entries(order, trigger=None)
+
+    def _emit_invalidated(self, dropped, trigger):
+        # Live drops only, matching the log line. The event fires once per
+        # cascade, outside the field locks (see CacheListener).
+        if dropped:
+            self._emit(
+                CacheListener.on_entries_invalidated,
+                self.scope,
+                {self.get_name(): dropped},
+                _trigger_label(trigger),
+            )
 
     def _drop_entries(self, names, trigger):
         """Drop upstream first: the other order lets a reader recompute a
-        dependent from the stale upstream and keep it."""
+        dependent from the stale upstream and keep it. Returns the names that
+        held a live value."""
         chain = getattr(self._reading, "chain", ())
         if blocked := [name for name in names if name in chain]:
             # The thread holds the locks of its own chain, so the drop would
@@ -224,24 +427,36 @@ class BaseCache:
                 f"'{chain[-1]}' reaches {', '.join(repr(n) for n in blocked)}, "
                 f"which is computing on the same thread."
             )
-        dropped = [name for name in names if self._drop_entry(name)]
-        if not dropped:
-            return
-        label = (
-            f"invalidate({', '.join(repr(n) for n in trigger)})"
-            if trigger is not None
-            else "invalidate_all()"
-        )
-        cache_logger().info(
-            f"Cache '{self}': {label} dropped {', '.join(repr(n) for n in dropped)}."
-        )
+        dropped = tuple(name for name in names if self._drop_entry(name))
+        if dropped:
+            self.logger.info(
+                f"Cache '{self}': {_trigger_label(trigger)} dropped "
+                f"{', '.join(repr(n) for n in dropped)}."
+            )
+        return dropped
 
     def _drop_entry(self, name):
         """Drop one entry and report whether a live value was present. One lock
-        at a time: two held locks could deadlock against a nested computation."""
+        at a time: two held locks could deadlock against a nested computation.
+        A storage failure quarantines the entry instead of aborting the cascade."""
         with self._locks[name]:
-            record = self._storage.read(name)
-            self._storage.delete(name)
+            try:
+                record = self._storage.read(name)
+                self._storage.delete(name)
+            except Exception as exc:
+                # The quarantine comes first: a raising log handler must not
+                # leave the kept record servable.
+                self._set_error(
+                    name, ErrorOrigin.DELETE, self._failing_tier(exc), str(exc)
+                )
+                self.logger.error(
+                    f"Cache '{self}': the drop of '{name}' failed - the entry "
+                    f"is quarantined until a recompute overwrites it.",
+                    exc_info=True,
+                )
+                # Counted as a live drop: the quarantine guarantees that the
+                # kept record is never served.
+                return True
             return record is not MISSING and not self._entries[name].is_expired(record)
 
 
@@ -255,6 +470,8 @@ class GlobalCache(BaseCache):
     def __init__(self, orchestrator_config):
         super().__init__()
         self.orchestrator_config = orchestrator_config
+
+    scope = GLOBAL_SCOPE
 
     def _storage_namespace(self):
         return "global"
@@ -271,6 +488,8 @@ class WorkflowCache(BaseCache):
         # Before super(), which builds the storage from the namespace.
         self.workflow_config = workflow_config
         super().__init__()
+
+    scope = WORKFLOW_SCOPE
 
     def _storage_namespace(self):
         # The workflow stamps its identity (see Workflow.cache_namespace). The
@@ -354,6 +573,7 @@ def _validate_entry(label, name, e, entries, reserved):
         raise MisconfigurationError(
             f"{label}.{name}: ttl must be a positive number, got {e.ttl!r}."
         )
+    _validate_display_style(label, name, e.display_style)
     for dep in e.depends_on:
         if dep not in entries:
             raise MisconfigurationError(
@@ -368,6 +588,25 @@ def _validate_entry(label, name, e, entries, reserved):
                 f"so declare it eager."
             )
         _warn_ttl_mismatch(label, name, e, dep, entries[dep])
+
+
+def _validate_display_style(label, name, display_style):
+    """A DisplayStyle member, or a formatter that takes exactly the value."""
+    if isinstance(display_style, DisplayStyle):
+        return
+    if not callable(display_style):
+        raise MisconfigurationError(
+            f"{label}.{name}: display_style must be a DisplayStyle member or "
+            f"a callable that formats the value, got {display_style!r}."
+        )
+    parameters = list(inspect.signature(display_style).parameters.values())
+    if len(parameters) != 1 or any(
+        p.kind not in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD) for p in parameters
+    ):
+        raise MisconfigurationError(
+            f"{label}.{name}: a display_style formatter must take exactly the "
+            f"value as its one argument."
+        )
 
 
 def _validate_acyclic(label, entries):

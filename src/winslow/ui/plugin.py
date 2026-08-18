@@ -3,6 +3,7 @@ from dataclasses import dataclass
 
 from winslow.autodiscovery import Registerable, BaseRegistry
 from winslow.exceptions import PluginError
+from winslow.util import to_tuple
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +54,10 @@ class TaskDetailRenderContext(RenderContext):
     # level, which comes from the execution history. It is None for the plain
     # task-list view.
     transient_snapshots: dict | None = None
+    # The cache reads of this task, per phase, in one batch:
+    # {ExecutionPhase: tuple[CacheReadSnapshot]}. Same scoping rules as
+    # transient_snapshots.
+    cache_snapshots: dict | None = None
 
 
 @dataclass
@@ -85,6 +90,16 @@ class UIPlugin(Registerable):
     # plugin that must come before the built-in plugins.
     priority = 5
     replace = None
+    # The master plugins this detail plugin accompanies: when a tab of one of
+    # them activates, the screen brings this plugin's tab forward. A single
+    # class or a tuple (see UIPluginRegistry.companion).
+    detail_of = None
+
+    @classmethod
+    def should_render(cls, context):
+        """Return False to keep the plugin out of one screen composition, for
+        example when the project registers nothing the pane would show."""
+        return True
 
     def create_widget(self, context):
         raise NotImplementedError
@@ -156,8 +171,25 @@ class UIPluginRegistry(BaseRegistry):
     def for_slot(self, slot):
         return [p for p in self._plugins if p.slot is not None and p.slot.id == slot.id]
 
+    def companion(self, master_cls):
+        """The detail plugin whose detail_of names the master. The match is by
+        subclass, so a replacement plugin keeps the pairing of its target."""
+        return next(
+            (
+                plugin
+                for plugin in self._plugins
+                if plugin.detail_of
+                and any(issubclass(master_cls, m) for m in to_tuple(plugin.detail_of))
+            ),
+            None,
+        )
+
+    def rendered_for_slot(self, slot, context):
+        """The plugins of the slot that render for this composition."""
+        return [p for p in self.for_slot(slot) if p.should_render(context)]
+
     def compose_slot(self, slot, context, force_tabbed=False):
-        plugins = self.for_slot(slot)
+        plugins = self.rendered_for_slot(slot, context)
         if not plugins:
             return
         content_class = f"{slot.id}-content"
@@ -169,10 +201,13 @@ class UIPluginRegistry(BaseRegistry):
             else:
                 with TabbedContent():
                     for plugin_cls in plugins:
-                        with TabPane(plugin_cls.label):
+                        with TabPane(plugin_cls.label) as pane:
+                            # The stamp names the pane's plugin, so the screen
+                            # can pair master and detail tabs (see companion).
+                            pane.w_plugin = plugin_cls
                             w = plugin_cls().create_widget(context)
                             w.add_class(content_class)
                             yield w
 
-    def any_tabbed(self, *slots):
-        return any(len(self.for_slot(slot)) > 1 for slot in slots)
+    def any_tabbed(self, context, *slots):
+        return any(len(self.rendered_for_slot(slot, context)) > 1 for slot in slots)

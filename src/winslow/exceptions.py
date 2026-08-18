@@ -81,6 +81,15 @@ class DeserializationError(WinslowError):
     its own and serves a cold miss; a custom layer can let it propagate."""
 
 
+class StorageError(WinslowError):
+    """A storage operation failed on one or more tiers. `tiers` carries the
+    label of each failing tier (see ComposedStorage)."""
+
+    def __init__(self, message, tiers=None):
+        super().__init__(message)
+        self.tiers = tuple(tiers) if tiers else ()
+
+
 class IllegalTaskOutcomeError(WinslowError):
     """A task hook raised a TaskSignal that is not legal for the step that it ran
     in, for example skip outside eligibility. It is raised on the reraise_errors

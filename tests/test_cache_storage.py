@@ -1,4 +1,5 @@
 import json
+import logging
 import time
 
 from argparse import Namespace
@@ -6,8 +7,11 @@ from argparse import Namespace
 import pytest
 
 from winslow.cache import (
+    CACHE_LOGGER_NAME,
     BaseStorage,
     ComposedStorage,
+    EntryState,
+    ErrorOrigin,
     GlobalCache,
     JsonFileStorage,
     MemoryStorage,
@@ -16,7 +20,11 @@ from winslow.cache import (
     compose,
     entry,
 )
-from winslow.exceptions import MisconfigurationError, SerializationError
+from winslow.exceptions import (
+    MisconfigurationError,
+    SerializationError,
+    StorageError,
+)
 
 
 @pytest.fixture
@@ -137,13 +145,15 @@ def test_invalidate_clears_every_writable_tier(tmp_path, tmp_json_storage):
 
 
 def test_a_read_only_tier_is_skipped_by_write_and_delete():
-    class SourceStorage:
-        """A backoff source with no write and no delete: calling either would
-        raise AttributeError, so a skip is proven by the absence of an error."""
+    class SourceStorage(BaseStorage):
+        """A backoff source with only a read: calling write or delete would
+        raise NotImplementedError, so a skip is proven by the absence of an
+        error."""
 
         read_only = True
 
         def __init__(self, cache_name, namespace):
+            super().__init__(cache_name, namespace)
             self.reads = 0
 
         def read(self, key):
@@ -223,3 +233,79 @@ def test_file_storage_rejects_a_path_escaping_namespace(tmp_json_storage):
     # The two framework shapes pass.
     tmp_json_storage("stations", "global")
     tmp_json_storage("stations", "workflows/etl-eu-3f9a1c2b")
+
+
+class FailingStorage(MemoryStorage):
+    """A backend with a lost connection: every operation raises."""
+
+    def read(self, key):
+        raise ConnectionError("backend down")
+
+    def write(self, key, record):
+        raise ConnectionError("backend down")
+
+    def delete(self, key):
+        raise ConnectionError("backend down")
+
+
+class FailingDeleteStorage(MemoryStorage):
+    """A backend that stores and serves, but cannot delete."""
+
+    def delete(self, key):
+        raise ConnectionError("backend down")
+
+
+def test_a_failing_storage_is_loud():
+    """The read paths never contain a storage error: a read and a peek raise
+    the backend's own exception. A failing drop quarantines instead."""
+    cache = build_cache(FailingStorage, lambda: 1)
+    with pytest.raises(ConnectionError, match="backend down"):
+        cache.values
+    with pytest.raises(ConnectionError, match="backend down"):
+        cache.peek("values")
+    cache.invalidate("values")  # contained: the entry is quarantined
+    with pytest.raises(ConnectionError, match="backend down"):
+        cache.values  # the backend is still down, so the read stays loud
+
+
+def test_a_failed_drop_quarantines_and_a_recompute_heals(
+    tmp_path, tmp_json_storage, caplog
+):
+    loads = []
+    cache = build_cache(
+        compose(FailingDeleteStorage, tmp_json_storage), lambda: 7, loads
+    )
+    assert cache.values == 7
+    path = tmp_path / "workflows" / "wf-00000000" / "built" / "values.json"
+    assert path.exists()
+
+    with caplog.at_level(logging.ERROR, logger=CACHE_LOGGER_NAME):
+        cache.invalidate("values")
+
+    # The file tier deleted; the failing tier logged with the traceback.
+    assert not path.exists()
+    (record,) = [r for r in caplog.records if "the drop of 'values'" in r.message]
+    assert record.exc_info[0] is StorageError
+
+    # The kept record is quarantined, never served: it stays observable with
+    # its error context, and the next read recomputes.
+    (info,) = cache.inspect()
+    assert info.state is EntryState.ERRORED
+    assert info.error.origin is ErrorOrigin.DELETE
+    assert info.error.tier == "FailingDeleteStorage"
+    assert cache.peek("values").value == 7
+    assert cache.values == 7
+    assert loads == ["values", "values"]
+
+    # The write overwrote every writable tier: the entry healed.
+    (info,) = cache.inspect()
+    assert info.state is EntryState.WARM
+    assert info.error is None
+
+
+def test_a_failing_tier_read_propagates_from_compose():
+    """Compose adds no read containment: the first raising tier is loud, so a
+    healthy lower tier never papers over a broken upper one."""
+    cache = build_cache(compose(FailingStorage, MemoryStorage), lambda: 1)
+    with pytest.raises(ConnectionError, match="backend down"):
+        cache.values

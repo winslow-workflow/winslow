@@ -107,6 +107,9 @@ class ExecutionRecord:
     # ExecutionPhase -> {transient_property name: safe str | NOT_MATERIALIZED}.
     # Captured per phase while the task runs (see InteractiveRunner.task_scope).
     transient_snapshots: dict = field(default_factory=dict)
+    # ExecutionPhase -> tuple[CacheReadSnapshot]. A repeated phase overwrites,
+    # so the last occurrence wins, exactly like transient_snapshots.
+    cache_snapshots: dict = field(default_factory=dict)
 
     def __hash__(self):
         return hash(self.info.uuid)

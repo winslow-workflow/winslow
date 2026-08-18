@@ -3,6 +3,7 @@ import threading
 from contextlib import contextmanager, nullcontext
 
 from winslow.cache import peek_phase_cache
+from winslow.cache.recording import recording_cache_reads
 from winslow.decorators import snapshot_transients
 from winslow.exceptions import TaskBlock
 from winslow.logger import InteractiveLogHandler, INLINE_FORMATTER, get_task_dispatcher
@@ -148,8 +149,10 @@ class InteractiveRunner(HeadlessRunner):
 
     @contextmanager
     def task_scope(self, task, batch_uuid, phase):
+        recorder = None
         try:
             with (
+                recording_cache_reads(task) as recorder,
                 self._track(batch_uuid, task, phase),
                 super().task_scope(task, batch_uuid, phase) as ctx,
             ):
@@ -160,10 +163,13 @@ class InteractiveRunner(HeadlessRunner):
             # materialized.
             store = self.execution_record_store_map[batch_uuid]
             if task.uuid in store:
+                record = store.get_record(task.uuid)
                 if snapshot := snapshot_transients(
                     task, peek_phase_cache(task, batch_uuid)
                 ):
-                    store.get_record(task.uuid).transient_snapshots[phase] = snapshot
+                    record.transient_snapshots[phase] = snapshot
+                if recorder is not None and (snapshots := recorder.sweep()):
+                    record.cache_snapshots[phase] = snapshots
 
     def _stop_requested(self, batch_uuid):
         batch = self.execution_batches_map.get(batch_uuid)
