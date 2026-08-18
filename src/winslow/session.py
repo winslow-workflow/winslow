@@ -6,6 +6,7 @@ from enum import Enum
 from winslow.exceptions import SessionEndingError
 from winslow.logger import release_session_logging
 from winslow.telemetry import emit_unscoped_error
+from winslow.task.context import LogContext, scoped_log_context
 from winslow.task.info import release_session_caches
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.util import generate_id
@@ -42,6 +43,22 @@ class Session:
         # here. The runner reads the logging identity of this run through this
         # link (see runner.task_scope and ContextStampFilter).
         workflow._session = self
+
+    @contextmanager
+    def log_scope(self):
+        """Run a block under the log context of this session. An emission from
+        the block, for example a cache log, routes to the session logger and
+        carries the session labels (see cache_logger, ContextStampFilter)."""
+        context = LogContext(
+            session_id=self.session_id,
+            workflow_name=self.workflow.instance_name,
+            workflow_instance=str(self.workflow),
+            task_name=None,
+            task_instance=None,
+            batch_uuid=None,
+        )
+        with scoped_log_context(context):
+            yield
 
     def __str__(self):
         return self.session_id

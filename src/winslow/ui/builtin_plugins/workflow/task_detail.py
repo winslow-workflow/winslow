@@ -1,4 +1,5 @@
 from rich.syntax import Syntax
+from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
 from textual.widgets import (
@@ -11,14 +12,17 @@ from textual.widgets import (
     Tree,
 )
 
+from winslow.cache import SnapshotEncoding
 from winslow.decorators import NOT_MATERIALIZED
 from winslow.runner.execution import ExecutionPhase
+from winslow.ui.modals.cache_value import CacheValue
 from winslow.logger import (
     InteractiveLogHandler,
     INTERACTIVE_FORMATTER,
     get_task_dispatcher,
 )
 from winslow.task.info import _ambiguous_names, _location, _origin_label
+from winslow.util import safe_repr
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, TaskDetailRenderContext, Slots
 from winslow.ui.widgets.common.logs import LogView
@@ -68,6 +72,31 @@ class AttributeTable(DataTable):
         self.add_columns(*self._attr_columns)
         for row in self._attr_rows:
             self.add_row(*row)
+
+
+class CacheReadsTable(AttributeTable):
+    """The cache reads of a record. The selection of a JSON snapshot row opens
+    its stored value as a tree (see CacheValue.for_snapshot)."""
+
+    def __init__(self, columns, reads, *args, **kwargs):
+        # reads: (snapshot, row) pairs, in display order. The snapshots key
+        # off the row keys, so a future sort cannot open the wrong one.
+        self._reads = list(reads)
+        self._snapshots_by_key = {}
+        super().__init__(columns, [row for _, row in self._reads], *args, **kwargs)
+        self.show_cursor = True
+        self.cursor_type = "row"
+
+    def on_mount(self):
+        self.add_columns(*self._attr_columns)
+        for snapshot, row in self._reads:
+            self._snapshots_by_key[self.add_row(*row)] = snapshot
+
+    @on(DataTable.RowSelected)
+    def open_snapshot(self, event):
+        snapshot = self._snapshots_by_key[event.row_key]
+        if snapshot.encoding is SnapshotEncoding.JSON:
+            self.app.push_screen(CacheValue.for_snapshot(snapshot))
 
 
 def _walk_nodes(node):
@@ -153,10 +182,19 @@ class TaskDetailWidget(Widget):
 
     DEFAULT_CSS = _CSS
 
-    def __init__(self, info, logs=None, transient_snapshots=None, *args, **kwargs):
+    def __init__(
+        self,
+        info,
+        logs=None,
+        transient_snapshots=None,
+        cache_snapshots=None,
+        *args,
+        **kwargs,
+    ):
         self.w_info = info
         self._logs = logs
         self._transient_snapshots = transient_snapshots
+        self._cache_snapshots = cache_snapshots
         super().__init__(*args, **kwargs)
 
     def compose(self):
@@ -202,6 +240,14 @@ class TaskDetailWidget(Widget):
                                 "execution history to see their snapshots.",
                                 classes="attr-note",
                             )
+                    # The cache reads of this task, per phase, recorded by the
+                    # runner. Only a history modal carries them (see
+                    # ExecutionRecord.cache_snapshots).
+                    if cache_reads := self._cache_reads():
+                        yield Label("Cache Reads", classes="attr-section")
+                        yield CacheReadsTable(
+                            ("Entry", "Scope", "Phase", "Value"), cache_reads
+                        )
             # The Documentation tab is omitted if the capture holds no markdown
             # file. An empty tab is not shown.
             if info.docs:
@@ -214,6 +260,35 @@ class TaskDetailWidget(Widget):
                 with TabPane("Code"):
                     yield SourceView(info.source, root_dir)
 
+    def _cache_reads(self):
+        snapshots = self._cache_snapshots or {}
+        return [
+            (
+                snap,
+                (
+                    f"{snap.cache_name}.{snap.entry_name}",
+                    snap.scope,
+                    str(phase).replace("_", " "),
+                    self._cache_read_value(snap),
+                ),
+            )
+            for phase in ExecutionPhase
+            if phase in snapshots
+            for snap in snapshots[phase]
+        ]
+
+    @classmethod
+    def _cache_read_value(cls, snapshot):
+        # One line per cell (see safe_repr). The stored rendering stays full,
+        # for a later expanded view.
+        match (snapshot.summary, snapshot.rendered):
+            case (None, rendered):
+                return safe_repr(rendered)
+            case (summary, ""):
+                return summary
+            case (summary, rendered):
+                return f"{safe_repr(rendered)} ({summary})"
+
 
 class TaskDetailPlugin(UIPlugin):
     slot = Slots.TASK_DETAIL
@@ -224,4 +299,5 @@ class TaskDetailPlugin(UIPlugin):
             context.info,
             logs=context.logs,
             transient_snapshots=context.transient_snapshots,
+            cache_snapshots=context.cache_snapshots,
         )

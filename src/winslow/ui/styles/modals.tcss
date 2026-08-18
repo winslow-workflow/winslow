@@ -1,3 +1,29 @@
+BatchDetailModal .modal-content { width: 80; height: 60%; padding: 0 2 1 2; }
+BatchDetailModal TabbedContent { height: 1fr; }
+
+CacheValue .modal-content {
+    width: 80%;
+    height: 80%;
+    padding: 0 2 1 2;
+}
+
+CacheValue .value-view {
+    padding-left: 1;
+    overflow-x: auto;
+}
+
+CacheValue .value-view Static {
+    width: auto;
+    text-wrap: nowrap;
+}
+
+CacheValue .value-error {
+    color: $error;
+    margin-bottom: 1;
+}
+
+CacheValue Tree { height: 1fr; }
+
 ForceEndModal { align: center middle; }
 ForceEndModal .modal-content {
     width: 64; height: auto; max-height: 80%;

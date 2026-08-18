@@ -2,6 +2,22 @@ WorkflowScreen {
     .tasks-pane { width: 9fr; }
     .task-overview { width: 3fr; }
 
+    TaskInfoRow {
+        margin-left: 1;
+        margin-right: 1;
+
+        height: auto;
+
+        Vertical {
+            height: auto;
+        }
+
+        .attr-name {
+            color: $text-accent;
+            padding-bottom: 1;
+        }
+    }
+
     TaskInfo {
 
         TaskSummary {
@@ -11,22 +27,6 @@ WorkflowScreen {
 
             .task-attributes {
                 height: auto;
-            }
-
-            TaskInfoRow {
-                margin-left: 1;
-                margin-right: 1;
-
-                height: auto;
-
-                Vertical {
-                    height: auto;
-                }
-
-                .attr-name {
-                    color: $text-accent;
-                    padding-bottom: 1;
-                }
             }
 
             TaskTags {
@@ -60,6 +60,19 @@ WorkflowScreen {
                     width: 3;
                     margin-right: 1;
                 }
+            }
+        }
+    }
+
+    CacheOverview {
+
+        CacheSummary {
+            height: auto;
+            padding-top: 1;
+            padding-bottom: 1;
+
+            .cache-attributes {
+                height: auto;
             }
         }
     }

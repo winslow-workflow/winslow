@@ -1,0 +1,63 @@
+CachesPane {
+    layout: vertical;
+
+    #cache-header {
+        border: round $secondary-lighten-1;
+        padding: 0 1;
+
+        .search Input { margin-right: 7; }
+
+        #cache-scope {
+            width: 18;
+            margin-left: 1;
+        }
+
+        .actions {
+            width: 1fr;
+            align: right middle;
+
+            Button {
+                width: 9;
+                margin-left: 1;
+            }
+        }
+    }
+
+    #cache-cards {
+        height: 1fr;
+        border: round $secondary-lighten-1;
+    }
+}
+
+CacheCard {
+    height: auto;
+    border: round $primary-lighten-3;
+    margin: 1 1 0 1;
+    padding: 0 1 1 1;
+
+    CacheEntryRow { margin: 1 0 0 0; }
+}
+
+CacheEntryRow {
+    .row-content .name { width: 9fr; }
+    .status { color: $text-muted; }
+    .log    { color: $text-muted; }
+
+    .actions {
+        width: 1fr;
+        margin-right: 1;
+        align: right middle;
+
+        Button {
+            margin-left: 1;
+            min-width: 8;
+            width: 8;
+        }
+    }
+
+    &.warm .status         { color: $success; }
+    &.stale .status        { color: $warning; }
+    &.computing .status    { color: $primary-lighten-2; }
+    &.errored .status      { color: $error; }
+    &.unobservable .status { color: $error; }
+}

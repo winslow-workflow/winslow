@@ -3,11 +3,11 @@ import logging
 from contextlib import contextmanager
 from contextvars import ContextVar
 
-from winslow.logger import RUNS_LOGGER_NAME, TASK_LOGGER_NAME
+from winslow.logger import RUNS_LOGGER_NAME, TASK_LOGGER_NAME, run_logger_name
 
 
-# The producer for a cache emission outside every task scope. It propagates
-# to the winslow.runs sinks (see ContextStampFilter).
+# The producer for a cache emission outside every task and session scope. It
+# propagates to the winslow.runs sinks (see ContextStampFilter).
 CACHE_LOGGER_NAME = f"{RUNS_LOGGER_NAME}.cache"
 
 
@@ -27,6 +27,10 @@ def cache_logger():
         return logging.LoggerAdapter(
             logging.getLogger(TASK_LOGGER_NAME), {"task_id": ctx.task_uuid}
         )
+    if ctx is not None and ctx.session_id is not None:
+        # A session-scoped emission outside a task, for example a UI action or
+        # the eager population: the session logger feeds the session's sinks.
+        return logging.getLogger(run_logger_name(ctx.session_id))
     return logging.getLogger(CACHE_LOGGER_NAME)
 
 

@@ -17,6 +17,11 @@ TaskRowBase {
         opacity: 30%;
     }
 
+    &.selected {
+        opacity: 100%;
+        background: $secondary-darken-1;
+    }
+
     .row-content {
         padding-top: 1;
         padding-left: 1;

@@ -1,6 +1,8 @@
 import threading
 from typing import Type, Any
 
+from winslow.util import ListenerMixin
+
 
 class StoreListener:
     """Observer of the changes in a store. Subscribe with BaseStore.add_listener.
@@ -49,19 +51,12 @@ class StoreListener:
 _MISSING = object()
 
 
-class ReactiveDict(dict):
+class ReactiveDict(ListenerMixin, dict):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._lock = threading.RLock()
         self._settled = threading.Condition(self._lock)
-        self._listeners = []
-
-    def add_listener(self, listener: StoreListener) -> None:
-        self._listeners.append(listener)
-
-    @property
-    def listeners(self):
-        return tuple(self._listeners)
+        self._init_listeners()
 
     def callback(self, key, value):
         """Hook that runs after a write. A subclass overrides it, for example to
@@ -91,16 +86,13 @@ class ReactiveDict(dict):
             return self._settled.wait_for(predicate, timeout)
 
     def _emit_status(self, task, status) -> None:
-        for listener in self._listeners:
-            listener.on_task_status(task, status)
+        self._emit(StoreListener.on_task_status, task, status)
 
     def emit_batch_created(self, batch) -> None:
-        for listener in self._listeners:
-            listener.on_batch_created(batch)
+        self._emit(StoreListener.on_batch_created, batch)
 
     def emit_batch_completed(self, batch) -> None:
-        for listener in self._listeners:
-            listener.on_batch_completed(batch)
+        self._emit(StoreListener.on_batch_completed, batch)
 
 
 class StatusHistoryMixin:

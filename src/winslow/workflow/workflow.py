@@ -5,10 +5,10 @@ from argparse import ArgumentParser, Namespace
 
 from winslow._config import _ConfigBase
 from winslow.cache import (
+    WORKFLOW_SCOPE,
     CacheContainer,
     WorkflowCacheRegistry,
     initialize_global_cache,
-    populate_eager_entries,
     workflow_cache_context,
 )
 from winslow.filter import FilterRegistry
@@ -234,13 +234,12 @@ class Workflow(_ConfigBase):
         instances = {
             kls.get_name(): kls(self.workflow_config) for kls in registry.classes
         }
-        self._workflow_cache = CacheContainer(instances)
+        self._workflow_cache = CacheContainer(instances, scope=WORKFLOW_SCOPE)
         if self.orchestrator_config.clear_cache:
             # Before the population, so the eager loaders run fresh and a
             # persistent tier rewrites. A memory tier is cold anyway.
-            for cache in instances.values():
-                cache.invalidate_all()
-        populate_eager_entries(instances.values(), self.disable_concurrency)
+            self._workflow_cache.clear_all()
+        self._workflow_cache.populate_eager_entries(self.disable_concurrency)
 
     def initialize_tasks(self, logger=LOGGER):
         if self.graph is None:

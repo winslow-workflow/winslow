@@ -28,13 +28,15 @@ scopes:
 
 Declare each field with `@entry`. The bare form is lazy and behaves like `cached_property` plus a
 lock: the field computes on first access, once per instance, and two threads that hit it cold
-compute it once. The called form takes three options:
+compute it once. The called form takes four options:
 
 - `eager=True` populates the field at workflow initialization - `cities` and `codes` above (see
   [Prepopulate a cache](#prepopulate-a-cache)).
 - `depends_on="cities"` (a name or a tuple) declares that this field is computed from another.
   It gates validation and the [invalidation cascade](#cache-invalidation).
 - `ttl=300` expires the value 300 seconds after its computation; the next access recomputes.
+- `display_style=DisplayStyle.TREE` selects how the TUI renders the value (see
+  [User interface](#user-interface)).
 
 ## Prepopulate a cache
 
@@ -165,6 +167,49 @@ $ winslow run --mode headless --workflow weather --clear-cache
 
 In the TUI, the same option is available on the workflow start form, with the other orchestrator
 options: select it before starting the session.
+
+## User interface
+
+When the project declares at least one cache, the workflow screen gains a Caches tab, next to the
+task list. The tab shows one card per cache, across both scopes. Each card lists the declared
+entries, and each row shows the live entry state - `cold`, `warm`, `stale`, `computing`,
+`errored` - with a preview of the value:
+
+![The Caches tab, with one card per cache and the actions on each entry](images/winslow-cache.svg)
+
+Every row carries three actions:
+
+- **clear** invalidates the entry, together with its declared dependents (see
+  [Cache invalidation](#cache-invalidation)).
+- **load** runs the loader now. Use it after a clear to reload a value without waiting for the
+  next read.
+- **view** opens the full value in a modal, rendered per the entry's `display_style`.
+
+`display_style` is an `@entry` option with three forms. `RAW`, the default, pretty-prints the
+value. `TREE` renders a container as a tree that expands level by level, for a large value that a
+flat print would flood. A callable is a custom renderer: it takes the value and returns the string
+to show:
+
+```python
+from winslow.cache import DisplayStyle, WorkflowCache, entry
+
+
+class Forecast(WorkflowCache):
+    @entry  # RAW is the default
+    def conditions(self): ...
+
+    @entry(display_style=DisplayStyle.TREE)
+    def alerts(self): ...
+
+    @entry(display_style=lambda frame: frame.to_string())
+    def readings(self): ...
+```
+
+The header narrows the pane: search the entries by name, or select one scope. The bulk actions
+follow the narrowed view - `clear all` invalidates every cache with a visible entry, and
+`load all` loads every visible entry, in parallel like the
+[eager population](#prepopulate-a-cache). Select a card to see the cache details in the overview pane: its scope, storage layers and
+entries.
 
 ## Cache storage
 

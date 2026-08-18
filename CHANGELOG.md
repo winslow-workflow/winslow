@@ -6,6 +6,57 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [0.5.1] — 2026-08-17
+
+### Added
+
+- Cache observability (see `docs/caching.md`): `BaseCache.peek(name)` returns the storage record
+  of an entry, `MISSING`, or `EntryState.COMPUTING` — with a bounded wait, no computation and no
+  tier promotion — and `inspect()` returns one `CacheEntryInfo` projection per entry with its
+  state (`COLD`, `WARM`, `STALE`, `COMPUTING`, `ERRORED`), write time, ttl, dependencies and
+  storage label. `CacheListener` delivers the cache events (`on_entry_computed`,
+  `on_entries_invalidated`, the eager population brackets, `on_entry_error`); subscribe with
+  `CacheContainer.add_listener`. Containers also gained `caches()`, `clear_all()` and
+  `populate_all()`.
+- Error quarantine: a failed drop marks the entry ERRORED with a `CacheEntryError` (origin, tier,
+  message and the traceback, formatted at failure time), keeps the record observable and forces
+  the next read to recompute; the write then overwrites every writable tier and heals the entry.
+  Invalidation completes its cascade on a broken tier instead of aborting. A failed loader marks
+  the entry the same way, so the UI can tell a broken loader from a never-read entry.
+- History capture of cache reads: each task phase records the entries the task read, rendered and
+  bounded by `WINSLOW_CACHE_SNAPSHOT_SIZE_BYTES` (per-class override: `snapshot_size_bytes`). The
+  task detail popup shows them next to the attributes; a TREE-styled snapshot stores JSON and
+  opens as a tree from history.
+- `display_style` on `@entry`: `DisplayStyle.RAW` (the default, bounded pretty-print),
+  `DisplayStyle.TREE` (a lazily expanding tree) or a callable that formats the value. The
+  declaration drives the live value view and the history snapshot.
+- The Caches pane of the TUI: a Caches tab next to Tasks and History with one card per cache,
+  entry rows with live states and value previews, search with the shared preview-then-filter
+  flow, a scope filter, per-row view/load/clear and parallel load-all/clear-all. A cache detail
+  tab accompanies it, and a value modal renders per the display style — an ERRORED entry shows
+  its error context and stored traceback. Cache actions log through the session logger
+  (`Session.log_scope`), and a cache whose storage cannot be observed degrades visibly instead of
+  breaking the pane.
+- UI plugin framework: `UIPlugin.should_render(context)` keeps a plugin out of a composition
+  (the cache tabs hide in a project with no caches), and `detail_of` pairs a detail plugin with
+  its master tabs — the screen brings the companion tab forward on a switch.
+
+### Changed
+
+- A cache name must start with a letter: a leading underscore now fails at collection.
+- A cache name that matches a container member (`caches`, `inspect`, `clear_all`,
+  `populate_all`, `populate_eager_entries`, `add_listener`, `remove_listener`, `listeners`) now
+  fails at construction, and the entry names `peek`, `inspect`, `describe_storage`, `scope` and
+  `snapshot_size_bytes` are reserved.
+- `ComposedStorage.delete` attempts every writable tier, then raises one `StorageError` naming
+  the failing tiers; the cache layer catches it and quarantines the entry.
+- A storage backend must subclass `BaseStorage`, which carries the `peek`, `describe` and
+  `read_only` defaults of the contract.
+- A raising store or cache listener is logged with its traceback and skipped: an observer cannot
+  break the operation it observes.
+- The modal shell styles moved from the app stylesheet to `BaseModal.DEFAULT_CSS`, so a plugin
+  modal overrides the shell with its own `DEFAULT_CSS`.
+
 ## [0.5.0] — 2026-08-14
 
 ### Added

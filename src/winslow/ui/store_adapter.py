@@ -2,6 +2,7 @@ from functools import partial, wraps
 
 from textual.message import Message
 
+from winslow.cache import CacheListener
 from winslow.store import StoreListener
 
 
@@ -57,6 +58,40 @@ class TuiStoreAdapter(StoreListener):
     @on_ui_thread
     def on_log_appended(self, task_uuid, batch_uuid, line):
         self._screen.propagate_task_log(task_uuid, batch_uuid, line)
+
+
+class TuiCacheAdapter(CacheListener):
+    """Send the cache events to the Textual UI as one repaint trigger: the
+    pane re-peeks, so the payloads stay unused (see CacheUpdated). Remove the
+    adapter from both containers at session end."""
+
+    def __init__(self, app, screen_name):
+        self.app = app
+        self.screen_name = screen_name
+
+    @property
+    def _screen(self):
+        return self.app.get_screen(self.screen_name)
+
+    @on_ui_thread
+    def on_entry_computed(self, info, previous_state):
+        self._screen.propagate_cache_update()
+
+    @on_ui_thread
+    def on_entries_invalidated(self, scope, dropped, trigger):
+        self._screen.propagate_cache_update()
+
+    @on_ui_thread
+    def on_eager_population_started(self, scope, entries):
+        self._screen.propagate_cache_update()
+
+    @on_ui_thread
+    def on_eager_population_finished(self, scope, entries):
+        self._screen.propagate_cache_update()
+
+    @on_ui_thread
+    def on_entry_error(self, scope, cache_name, entry_name, error):
+        self._screen.propagate_cache_update()
 
 
 class SessionLifecycleEvent(Message):

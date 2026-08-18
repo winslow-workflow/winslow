@@ -55,8 +55,45 @@ def test_name_override_and_charset():
     class Dashed(WorkflowCache):
         name = "foo-bar"
 
-    with pytest.raises(MisconfigurationError, match=r"\[a-z_\]\[a-z0-9_\]\*"):
+    with pytest.raises(MisconfigurationError, match=r"\[a-z\]\[a-z0-9_\]\*"):
         Dashed.get_name()
+
+    # An underscore name would be reachable on the container but names a
+    # private-looking attribute; the pattern rejects it at collection.
+    class Underscored(WorkflowCache):
+        name = "_foo"
+
+    with pytest.raises(MisconfigurationError, match=r"\[a-z\]\[a-z0-9_\]\*"):
+        Underscored.get_name()
+
+
+def test_display_style_is_a_style_or_a_formatter():
+    from winslow.cache import DisplayStyle
+
+    class Styled(WorkflowCache):
+        @entry(display_style=DisplayStyle.TREE)
+        def shaped(self):
+            return {}
+
+        @entry(display_style=lambda value: str(value))
+        def formatted(self):
+            return {}
+
+    validate_cache_class(Styled)
+
+    class Wrong(WorkflowCache):
+        @entry(display_style="tree")
+        def value(self):
+            return {}
+
+    validate_error(Wrong, "DisplayStyle member")
+
+    class TwoArgs(WorkflowCache):
+        @entry(display_style=lambda value, extra: str(value))
+        def value(self):
+            return {}
+
+    validate_error(TwoArgs, "exactly the value")
 
 
 def test_loader_must_take_exactly_self():

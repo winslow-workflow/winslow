@@ -10,6 +10,7 @@ from winslow.ui import screens
 from winslow.ui.store_adapter import (
     SessionLifecycleAdapter,
     SessionLifecycleEvent,
+    TuiCacheAdapter,
     TuiStoreAdapter,
 )
 from winslow.session import Session
@@ -43,6 +44,9 @@ class Winslow(App):
         self.orchestrator = orchestrator  # necessary to generate the workflows
 
         self.session_store = {}
+        # The cache adapter per session id: the end of the session must detach
+        # it from the global container, which outlives every session.
+        self._cache_adapters = {}
 
         super().__init__()
 
@@ -169,6 +173,11 @@ class Winslow(App):
         workflow.store.add_listener(TuiStoreAdapter(self, session.screen_name))
         workflow.store.add_listener(SessionLifecycleAdapter(self, session))
 
+        cache_adapter = TuiCacheAdapter(self, session.screen_name)
+        workflow.workflow_cache.add_listener(cache_adapter)
+        workflow.global_cache.add_listener(cache_adapter)
+        self._cache_adapters[session.session_id] = cache_adapter
+
     @on(SessionLifecycleEvent)
     def handle_session_lifecycle_event(self, event):
         event.apply()
@@ -192,6 +201,12 @@ class Winslow(App):
         # the History tab can thus open the workflow screen, which is now
         # read-only.
         session.end()
+
+        # Detach the cache adapter: the global container outlives the session
+        # and would otherwise pin the dead adapter (see TuiCacheAdapter).
+        if adapter := self._cache_adapters.pop(session_id, None):
+            session.workflow.workflow_cache.remove_listener(adapter)
+            session.workflow.global_cache.remove_listener(adapter)
 
     @on(Button.Pressed, ".view-dashboard")
     async def view_dashboard(self):

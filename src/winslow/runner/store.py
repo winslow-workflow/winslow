@@ -1,4 +1,4 @@
-from winslow.store import BaseStore
+from winslow.store import BaseStore, StoreListener
 from winslow.logger import LOGGER
 
 from winslow.task.task import Task
@@ -63,9 +63,9 @@ class ExecutionRecordStore(InteractiveStore):
         return tuple(self._records.values())
 
     def _emit_status(self, task_uuid, status):
-        for listener in self._listeners:
-            listener.on_execution_status(task_uuid, status, self.batch_uuid)
+        self._emit(
+            StoreListener.on_execution_status, task_uuid, status, self.batch_uuid
+        )
 
     def emit_log_appended(self, task_uuid, line):
-        for listener in self._listeners:
-            listener.on_log_appended(task_uuid, self.batch_uuid, line)
+        self._emit(StoreListener.on_log_appended, task_uuid, self.batch_uuid, line)

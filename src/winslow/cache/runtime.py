@@ -5,7 +5,7 @@ from contextvars import ContextVar
 
 from winslow.exceptions import InitializationError
 from winslow.util import execute_in_threads
-from winslow.cache.base import eager_fields
+from winslow.cache.base import GLOBAL_SCOPE, eager_fields
 from winslow.cache.container import CacheContainer
 from winslow.cache.log import eager_population_scope
 
@@ -37,7 +37,8 @@ def initialize_global_cache(
         if _global_container is None:
             classes = _global_registry.classes if _global_registry else ()
             _global_container = CacheContainer(
-                {kls.get_name(): kls(orchestrator_config) for kls in classes}
+                {kls.get_name(): kls(orchestrator_config) for kls in classes},
+                scope=GLOBAL_SCOPE,
             )
         container = _global_container
     with _populate_lock:
@@ -45,12 +46,9 @@ def initialize_global_cache(
         # is no longer the global one must not populate or mark the flag.
         if _global_container is container:
             if clear:
-                for cache in container._instances.values():
-                    cache.invalidate_all()
+                container.clear_all()
             if clear or not _global_populated:
-                populate_eager_entries(
-                    container._instances.values(), disable_concurrency
-                )
+                container.populate_eager_entries(disable_concurrency)
                 _global_populated = True
     return container
 
@@ -101,13 +99,16 @@ def workflow_cache_context(container):
         _workflow_container.reset(token)
 
 
-def populate_eager_entries(caches, disable_concurrency=False):
+def populate_eager_entries(caches, disable_concurrency=False, entry_loader=None):
     """Touch every eager field from one flat pool. No ordering machinery: a
-    dependent's loader blocks on the field lock of the entry it reads."""
+    dependent's loader blocks on the field lock of the entry it reads.
+    `entry_loader` sets the per-entry failure policy; the default aborts."""
     jobs = [(cache, name) for cache in caches for name in eager_fields(type(cache))]
     # disable_concurrency serializes the pool, as it does for tasks.
     execute_in_threads(
-        _populate_entry, jobs, max_workers=1 if disable_concurrency else None
+        entry_loader or _populate_entry,
+        jobs,
+        max_workers=1 if disable_concurrency else None,
     )
 
 

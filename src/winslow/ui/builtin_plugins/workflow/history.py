@@ -5,7 +5,6 @@ from textual import on
 from textual.app import ComposeResult
 from textual.message import Message
 from textual.reactive import reactive
-from textual.timer import Timer
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, Label, TabbedContent, TabPane
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -17,7 +16,7 @@ from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPanePlugin
-from winslow.ui.filtering import apply_filter_highlight, clear_filter_highlight
+from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.formatting import format_status_summary
 from winslow.ui.modals import TaskDetail
 from winslow.ui.modals.common import BaseModal
@@ -33,8 +32,6 @@ from winslow.ui.workflow_events import (
 )
 
 _CSS = package_css(__package__, "_pane_header.tcss", "history.tcss")
-
-RECORD_SEARCH_PREVIEW_DELAY = 0.5
 
 
 def _foreign_filter_names(filters):
@@ -114,6 +111,7 @@ class RecordRow(TaskRowBase):
                 registry=self.screen.plugin_registry,
                 logs=record.logs,
                 transient_snapshots=record.transient_snapshots,
+                cache_snapshots=record.cache_snapshots,
             )
         )
 
@@ -200,14 +198,14 @@ class BatchCard(Widget):
         self.query_one(".stop-btn", Button).disabled = True
 
 
-class HistoryPane(Widget):
+class HistoryPane(SearchFlowMixin, Widget):
     DEFAULT_CSS = _CSS
 
     def __init__(self, workflow, *args, **kwargs):
         self.workflow = workflow
         self._rows: dict[tuple, RecordRow] = {}
         self._cards: dict[str, BatchCard] = {}
-        self._search_timer: Timer | None = None
+        self._init_search()
         self._filter_matching: set | None = None
         self._hide_completed = False
         super().__init__(*args, **kwargs)
@@ -232,18 +230,13 @@ class HistoryPane(Widget):
             return set()
         return set(parsed.apply(infos))
 
-    def _clear_preview(self):
-        clear_filter_highlight(self.query(RecordRow).results())
+    def search_rows(self):
+        return self.query(RecordRow).results()
 
-    def _apply_preview(self, query: str):
-        if not query:
-            self._clear_preview()
-            return
-        apply_filter_highlight(
-            self.query(RecordRow).results(), self._matching_tasks(query, warn=False)
-        )
+    def search_matches(self, query):
+        return self._matching_tasks(query, warn=False)
 
-    def _apply_filter(self, query: str):
+    def apply_search(self, query):
         self._filter_matching = self._matching_tasks(query) if query else None
         self._apply_visibility()
 
@@ -267,22 +260,11 @@ class HistoryPane(Widget):
 
     @on(Input.Changed, "#record-search")
     def handle_search_changed(self, event):
-        if self._search_timer is not None:
-            self._search_timer.stop()
-        query = event.value.strip()
-        if not query:
-            self._clear_preview()
-            return
-        self._search_timer = self.set_timer(
-            RECORD_SEARCH_PREVIEW_DELAY, lambda: self._apply_preview(query)
-        )
+        self.preview_search(event.value)
 
     @on(Input.Submitted, "#record-search")
     def handle_search_submitted(self, event):
-        if self._search_timer is not None:
-            self._search_timer.stop()
-        self._clear_preview()
-        self._apply_filter(event.value.strip())
+        self.submit_search(event.value)
 
     @on(Checkbox.Changed, "#hide-completed")
     def handle_hide_completed(self, event):

@@ -20,3 +20,9 @@ EXECUTION_RECORD_LOG_BUFFER_SIZE = config(
     default=_DEFAULT_LOG_BUFFER_SIZE,
     cast=int,
 )
+
+# The byte cap of one rendered cache read in history. A cache class overrides
+# it with snapshot_size_bytes (see BaseCache).
+CACHE_SNAPSHOT_SIZE_BYTES = config(
+    "WINSLOW_CACHE_SNAPSHOT_SIZE_BYTES", default=32 * 1024, cast=int
+)
