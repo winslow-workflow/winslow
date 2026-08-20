@@ -10,4 +10,4 @@ class TaskOverviewPlugin(UIPlugin):
     detail_of = (TasksPanePlugin, HistoryPlugin)
 
     def create_widget(self, context: RenderContext):
-        return TaskInfo(store=context.workflow.store)
+        return TaskInfo(statuses=context.task_statuses)

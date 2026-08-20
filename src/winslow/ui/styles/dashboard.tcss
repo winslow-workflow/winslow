@@ -98,6 +98,33 @@ DashboardScreen {
                 }
             }
         }
+
+        RestorableRow {
+            height: 4;
+            border: round $warning;
+
+            .row-content {
+                width: 100%;
+                height: 100%;
+                padding-top: 1;
+
+                .session-id {
+                    width: 1fr;
+                    padding-left: 2;
+                    color: $text-muted;
+                }
+
+                .actions {
+                    align: right middle;
+                    padding-right: 1;
+                    width: auto;
+                }
+            }
+        }
+
+        #restore-all {
+            margin: 0 1;
+        }
     }
 
     #workflow-selector {

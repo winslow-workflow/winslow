@@ -90,6 +90,10 @@ class Task(_ParameterizationBase):
     can_run_parallel = True
     can_check_parallel = True
 
+    # The check TTL of this task, in seconds. It overrides the check_ttl of
+    # the workflow; None defers to that default (see Workflow.check_ttl).
+    check_ttl = None
+
     # Composable constraints: the Constraint classes that gate the matching
     # hook (see winslow.constraints). A single class or a collection. None
     # means that no constraint is declared. Declare these constraints or
@@ -146,24 +150,17 @@ class Task(_ParameterizationBase):
         self._index = None
         self._dependent_tasks = None
         self._priority = None
-        self._workflow_name = None
 
         # The workflow stamps these at graph build (see
         # Workflow.initialize_tasks).
         self._workflow_cache_container = None
         self._global_cache_container = None
+        self._run_nonce = None
 
         # True after run() of this instance started at least once, in any batch
         # of this workflow. dry_run does not set it. The completion check uses
         # it to separate COMPLETED from COMPLETED_PREVIOUSLY.
         self._has_been_run = False
-
-        # All tasks share one logger. The adapter stamps the task uuid onto
-        # each record, so the dispatcher and a log view route by the uuid
-        # alone. Records propagate to the winslow.runs sink.
-        self.logger = logging.LoggerAdapter(
-            logging.getLogger(TASK_LOGGER_NAME), {"task_id": self.uuid}
-        )
 
         self._log_buffer = None
 
@@ -179,8 +176,25 @@ class Task(_ParameterizationBase):
         therefore frees its buffer, and a task that history retains keeps it."""
         self._log_buffer = collections.deque(maxlen=TASK_LOG_BUFFER_SIZE)
         dispatcher = get_task_dispatcher()
-        dispatcher.register_buffer(self.uuid, self._log_buffer)
-        weakref.finalize(self, dispatcher.unregister, self.uuid)
+        dispatcher.register_buffer(self.log_key, self._log_buffer)
+        weakref.finalize(self, dispatcher.unregister, self.log_key)
+
+    @cached_property
+    def logger(self):
+        """All tasks share one logger. The adapter stamps log_key onto each
+        record, so the dispatcher and a log view route by that key. The
+        property is lazy: only a task that logs pays the key derivation."""
+        return logging.LoggerAdapter(
+            logging.getLogger(TASK_LOGGER_NAME), {"task_id": self.log_key}
+        )
+
+    @cached_property
+    def log_key(self):
+        """The process-local log routing key. The run nonce of the workflow
+        separates two concurrent runs, so the log dispatcher does not mix
+        their records. Session-durable structures use identity_key alone."""
+        nonce = self._run_nonce
+        return f"{nonce}:{self.identity_key}" if nonce else self.identity_key
 
     @property
     def buffered_logs(self):

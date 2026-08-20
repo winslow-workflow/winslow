@@ -467,10 +467,10 @@ def test_cache_logger_resolves_from_the_ambient_context():
         task_name="t",
         task_instance="t",
         batch_uuid="b-1",
-        task_uuid="task-uuid-1",
+        task_key="nonce-1:task-abc12345",
     )
     with scoped_log_context(context):
         inside = cache.logger
     assert isinstance(inside, logging.LoggerAdapter)
     assert inside.logger.name == TASK_LOGGER_NAME
-    assert inside.extra == {"task_id": "task-uuid-1"}
+    assert inside.extra == {"task_id": "nonce-1:task-abc12345"}

@@ -35,7 +35,6 @@ from winslow.ui.builtin_plugins.workflow.cache_overview import CacheOverviewPlug
 from winslow.ui.builtin_plugins.workflow.task_overview import TaskOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_list import TaskRow, TaskButton
 from winslow.exceptions import SessionEndingError
-from winslow.task.info import TaskInfo
 from winslow.task.status import TaskStatus, PASSING_STATUSES
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 
@@ -72,8 +71,13 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         self.session = session
         self.workflow = session.workflow
         self._init_search()
-        self._filter_matching = None  # tasks matched by the search filter (None = all)
+        self._filter_matching = None  # keys matched by the search filter (None = all)
         self._asyncio_tasks: set[asyncio.Task] = set()
+        # The statuses-by-key mirror of the live store, read by the DTO-driven
+        # panes (see WorkflowRenderContext.task_statuses).
+        self.statuses_by_key = {
+            task.identity_key: status for task, status in self.workflow.store.items()
+        }
 
         super().__init__()
 
@@ -99,11 +103,14 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
 
     @property
     def task_rows(self):
-        return {row.w_task: row for row in self.query(TaskRow).results()}
+        return {row.key: row for row in self.query(TaskRow).results()}
+
+    def _resolve_task(self, key):
+        return self.workflow.task_index.resolve(key)
 
     async def on_mount(self):
         for task, status in self.workflow.store.items():
-            self.propagate_task_status(task, status)
+            self.propagate_task_status(task.identity_key, status)
 
     async def on_screen_resume(self):
         # A session that ended is read-only history. Remove the live Tasks and
@@ -140,7 +147,9 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     def compose(self):
         yield Header()
 
-        context = WorkflowRenderContext(workflow=self.workflow)
+        context = WorkflowRenderContext(
+            workflow=self.workflow, task_statuses=self.statuses_by_key
+        )
         yield from self._compose_slots(
             "top-pane", (Slots.TASKS_PANE, Slots.TASK_OVERVIEW), context
         )
@@ -158,10 +167,11 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     def handle_store_event(self, event):
         event.apply()
 
-    def propagate_task_status(self, task, status):
-        self.logger.debug(f"Propagate task status: {task} - {status}")
+    def propagate_task_status(self, key, status):
+        self.logger.debug(f"Propagate task status: {key} - {status}")
+        self.statuses_by_key[key] = status
         for slot in (Slots.TASKS_PANE, Slots.TASK_OVERVIEW):
-            self._dispatch_to_slot(slot, TaskStatusChanged(task, status))
+            self._dispatch_to_slot(slot, TaskStatusChanged(key, status))
 
     def propagate_batch_created(self, batch):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCreated(batch))
@@ -169,18 +179,18 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     def propagate_batch_completed(self, batch):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(batch))
 
-    def propagate_task_log(self, task_uuid, batch_uuid, line):
+    def propagate_task_log(self, task_key, batch_uuid, line):
         batch = self.runner.execution_batches_map.get(batch_uuid)
         if batch:
             self._dispatch_to_slot(
-                Slots.TASKS_PANE, TaskLogUpdated(batch, task_uuid, line)
+                Slots.TASKS_PANE, TaskLogUpdated(batch, task_key, line)
             )
 
-    def propagate_execution_status(self, task_uuid, status, batch_uuid):
+    def propagate_execution_status(self, task_key, status, batch_uuid):
         batch = self.runner.execution_batches_map.get(batch_uuid)
         if batch:
             self._dispatch_to_slot(
-                Slots.TASKS_PANE, ExecutionStatusChanged(batch, task_uuid, status)
+                Slots.TASKS_PANE, ExecutionStatusChanged(batch, task_key, status)
             )
 
     async def _select_row(self, task_row):
@@ -217,7 +227,12 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
             self.notify(SESSION_ENDING_MESSAGE, severity="warning")
 
     def _visible_tasks(self):
-        return [row.w_task for row in self.query(TaskRow).results() if row.display]
+        # The rows hold keys; the bulk actions need live tasks for the runner.
+        return [
+            self._resolve_task(row.key)
+            for row in self.query(TaskRow).results()
+            if row.display
+        ]
 
     @on(Checkbox.Changed, "#force-run")
     @on(Checkbox.Changed, "#force-success")
@@ -229,14 +244,16 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         setattr(
             self.workflow.batch_options, event.control.id.replace("-", "_"), event.value
         )
+        # A restore must rebuild the session with the toggles the user set.
+        self.workflow.record_batch_options()
 
     @refuse_if_ending
-    async def _handle_task_run(self, task):
-        self._submit_batch(self.runner.submit_run_single, task)
+    async def _handle_task_run(self, key):
+        self._submit_batch(self.runner.submit_run_single, self._resolve_task(key))
 
     @refuse_if_ending
-    async def _handle_task_check(self, task):
-        self._submit_batch(self.runner.submit_check_single, task)
+    async def _handle_task_check(self, key):
+        self._submit_batch(self.runner.submit_check_single, self._resolve_task(key))
 
     @refuse_if_ending
     async def _handle_bulk_action(self, verb, submit):
@@ -255,38 +272,42 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     async def _handle_bulk_check(self):
         await self._handle_bulk_action("Checking", self.runner.submit_check)
 
-    async def _handle_task_info(self, task):
+    @refuse_if_ending
+    async def _handle_task_info(self, key):
+        task = self._resolve_task(key)
         # The on-demand capture point: the user asked, so the getters evaluate.
-        info = TaskInfo.from_task(
-            task, evaluate=True, root_dir=self.app.orchestrator.directory
+        info = self.workflow.task_info(
+            task,
+            evaluate=True,
+            root_dir=self.app.orchestrator.directory,
         )
-        self.app.push_screen(TaskDetail(info, registry=self.plugin_registry))
+        # log_key travels beside the info: the routing key is process-local,
+        # and the TaskInfo value stays wire-portable.
+        self.app.push_screen(
+            TaskDetail(info, registry=self.plugin_registry, log_key=task.log_key)
+        )
 
     def search_rows(self):
         return self.query(TaskRow).results()
+
+    def _matching_keys(self, query):
+        """Run the filter on the live tasks and project the match set to
+        identity keys, the shape that the rows test."""
+        matched = self.workflow.filter_registry.parse(query).apply(self.workflow.tasks)
+        return {task.identity_key for task in matched}
 
     def search_matches(self, query):
         # None marks an unparseable query: the preview clears (see
         # SearchFlowMixin._preview_now).
         self._validate_filter_input(query)
         try:
-            return set(
-                self.workflow.filter_registry.parse(query).apply(self.workflow.tasks)
-            )
+            return self._matching_keys(query)
         except ValueError:
             return None
 
     def apply_search(self, query):
         try:
-            matching = (
-                None
-                if not query
-                else set(
-                    self.workflow.filter_registry.parse(query).apply(
-                        self.workflow.tasks
-                    )
-                )
-            )
+            matching = None if not query else self._matching_keys(query)
         except ValueError:
             return
         self._filter_matching = matching
@@ -318,10 +339,10 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     def handle_hide_toggle(self, event):
         self._apply_visibility()
 
-    def row_visible(self, task, status):
+    def row_visible(self, key, status):
         """A task row is shown if it passes the search filter and if the 'hide
         completed' and 'hide skipped' toggles do not hide it."""
-        if self._filter_matching is not None and task not in self._filter_matching:
+        if self._filter_matching is not None and key not in self._filter_matching:
             return False
         if (
             self.query_one("#hide-completed", Checkbox).value
@@ -337,7 +358,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
 
     def _apply_visibility(self):
         for row in self.query(TaskRow).results():
-            row.display = self.row_visible(row.w_task, row.status)
+            row.display = self.row_visible(row.search_key, row.status)
 
     def _fire(self, coro):
         task = asyncio.create_task(coro)
@@ -361,7 +382,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
 
     @on(TaskButton.TaskAction)
     async def handle_task_action(self, event):
-        await self._select_row(self.task_rows[event.w_task])
+        await self._select_row(self.task_rows[event.key])
 
         action_map = {
             TaskActionEnum.RUN: self._handle_task_run,
@@ -370,4 +391,4 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         }
 
         func = action_map[event.action]
-        self._fire(func(event.w_task))
+        self._fire(func(event.key))

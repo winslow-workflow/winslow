@@ -25,6 +25,9 @@ class ExecutionStatus(Enum):
     RUNNING = auto()
     FINISHED = auto()
     STOPPED = auto()
+    # The process died while the batch ran: a restore found the record open
+    # in the state store. Only a restore writes it, into history.
+    INTERRUPTED = auto()
 
     def __str__(self):
         return self.name.replace("_", " ")
@@ -112,12 +115,12 @@ class ExecutionRecord:
     cache_snapshots: dict = field(default_factory=dict)
 
     def __hash__(self):
-        return hash(self.info.uuid)
+        return hash(self.info.key)
 
     def __eq__(self, other):
         if not isinstance(other, ExecutionRecord):
             return NotImplemented
-        return self.info.uuid == other.info.uuid
+        return self.info.key == other.info.key
 
     @property
     def last_log(self) -> str:
@@ -151,7 +154,7 @@ class ExecutionRecord:
 
     def notify_display_log(self, line: str):
         if self.store:
-            self.store.emit_log_appended(self.info.uuid, line)
+            self.store.emit_log_appended(self.info.key, line)
 
 
 @dataclass
@@ -166,8 +169,8 @@ class ExecutionBatch:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     execution_context: Optional["TaskExecutionContext"] = None
-    # Task uuids, batch-scoped. The durable data stays in the TaskStatus
-    # values, which fill this set again each batch.
+    # Task identity keys, batch-scoped. The durable data stays in the
+    # TaskStatus values, which fill this set again each batch.
     errored: set = field(default_factory=set)
 
     def __post_init__(self):

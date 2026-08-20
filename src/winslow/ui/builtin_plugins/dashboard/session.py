@@ -17,6 +17,28 @@ class SessionEnded(Message):
         self.session = session
 
 
+class RestorableRow(Widget):
+    """One open manifest on the dashboard: the session that a dead process
+    left behind, with its restore action (see Winslow._restore_session)."""
+
+    def __init__(self, manifest, *args, **kwargs):
+        self.manifest = manifest
+        super().__init__(*args, **kwargs)
+
+    def on_mount(self):
+        self.border_title = self.manifest.workflow_class
+
+    def compose(self):
+        with Horizontal(classes="row-content"):
+            yield Label(self.manifest.session_id, classes="session-id")
+            with Horizontal(classes="actions"):
+                yield Button(
+                    "Restore",
+                    variant="primary",
+                    classes="compact small session-restore",
+                )
+
+
 class SessionRow(Widget):
     MAX_TITLE_LENGTH = 20
 

@@ -14,28 +14,25 @@ class TasksPaneWidget(Widget):
 
     def __init__(self, workflow, *args, **kwargs):
         self.workflow = workflow
-        self._row_map: dict = {}
-        self._rows_by_uuid: dict = {}
+        self._rows_by_key: dict = {}
         super().__init__(*args, **kwargs)
 
     def on_mount(self):
-        rows = list(self.query(TaskRow).results())
-        self._row_map = {row.w_task: row for row in rows}
-        # The execution events name a task by its uuid (see StoreListener), so
-        # the log routing needs this second key.
-        self._rows_by_uuid = {row.w_task.uuid: row for row in rows}
+        # One map serves both event kinds: every event names a task by its
+        # identity key (see StoreListener).
+        self._rows_by_key = {row.key: row for row in self.query(TaskRow).results()}
 
     @on(TaskStatusChanged)
     def on_task_status_changed(self, event):
-        if row := self._row_map.get(event.task):
+        if row := self._rows_by_key.get(event.key):
             row.status = event.status
             if event.status in PASSING_STATUSES:
                 row.log_line = ""
-            row.display = self.screen.row_visible(event.task, event.status)
+            row.display = self.screen.row_visible(event.key, event.status)
 
     @on(TaskLogUpdated)
     def on_task_log_updated(self, event):
-        if row := self._rows_by_uuid.get(event.task_uuid):
+        if row := self._rows_by_key.get(event.task_key):
             row.log_line = event.line
 
     def compose(self):

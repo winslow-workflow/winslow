@@ -47,6 +47,11 @@ class RegistrationError(WinslowError):
     pass
 
 
+class IdentityKeyCollisionError(WinslowError):
+    """Two live tasks resolve to one identity key (see TaskIndex). The key
+    digests the parameter reprs, so two parameter sets with one repr collide."""
+
+
 class PluginError(WinslowError):
     """A plugin or a filter is wrong: a clash of a command or a name, a replace
     that is not possible, or enable and disable lists that contradict each other.

@@ -5,10 +5,10 @@ from enum import Enum
 
 from winslow.exceptions import SessionEndingError
 from winslow.logger import release_session_logging
+from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.telemetry import emit_unscoped_error
 from winslow.task.context import LogContext, scoped_log_context
 from winslow.task.info import release_session_caches
-from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.util import generate_id
 
 
@@ -41,7 +41,8 @@ class Session:
         self._lifecycle_lock = threading.Lock()
         # The workflow exists before its session, so the session connects itself
         # here. The runner reads the logging identity of this run through this
-        # link (see runner.task_scope and ContextStampFilter).
+        # link (see runner.task_scope and ContextStampFilter). Persistence also
+        # attaches on the workflow, after this link (see Workflow.init_state).
         workflow._session = self
 
     @contextmanager
@@ -130,8 +131,8 @@ class Session:
                 self._finalize_end()
 
     def _finalize_end(self):
-        """Mark the session as ended and release the store. Call this only while
-        you hold the lifecycle lock. end and finalize_if_drained guarantee that
+        """Mark the session as ended and release the store. Call this only
+        under the lifecycle lock. end and finalize_if_drained guarantee that
         no batch runs and that no batch can be admitted."""
         if self.has_ended:
             return
@@ -144,6 +145,8 @@ class Session:
         self.workflow.release_tasks()
         release_session_caches()
         release_session_logging(self.session_id)
+        # An ended session is not a restore candidate.
+        self.workflow.archive_state()
 
     def mark_error(self, exc=None):
         """Mark the session as failed after an init error. This freezes its
@@ -152,6 +155,9 @@ class Session:
         self.status = SessionStatus.ERROR
         if self.ended_at is None:
             self.ended_at = time.time()
+        # An errored session never becomes usable, so it is not a restore
+        # candidate either.
+        self.workflow.archive_state()
         if exc is not None:
             emit_unscoped_error(
                 exc,

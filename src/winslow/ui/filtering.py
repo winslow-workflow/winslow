@@ -1,9 +1,10 @@
 """The shared search behavior of the row panes.
 
-Here a "row" is any widget with a `.w_task` attribute and the add_class and
-remove_class methods of Textual. The rule for the match and dim CSS classes is in
-one module, so the task list, the history pane and the caches pane stay the same.
-The style is thus in one place, and not copied at each call site.
+Here a "row" is any widget with a `.search_key` attribute (see TaskRowBase) and
+the add_class and remove_class methods of Textual. The rule for the match and dim
+CSS classes is in one module, so the task list, the history pane and the caches
+pane stay the same. The style is thus in one place, and not copied at each call
+site.
 """
 
 from functools import partial
@@ -21,7 +22,7 @@ def clear_filter_highlight(rows):
 
 def apply_filter_highlight(rows, matching):
     for row in rows:
-        if row.w_task in matching:
+        if row.search_key in matching:
             row.remove_class(FILTER_DIM_CLASS)
             row.add_class(FILTER_MATCH_CLASS)
         else:

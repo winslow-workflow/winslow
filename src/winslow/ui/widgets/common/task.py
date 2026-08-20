@@ -9,12 +9,8 @@ from .logs import InlineLog
 
 
 class TaskStatusWidget(Widget):
-    # task is optional: a dependency row has none, its status arrives by uuid.
+    # The status arrives by identity key (see TaskStatusChanged).
     status = reactive(TaskStatus.INITIALIZED)
-
-    def __init__(self, task=None, *args, **kwargs):
-        self.w_task = task
-        super().__init__(*args, **kwargs)
 
 
 class TaskStatusIcon(TaskStatusWidget):
@@ -25,6 +21,9 @@ class TaskStatusIcon(TaskStatusWidget):
 class TaskStatusLabel(TaskStatusWidget):
     def render(self):
         return f"{self.status}"
+
+    def watch_status(self, status):
+        self.set_class(status is TaskStatus.STALE, "stale")
 
 
 class TaskRowBase(Widget):
@@ -43,6 +42,12 @@ class TaskRowBase(Widget):
         # and of asyncio.
         self.w_task = task
         super().__init__(*args, **kwargs)
+
+    @property
+    def search_key(self):
+        # The value that the filter helpers match against (see filtering.py).
+        # The live task list overrides it with the identity key.
+        return self.w_task
 
     def watch_log_line(self, line):
         self.query_one(InlineLog).content = line

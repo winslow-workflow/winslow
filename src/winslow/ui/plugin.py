@@ -23,6 +23,9 @@ class RenderContext:
 @dataclass
 class WorkflowRenderContext(RenderContext):
     workflow: object
+    # {identity key: TaskStatus}, maintained by the screen. A DTO-driven pane
+    # reads its statuses here (see docs/ui-plugins.md).
+    task_statuses: dict = None
 
     @property
     def workflow_config(self):
@@ -49,6 +52,10 @@ class TaskDetailRenderContext(RenderContext):
     # plugin loudly on the missing attribute.
     info: object
     logs: list | None = None
+    # The process-local log routing key (see Task.log_key). The live Logs tab
+    # subscribes with it; a history view carries `logs` instead and leaves it
+    # None. It stays out of TaskInfo, which is wire-portable.
+    log_key: str | None = None
     # The transient_property snapshots of this task, per phase, in one batch:
     # {ExecutionPhase: {name: value}}. It is set only for a detail view at row
     # level, which comes from the execution history. It is None for the plain

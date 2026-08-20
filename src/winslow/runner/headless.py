@@ -26,12 +26,15 @@ class HeadlessRunner(BaseRunner):
             # re-check reaches tasks outside the batch with the uuid of this
             # batch.
             batch.errored = {
-                t.uuid
+                t.identity_key
                 for t, s in self.store.items()
                 if s in (TaskStatus.ERROR, TaskStatus.COMPLETED_WITH_ERROR)
             }
             self.execution_batches_map[batch.uuid] = batch
         batch.start()
+        # On the submitter thread, before any task work: a crash during the
+        # batch must leave the open record behind.
+        self._record_batch_open(batch, tasks)
         return batch, tasks
 
     def _execute_batch(self, batch, tasks, body):
@@ -52,6 +55,7 @@ class HeadlessRunner(BaseRunner):
                 # Call complete() first. The _batch_finished listeners read the
                 # final status.
                 batch.complete()
+                self._record_batch_close(batch, tasks)
                 self._batch_finished(batch, tasks)
 
     def _submit(self, action, tasks, body):

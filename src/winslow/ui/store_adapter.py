@@ -40,12 +40,12 @@ class TuiStoreAdapter(StoreListener):
         return self.app.get_screen(self.screen_name)
 
     @on_ui_thread
-    def on_task_status(self, task, status):
-        self._screen.propagate_task_status(task, status)
+    def on_task_status(self, key, status):
+        self._screen.propagate_task_status(key, status)
 
     @on_ui_thread
-    def on_execution_status(self, task_uuid, status, batch_uuid):
-        self._screen.propagate_execution_status(task_uuid, status, batch_uuid)
+    def on_execution_status(self, task_key, status, batch_uuid):
+        self._screen.propagate_execution_status(task_key, status, batch_uuid)
 
     @on_ui_thread
     def on_batch_created(self, batch):
@@ -56,8 +56,8 @@ class TuiStoreAdapter(StoreListener):
         self._screen.propagate_batch_completed(batch)
 
     @on_ui_thread
-    def on_log_appended(self, task_uuid, batch_uuid, line):
-        self._screen.propagate_task_log(task_uuid, batch_uuid, line)
+    def on_log_appended(self, task_key, batch_uuid, line):
+        self._screen.propagate_task_log(task_key, batch_uuid, line)
 
 
 class TuiCacheAdapter(CacheListener):

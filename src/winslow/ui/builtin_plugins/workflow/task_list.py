@@ -42,19 +42,22 @@ class TaskButton(Button):
     session_ending = reactive(False)
 
     class TaskAction(Message):
-        def __init__(self, task, action):
-            self.w_task = task
+        """The payload is the identity key; the screen resolves it through
+        the task index (see docs/ui-plugins.md)."""
+
+        def __init__(self, key, action):
+            self.key = key
             self.action = action
             super().__init__()
 
-    def __init__(self, task, action, *args, **kwargs):
+    def __init__(self, key, action, *args, **kwargs):
         super().__init__(label=self.LABEL, variant=self.VARIANT)
 
-        self.w_task = task
+        self.key = key
         self.action = action
 
     async def on_click(self):
-        payload = self.TaskAction(task=self.w_task, action=self.ACTION)
+        payload = self.TaskAction(key=self.key, action=self.ACTION)
         self.post_message(payload)
 
     def watch_status(self, status):
@@ -103,19 +106,28 @@ class InfoButton(TaskButton):
 
 
 class TaskButtons(Widget):
-    def __init__(self, task, *args, **kwargs):
-        self.w_task = task
+    def __init__(self, info, *args, **kwargs):
+        self.w_info = info
         super().__init__(*args, **kwargs)
+
+    @property
+    def key(self):
+        # Derived from the info, so the buttons cannot act on a task other
+        # than the one the row shows.
+        return self.w_info.key
 
     def compose(self):
         with Horizontal(classes="actions"):
-            if not self.w_task.is_noop:
-                yield RunButton(task=self.w_task, action="run")
-            yield CheckButton(task=self.w_task, action="check")
-            yield InfoButton(task=self.w_task, action="info")
+            if not self.w_info.is_noop:
+                yield RunButton(key=self.key, action="run")
+            yield CheckButton(key=self.key, action="check")
+            yield InfoButton(key=self.key, action="info")
 
 
 class TaskRow(TaskRowBase):
+    """A live task row: it holds the identity key and a non-evaluated
+    TaskInfo (compare RecordRow)."""
+
     status = reactive(None)
 
     class Selected(Message):
@@ -125,13 +137,21 @@ class TaskRow(TaskRowBase):
 
         @property
         def task_info(self):
-            return self.task_row.w_task.info
+            return self.task_row.w_task
 
-    def __init__(self, task, *args, **kwargs):
-        super().__init__(task, *args, **kwargs)
+    def __init__(self, info, *args, **kwargs):
+        super().__init__(info, *args, **kwargs)
 
-        if task.groups:
-            self.border_title = task.groups_readable
+        if info.groups:
+            self.border_title = info.groups_readable
+
+    @property
+    def key(self):
+        return self.w_task.key
+
+    @property
+    def search_key(self):
+        return self.key
 
     def watch_status(self, status):
         for widget in self.query(TaskStatusWidget).results():
@@ -140,23 +160,23 @@ class TaskRow(TaskRowBase):
             button.status = status
 
     def on_mount(self):
-        # watch_status runs during compose, before the children exist. Apply the
-        # status again now, because the children are mounted.
+        # The watcher runs during compose, before the children exist. Apply
+        # the value again now, because the children are mounted.
         self.watch_status(self.status)
 
     async def on_click(self, event):
         self.post_message(self.Selected(task_row=self))
 
     def compose(self):
-        info = self.w_task.info
+        info = self.w_task
 
         with Horizontal(classes="row-content"):
-            yield TaskStatusIcon(task=self.w_task, classes="icon")
+            yield TaskStatusIcon(classes="icon")
             yield Static(f"{info.index + 1}.", classes="index")
             yield Label(info.label, classes="name")
-            yield TaskStatusLabel(task=self.w_task, classes="status")
+            yield TaskStatusLabel(classes="status")
             yield InlineLog(classes="log")
-        yield TaskButtons(task=self.w_task)
+        yield TaskButtons(info=info)
 
 
 class TaskList(VerticalScroll):
@@ -178,6 +198,6 @@ class TaskList(VerticalScroll):
             tasks = self.workflow.tasks
 
         for task in tasks:
-            row = TaskRow(task=task)
+            row = TaskRow(info=self.workflow.task_info(task))
             row.status = self.workflow.store[task]
             yield row

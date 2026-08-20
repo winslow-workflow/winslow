@@ -1,4 +1,7 @@
+import asyncio
+
 from textual import on
+from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList
 
 import winslow.ui.builtin_plugins.dashboard as dashboard_plugins
@@ -6,7 +9,12 @@ import winslow.ui.builtin_plugins.dashboard as dashboard_plugins
 from winslow.session import SessionStatus
 from winslow.ui.plugin import DashboardRenderContext, Slots
 from winslow.ui.screens.base import SlottedScreen
-from winslow.ui.builtin_plugins.dashboard.session import SessionRow, SessionEnded
+from winslow.ui.builtin_plugins.dashboard.session import (
+    RestorableRow,
+    SessionEnded,
+    SessionRow,
+)
+from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
 from winslow.ui.validation import WorkflowFormValidator, FormValues
 
@@ -24,6 +32,8 @@ class DashboardScreen(SlottedScreen):
 
     async def on_mount(self):
         self.logger.info(f"{len(self.app.workflow_context)} workflow classes loaded.")
+
+        await self._populate_restorable()
 
         # Initialize each workflow that has Workflow.auto_init. The UI thus does
         # not show the selector and the form, which helps a test. There is no
@@ -120,6 +130,47 @@ class DashboardScreen(SlottedScreen):
     async def show_session_error(self, event):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
         self.app.push_screen(ErrorDetail(row.error))
+
+    async def _populate_restorable(self):
+        """Fill the Restore pane with the open manifests of the state store.
+        With nothing to restore the pane stays hidden."""
+        try:
+            widget = self.query_one(RestorableWidget)
+        except NoMatches:
+            return
+        manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
+        manifests = [m for m in manifests if m.session_id not in self.app.session_store]
+        if not manifests:
+            widget.display = False
+            return
+        self.query("#restorable-list-placeholder").add_class("hidden")
+        restore_list = self.query_one("#restorable-list")
+        restore_list.remove_class("hidden")
+        if len(manifests) > 1:
+            await restore_list.mount(
+                Button("Restore all", id="restore-all", classes="compact small")
+            )
+        for manifest in manifests:
+            await restore_list.mount(RestorableRow(manifest))
+
+    @on(Button.Pressed, ".session-restore")
+    async def restore_session(self, event):
+        row = next(a for a in event.button.ancestors if isinstance(a, RestorableRow))
+        await self._restore_row(row)
+
+    @on(Button.Pressed, "#restore-all")
+    async def restore_all_sessions(self, event):
+        await event.button.remove()
+        for row in list(self.query(RestorableRow).results()):
+            await self._restore_row(row)
+
+    async def _restore_row(self, row):
+        manifest = row.manifest
+        await row.remove()
+        if not self.query(RestorableRow):
+            await self.query("#restore-all").remove()
+            self.query_one(RestorableWidget).display = False
+        await self.app._restore_session(manifest)
 
     async def add_pending_session(self, workflow_name) -> SessionRow:
         self.query("#session-list-placeholder").add_class("hidden")

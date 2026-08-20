@@ -1,4 +1,4 @@
-"""Execution history holds values and task uuids, never a Task. These tests
+"""Execution history holds values and identity keys, never a Task. These tests
 cover the contract of history-spec.md: the release of every task at the
 session end, the wire format of TaskInfo, the capture depths, and the
 uuid-based execution events."""
@@ -135,21 +135,21 @@ def test_task_info_asdict_json_round_trips(e2e_repo):
 
     for info in (TaskInfo.from_task(task), TaskInfo.from_task(task, full=True)):
         payload = json.loads(json.dumps(dataclasses.asdict(info)))
-        assert payload["uuid"] == task.uuid
+        assert payload["key"] == task.identity_key
         assert payload["label"] == str(task)
 
 
-def test_dependency_refs_carry_uuid_and_label(e2e_repo):
+def test_dependency_refs_carry_key_and_label(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-depends", Mode.TUI)
     with_deps = next(t for t in workflow.tasks if t.dependent_tasks)
 
     info = TaskInfo.from_task(with_deps)
     refs = info.dependencies + info.premier_dependencies + info.terminal_dependencies
     assert refs
-    by_uuid = {dep.uuid: dep for dep in with_deps.dependent_tasks}
+    by_key = {dep.identity_key: dep for dep in with_deps.dependent_tasks}
     for ref in refs:
         assert isinstance(ref, TaskRef)
-        assert ref.label == str(by_uuid[ref.uuid])
+        assert ref.label == str(by_key[ref.key])
 
 
 def test_record_store_holds_no_task(e2e_repo):
@@ -163,14 +163,14 @@ def test_record_store_holds_no_task(e2e_repo):
             assert not hasattr(record, "task")
 
 
-def test_errored_holds_task_uuids(e2e_repo):
+def test_errored_holds_identity_keys(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-errors", Mode.TUI)
     tasks = by_name(workflow)
 
     run_all(workflow)
 
     batch = next(iter(workflow.runner.execution_batches_map.values()))
-    assert tasks["Boom"].uuid in batch.errored
+    assert tasks["Boom"].identity_key in batch.errored
     assert all(isinstance(item, str) for item in batch.errored)
 
 
@@ -181,7 +181,7 @@ def test_completion_sweep_replaces_stub_with_full_capture(e2e_repo):
     gate, batch = start_gated_batch(workflow, tasks)
     store = _wait_for_store(workflow, batch)
 
-    record = store.get_record(tasks["Gated"].uuid)
+    record = store.get_record(tasks["Gated"].identity_key)
     assert record.info.attributes is None, "a stub before the sweep"
 
     gate.set()
@@ -314,11 +314,11 @@ class _EventRecorder(StoreListener):
     def __init__(self):
         self.statuses = []
 
-    def on_execution_status(self, task_uuid, status, batch_uuid):
-        self.statuses.append((batch_uuid, task_uuid, status))
+    def on_execution_status(self, task_key, status, batch_uuid):
+        self.statuses.append((batch_uuid, task_key, status))
 
 
-def test_execution_events_route_by_batch_and_task_uuid(e2e_repo):
+def test_execution_events_route_by_batch_and_task_key(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI)
     recorder = _EventRecorder()
     workflow.store.add_listener(recorder)
@@ -327,7 +327,7 @@ def test_execution_events_route_by_batch_and_task_uuid(e2e_repo):
 
     assert recorder.statuses
     batch_uuids = set(workflow.runner.execution_batches_map)
-    task_uuids = {task.uuid for task in workflow.tasks}
-    for batch_uuid, task_uuid, _ in recorder.statuses:
+    task_keys = {task.identity_key for task in workflow.tasks}
+    for batch_uuid, task_key, _ in recorder.statuses:
         assert batch_uuid in batch_uuids
-        assert task_uuid in task_uuids
+        assert task_key in task_keys

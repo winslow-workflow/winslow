@@ -6,12 +6,20 @@ from textual.app import ComposeResult
 from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Input, Label, TabbedContent, TabPane
+from textual.widgets import (
+    Button,
+    Checkbox,
+    Input,
+    Label,
+    Select,
+    TabbedContent,
+    TabPane,
+)
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.runner.execution import ExecutionStatus
-from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
+from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
@@ -32,6 +40,12 @@ from winslow.ui.workflow_events import (
 )
 
 _CSS = package_css(__package__, "_pane_header.tcss", "history.tcss")
+
+_STATUS_ALL = "all"
+_STATUS_OPTIONS = (
+    ("all statuses", _STATUS_ALL),
+    *((str(status), status) for status in TaskStatus),
+)
 
 
 def _foreign_filter_names(filters):
@@ -72,7 +86,7 @@ class RecordRow(TaskRowBase):
 
     @property
     def record(self):
-        return self.exec_store.get_record(self.w_task.uuid)
+        return self.exec_store.get_record(self.w_task.key)
 
     @classmethod
     def _fmt_runtime(cls, record):
@@ -93,7 +107,7 @@ class RecordRow(TaskRowBase):
         yield Button("info", classes="info-btn")
 
     def on_mount(self):
-        self.status = self.exec_store.get(self.w_task.uuid)
+        self.status = self.exec_store.get(self.w_task.key)
         self.log_line = self.record.last_log
 
     def watch_status(self, status):
@@ -208,13 +222,14 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._init_search()
         self._filter_matching: set | None = None
         self._hide_completed = False
+        self._status_filter = _STATUS_ALL
         super().__init__(*args, **kwargs)
 
     def _matching_tasks(self, query: str, warn=True) -> set:
         """The row infos that the query matches. Only the builtin filters can
         run on an info; a project filter is refused, with a warning on submit.
         The typing preview passes warn=False, so it does not toast per tick."""
-        infos = [row.w_task for row in self.query(RecordRow).results()]
+        infos = [row.search_key for row in self.query(RecordRow).results()]
         try:
             parsed = self.workflow.filter_registry.parse(query)
         except ValueError:
@@ -241,11 +256,15 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._apply_visibility()
 
     def _row_visible(self, row) -> bool:
-        """A row is shown if it passes the search filter and if the 'hide
-        completed' toggle does not hide it."""
+        """A row is shown if it passes the search filter, the status filter,
+        and the 'hide completed' toggle."""
         if (
             self._filter_matching is not None
-            and row.w_task not in self._filter_matching
+            and row.search_key not in self._filter_matching
+        ):
+            return False
+        if self._status_filter != _STATUS_ALL and row.status is not (
+            self._status_filter
         ):
             return False
         if self._hide_completed and row.status in PASSING_STATUSES:
@@ -271,6 +290,11 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._hide_completed = event.value
         self._apply_visibility()
 
+    @on(Select.Changed, "#record-status")
+    def handle_status_filter(self, event):
+        self._status_filter = event.value
+        self._apply_visibility()
+
     def _get_store(self, batch):
         return self.workflow.runner.execution_record_store_map[batch.uuid]
 
@@ -279,7 +303,7 @@ class HistoryPane(SearchFlowMixin, Widget):
 
     def _register_rows(self, widget):
         for row in widget.query(RecordRow):
-            self._rows[(row.exec_store.batch_uuid, row.w_task.uuid)] = row
+            self._rows[(row.exec_store.batch_uuid, row.w_task.key)] = row
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="search-section", classes="pane-header"):
@@ -288,6 +312,12 @@ class HistoryPane(SearchFlowMixin, Widget):
             )
             yield PaneSearch(
                 self.workflow, placeholder="search records...", input_id="record-search"
+            )
+            yield Select(
+                _STATUS_OPTIONS,
+                value=_STATUS_ALL,
+                allow_blank=False,
+                id="record-status",
             )
             with Horizontal(classes="checkboxes"):
                 with Vertical(classes="column"):
@@ -340,7 +370,7 @@ class HistoryPane(SearchFlowMixin, Widget):
 
     @on(ExecutionStatusChanged)
     def on_execution_status_changed(self, event):
-        row = self._rows.get((event.batch.uuid, event.task_uuid))
+        row = self._rows.get((event.batch.uuid, event.task_key))
         if row:
             row.status = event.status
             row.display = self._row_visible(row)
@@ -351,7 +381,7 @@ class HistoryPane(SearchFlowMixin, Widget):
 
     @on(TaskLogUpdated)
     def on_task_log_updated(self, event):
-        row = self._rows.get((event.batch.uuid, event.task_uuid))
+        row = self._rows.get((event.batch.uuid, event.task_key))
         if row:
             row.log_line = event.line
 
