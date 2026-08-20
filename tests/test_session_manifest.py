@@ -37,7 +37,7 @@ def test_creation_writes_an_open_manifest(e2e_repo, state_store):
 
 def test_a_clean_end_leaves_no_open_manifest(e2e_repo, state_store):
     workflow, session = persisted_session(e2e_repo, state_store)
-    workflow.runner.bulk_run(workflow.runner.eligible_tasks(workflow.tasks))
+    workflow.runner.bulk_run(workflow.tasks)
     session.end()
     assert state_store.list_open_manifests() == []
     assert (state_store.ended_directory / session.session_id).is_dir()
@@ -154,7 +154,7 @@ def test_a_manifest_write_failure_degrades_to_a_non_persistent_session(
 
     # The degraded session still runs and ends.
     workflow.check_pipeline_eligibility()
-    workflow.runner.bulk_run(workflow.runner.eligible_tasks(workflow.tasks))
+    workflow.runner.bulk_run(workflow.tasks)
     session.end()
     assert session.has_ended
 

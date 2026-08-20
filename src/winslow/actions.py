@@ -3,7 +3,7 @@ user input into one action dataclass and submits it to the ActionHandler of
 the session. Action fields are values only: identity keys, scalars (the
 payload rule, see winslow.events)."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, fields
 
 from winslow.exceptions import SessionEndingError
 
@@ -56,10 +56,6 @@ class SetBatchOptions:
     disable_concurrency: bool | None = None
 
 
-# The batch-option names, in one place for the apply loop of the handler.
-_OPTION_FIELDS = ("dry_run", "force_run", "force_success", "disable_concurrency")
-
-
 class ActionHandler:
     """One per session: the inbound half of the session boundary (the bus is
     the outbound half, see SessionBus). The handler accepts one action,
@@ -109,8 +105,15 @@ class ActionHandler:
         )
 
     def _submit_batch(self, action, submit_single, submit_bulk):
+        keys = tuple(dict.fromkeys(action.keys))
+        if len(keys) != len(action.keys):
+            # A wire client can repeat a key; a batch runs each task once.
+            dupes = sorted({key for key in keys if action.keys.count(key) > 1})
+            self._workflow.logger.warning(
+                f"{type(action).__name__} repeats {dupes}; each task enters the batch once."
+            )
         try:
-            tasks = [self._workflow.task_index.resolve(key) for key in action.keys]
+            tasks = [self._workflow.task_index.resolve(key) for key in keys]
         except KeyError as exc:
             return self._refuse(action, exc.args[0])
         try:
@@ -145,10 +148,10 @@ class ActionHandler:
 
     def set_batch_options(self, action):
         options = self._workflow.batch_options
-        for name in _OPTION_FIELDS:
-            value = getattr(action, name)
+        for field in fields(SetBatchOptions):
+            value = getattr(action, field.name)
             if value is not None:
-                setattr(options, name, value)
+                setattr(options, field.name, value)
         self._workflow.record_batch_options()
         return Ack(accepted=True)
 

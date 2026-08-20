@@ -3,6 +3,8 @@ gates, delegates and answers with an ack; the outcomes arrive as bus events.
 Interactive mode, like the lifecycle tests: the handler serves the TUI and the
 future remote transports, and headless mode drives the runner itself."""
 
+import logging
+
 from winslow.actions import (
     Ack,
     BatchAck,
@@ -54,6 +56,20 @@ def test_run_tasks_many_keys_creates_one_batch(e2e_repo):
     assert batch.task_count == len(keys) - 1
 
 
+def test_duplicate_keys_collapse_with_a_warning(e2e_repo, caplog):
+    workflow = live_workflow(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+
+    with caplog.at_level(logging.WARNING):
+        ack = submit_and_wait(
+            workflow, RunTasks(keys=(alpha.identity_key, alpha.identity_key))
+        )
+
+    assert ack.accepted
+    assert workflow.runner.execution_batches_map[ack.batch_uuid].task_count == 1
+    assert str(alpha.identity_key) in caplog.text
+
+
 def test_check_tasks_creates_a_check_batch(e2e_repo):
     workflow = live_workflow(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
@@ -102,6 +118,25 @@ def test_every_action_refuses_after_the_session_ends(e2e_repo):
         assert workflow.session.session_id in ack.reason
     # A batch action refuses with the batch-shaped ack.
     assert isinstance(refused[0], BatchAck)
+
+
+def test_end_session_force_stops_the_running_batch(e2e_repo):
+    workflow, tasks = gated_workflow(e2e_repo, "--disable-concurrency")
+    gate, batch = start_gated_batch(workflow, tasks)
+
+    ack = workflow.session.actions.submit(EndSession(force=True))
+
+    # The acceptance means "ending": the batch is still draining.
+    assert ack == Ack(accepted=True)
+    assert not workflow.session.has_ended
+    gate.set()
+    batch.wait()
+    assert batch.status is ExecutionStatus.STOPPED
+    # Before finalize: the end of the session releases the store.
+    for name in ("TailOne", "TailTwo"):
+        assert workflow.store[tasks[name]] is S.ABORTED
+    workflow.session.finalize_if_drained()
+    assert workflow.session.has_ended
 
 
 def test_set_batch_options_changes_one_field_and_the_manifest(e2e_repo, state_store):

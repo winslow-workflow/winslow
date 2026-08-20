@@ -139,13 +139,13 @@ def ready(workflow):
 
 def run_all(workflow):
     """Full run, dispatched the way each mode really drives it: headless_run
-    for the CLI path; eligibility + bulk_run for the interactive path (what
-    the UI's run-all button calls, minus the UI)."""
+    for the CLI path; bulk_run for the interactive path (what the UI's
+    run-all button calls, minus the UI). Batch admission filters eligibility."""
     if workflow.orchestrator_config.mode is Mode.HEADLESS:
         workflow.headless_run()
     else:
         ready(workflow)
-        workflow.runner.bulk_run(workflow.runner.eligible_tasks(workflow.tasks))
+        workflow.runner.bulk_run(workflow.tasks)
 
 
 def check_all(workflow):
@@ -157,7 +157,7 @@ def check_all(workflow):
         workflow.headless_run()
     else:
         ready(workflow)
-        workflow.runner.bulk_check(workflow.runner.eligible_tasks(workflow.tasks))
+        workflow.runner.bulk_check(workflow.tasks)
 
 
 def check_batch(workflow, tasks=None):

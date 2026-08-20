@@ -229,9 +229,6 @@ class InteractiveRunner(HeadlessRunner):
             store.capture(task)
         self.workflow.bus.publish(BatchCompletedEvent(batch))
 
-    def eligible_tasks(self, tasks):
-        return [t for t in tasks if not self._refuse_ineligible(t)]
-
     def submit_check_single(self, task):
         return self._submit(ExecutionAction.CHECK, [task], self._single_check_body)
 
