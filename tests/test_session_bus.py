@@ -1,6 +1,7 @@
-"""The session bus contract: subscription order, isolation of a raising
-subscriber, the close sweep, the origin filter of the persistence subscriber,
-and the session-ended dispatch after the durable writes."""
+"""The session bus contract: isolation of a raising subscriber, the close
+sweep, the origin filter of the persistence subscriber, and the session-ended
+dispatch after the durable writes. Dispatch order is undefined by design: a
+test that needs determinism publishes its events one by one."""
 
 import pytest
 
@@ -18,17 +19,6 @@ from winslow.state import SessionPersistenceAdapter
 from winslow.task.status import TaskStatus
 
 from harness import build_workflow, by_name, ready, run_batch
-
-
-def test_dispatch_order_is_subscription_order():
-    bus = SessionBus()
-    order = []
-    for index in range(5):
-        bus.subscribe(SessionEndedEvent, lambda event, i=index: order.append(i))
-
-    bus.publish(SessionEndedEvent(session_id="s"))
-
-    assert order == [0, 1, 2, 3, 4]
 
 
 def test_a_raising_subscriber_does_not_stop_the_dispatch():

@@ -10,21 +10,6 @@ from winslow.exceptions import RegistrationError
 from winslow.logger import LOGGER
 
 
-class _OrderedIds(dict):
-    """An insertion-ordered set for the receiver bookkeeping of blinker.
-    Dispatch order is then subscription order (see Signal.set_class)."""
-
-    def add(self, item):
-        self[item] = None
-
-    def discard(self, item):
-        self.pop(item, None)
-
-
-class _OrderedSignal(Signal):
-    set_class = _OrderedIds
-
-
 def _isolate(callback):
     """Wrap the callback, so a raise is logged and the dispatch continues:
     an observer must not break the operation it observes. The wrapper also
@@ -77,7 +62,7 @@ class SessionBus:
     def _signal_of(self, event_class):
         # Only under the lock.
         if event_class not in self._signals:
-            self._signals[event_class] = _OrderedSignal()
+            self._signals[event_class] = Signal()
         return self._signals[event_class]
 
     def subscribe(self, event_class, callback):
@@ -109,9 +94,10 @@ class SessionBus:
                 self._signals[event_class].disconnect(receiver)
 
     def publish(self, event):
-        """Dispatch the event to its subscribers, on the calling thread, in
-        subscription order. A publish on a closed bus is a no-op: the session
-        end can race a draining worker."""
+        """Dispatch the event to its subscribers, on the calling thread. The
+        dispatch order is undefined: a subscriber must not depend on another
+        subscriber. A publish on a closed bus is a no-op: the session end can
+        race a draining worker."""
         with self._lock:
             signal = self._signals.get(type(event))
         if signal is not None:
