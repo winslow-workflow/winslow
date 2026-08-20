@@ -30,11 +30,11 @@ from winslow.ui.workflow_events import (
     TaskSelected,
 )
 
+from winslow.actions import CheckTasks, RunTasks, SetBatchOptions
 from winslow.ui.builtin_plugins.workflow.caches import CachesPane
 from winslow.ui.builtin_plugins.workflow.cache_overview import CacheOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_overview import TaskOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_list import TaskRow, TaskButton
-from winslow.exceptions import SessionEndingError
 from winslow.task.status import TaskStatus, PASSING_STATUSES
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 
@@ -45,10 +45,9 @@ from winslow.ui.store_adapter import StoreEvent
 
 
 def refuse_if_ending(method):
-    """The user-facing part of the batch-admission guard. It refuses the batch
-    before the dispatch and shows a toast. Session.batch_admission is the layer
-    that enforces the rule, and it refuses each batch that passes this guard (see
-    _submit_batch)."""
+    """The guard of the direct reads that bypass the action handler, today
+    only the task detail. A batch action needs no guard: its refused ack
+    carries the same message (see ActionHandler)."""
 
     @functools.wraps(method)
     async def wrapper(self, *args, **kwargs):
@@ -213,26 +212,18 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         await self._select_row(event.task_row)
         self.show_task_detail(event.task_info)
 
-    def _submit_batch(self, submit, *args):
-        # The submit is fast, because it only does the admission and the
-        # registration, and the worker of the runner does the work. The submit
-        # thus stays on the UI thread, and the typed refusal appears here as a
-        # toast.
-        try:
-            submit(*args)
-        except SessionEndingError:
-            # refuse_if_ending covers the usual case. This handler catches a batch
-            # that the UI dispatched while the session closes. The admission
-            # refuses such a batch and does not let it run on a released store.
-            self.notify(SESSION_ENDING_MESSAGE, severity="warning")
+    def _submit_action(self, action):
+        # The submit is fast, because the handler only does the admission and
+        # the registration, and the worker of the runner does the work. The
+        # submit thus stays on the UI thread, and a refusal appears here as a
+        # toast (see ActionHandler).
+        ack = self.session.actions.submit(action)
+        if not ack.accepted:
+            self.notify(ack.reason, severity="warning")
+        return ack
 
-    def _visible_tasks(self):
-        # The rows hold keys; the bulk actions need live tasks for the runner.
-        return [
-            self._resolve_task(row.key)
-            for row in self.query(TaskRow).results()
-            if row.display
-        ]
+    def _visible_keys(self):
+        return tuple(row.key for row in self.query(TaskRow).results() if row.display)
 
     @on(Checkbox.Changed, "#force-run")
     @on(Checkbox.Changed, "#force-success")
@@ -240,37 +231,31 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     @on(Checkbox.Changed, "#disable-concurrency")
     def _sync_batch_option(self, event):
         # A live change is safe, because each batch takes a snapshot of these
-        # options at its start.
-        setattr(
-            self.workflow.batch_options, event.control.id.replace("-", "_"), event.value
-        )
-        # A restore must rebuild the session with the toggles the user set.
-        self.workflow.record_batch_options()
+        # options at its start. The handler also folds the toggle into the
+        # stored manifest, so a restore rebuilds it.
+        name = event.control.id.replace("-", "_")
+        self._submit_action(SetBatchOptions(**{name: event.value}))
 
-    @refuse_if_ending
     async def _handle_task_run(self, key):
-        self._submit_batch(self.runner.submit_run_single, self._resolve_task(key))
+        self._submit_action(RunTasks(keys=(key,)))
 
-    @refuse_if_ending
     async def _handle_task_check(self, key):
-        self._submit_batch(self.runner.submit_check_single, self._resolve_task(key))
+        self._submit_action(CheckTasks(keys=(key,)))
 
-    @refuse_if_ending
-    async def _handle_bulk_action(self, verb, submit):
-        tasks = self.runner.eligible_tasks(self._visible_tasks())
-        if not tasks:
-            self.notify(
-                "No eligible tasks are selected - cannot process", severity="warning"
-            )
+    async def _handle_bulk_action(self, verb, action_class):
+        ack = self._submit_action(action_class(keys=self._visible_keys()))
+        if not ack.accepted:
             return
-        self.notify(f"{verb} {len(tasks)} task{'s' if len(tasks) != 1 else ''}")
-        self._submit_batch(submit, tasks)
+        # The handler filtered the eligibility, so the batch has the count.
+        batch = self.runner.execution_batches_map.get(ack.batch_uuid)
+        count = batch.task_count if batch else 0
+        self.notify(f"{verb} {count} task{'s' if count != 1 else ''}")
 
     async def _handle_bulk_run(self):
-        await self._handle_bulk_action("Running", self.runner.submit_run)
+        await self._handle_bulk_action("Running", RunTasks)
 
     async def _handle_bulk_check(self):
-        await self._handle_bulk_action("Checking", self.runner.submit_check)
+        await self._handle_bulk_action("Checking", CheckTasks)
 
     @refuse_if_ending
     async def _handle_task_info(self, key):

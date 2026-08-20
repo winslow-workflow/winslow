@@ -17,6 +17,7 @@ from textual.widgets import (
 )
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
+from winslow.actions import StopBatch
 from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.runner.execution import ExecutionStatus
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
@@ -208,8 +209,13 @@ class BatchCard(Widget):
 
     @on(Button.Pressed, ".stop-btn")
     def request_stop(self):
-        self.batch.request_stop()
-        self.query_one(".stop-btn", Button).disabled = True
+        # The workflow screen owns the session; the card reaches the action
+        # handler through it. The acceptance means "stop requested".
+        ack = self.screen.session.actions.submit(StopBatch(batch_uuid=self.batch.uuid))
+        if ack.accepted:
+            self.query_one(".stop-btn", Button).disabled = True
+        else:
+            self.notify(ack.reason, severity="warning")
 
 
 class HistoryPane(SearchFlowMixin, Widget):

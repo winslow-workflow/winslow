@@ -2,6 +2,8 @@ from textual import on
 from textual.widgets import Button, Label
 from textual.containers import Horizontal, VerticalScroll
 
+from winslow.actions import EndSession
+
 from .common import BaseModal
 
 
@@ -42,7 +44,7 @@ class ForceEndModal(BaseModal):
 
     @on(Button.Pressed, "#force-confirm")
     def _confirm(self):
-        self.session.force_end()
+        self.session.actions.submit(EndSession(force=True))
         self.dismiss()
 
     @on(Button.Pressed, "#force-cancel")

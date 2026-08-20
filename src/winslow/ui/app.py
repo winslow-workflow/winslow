@@ -13,6 +13,7 @@ from winslow.ui.store_adapter import (
     TuiCacheAdapter,
     TuiStoreAdapter,
 )
+from winslow.actions import EndSession
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
@@ -272,7 +273,7 @@ class Winslow(App):
         # the screen installed and the session in the store. The View button of
         # the History tab can thus open the workflow screen, which is now
         # read-only.
-        session.end()
+        session.actions.submit(EndSession())
 
         # Detach the cache adapter: the global container outlives the session
         # and would otherwise pin the dead adapter (see TuiCacheAdapter).

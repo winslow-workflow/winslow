@@ -87,6 +87,7 @@ class Workflow(_ConfigBase):
         self.graph = self.graph_class(
             orchestrator_config=orchestrator_config,
             workflow_config=self.workflow_config,
+            logger=logger,
         )
         self.filter_registry = self.filter_registry_class(
             orchestrator_config=orchestrator_config,

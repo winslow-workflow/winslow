@@ -47,6 +47,11 @@ versions may include breaking changes).
   so every other subscriber observes replay and seed writes with their origin.
 - `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
   and the Caches pane subscribe to it instead of polling `has_ended`.
+- The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
+  counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
+  `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the
+  batch uuid, or refused with a reason. The handler resolves identity keys, gates admission, and never
+  raises across the boundary. The TUI submits every mutating action through it.
 
 ### Changed
 
@@ -69,6 +74,9 @@ versions may include breaking changes).
   status history of the store all hold identity keys.
 - The Caches pane is unchanged: its rows keep the live `BaseCache` objects, which are process-local UI
   state.
+- `Graph` takes `logger` at construction and the workflow hands its session logger in, so the task
+  initialization messages reach the session log pane. A project `graph_class` subclass that overrides
+  `__init__` must accept the keyword.
 
 ### Removed
 
