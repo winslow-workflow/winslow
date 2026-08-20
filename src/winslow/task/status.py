@@ -48,6 +48,11 @@ class TaskStatus(Enum):
     # BaseRunner._check_task_success).
     COMPLETED_PREVIOUSLY = auto()
 
+    # A passing status whose snapshot is no longer trusted (see is_trusted).
+    # The next touch re-verifies it. Never persisted: the snapshot keeps the
+    # real outcome, and a restore re-derives the trust.
+    STALE = auto()
+
     ABORTED = auto()  # the batch stopped before the task completed
 
     # For a batch record only, and never written to the main store. The batch
@@ -84,6 +89,7 @@ RUNNABLE_STATUSES = frozenset(
         TaskStatus.BLOCKED,
         TaskStatus.ABORTED,
         TaskStatus.RUN_FINISHED,
+        TaskStatus.STALE,
     )
 )
 
@@ -117,13 +123,15 @@ UNSATISFIED_STATUSES = frozenset(TaskStatus).difference(
 )
 
 
-# Statuses that mean the task ended in a bad state and needs attention.
+# Statuses that mean the task is in a bad state and needs attention. STALE
+# counts: the success is no longer trusted until a re-verification.
 PROBLEMATIC_STATUSES = frozenset(
     (
         TaskStatus.FAILED,
         TaskStatus.ERROR,
         TaskStatus.BLOCKED,
         TaskStatus.ABORTED,
+        TaskStatus.STALE,
     )
 )
 
@@ -132,3 +140,8 @@ PROBLEMATIC_STATUSES = frozenset(
 # ends and ACTION_REQUIRED, which waits for a person. The headless exit code uses
 # this set.
 UNSUCCESSFUL_STATUSES = PROBLEMATIC_STATUSES.union((TaskStatus.ACTION_REQUIRED,))
+
+
+# Statuses that persist as task snapshots: the terminal outcomes that a
+# restore can seed. Every other status is transient (see winslow.state).
+SNAPSHOT_STATUSES = PASSING_STATUSES.union((TaskStatus.FAILED, TaskStatus.ERROR))

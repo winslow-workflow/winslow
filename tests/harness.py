@@ -163,7 +163,7 @@ def check_all(workflow):
 def check_batch(workflow, tasks=None):
     """A follow-up check batch, runner-level: what a re-invoked --check CLI or
     the UI's check action does. No eligibility re-pass - re-running it would
-    reset every verdict, which no real second interaction does. `tasks`
+    reset every status, which no real second interaction does. `tasks`
     narrows the roster (what per-task UI actions do); default is the whole
     store."""
     tasks = workflow.tasks if tasks is None else tasks

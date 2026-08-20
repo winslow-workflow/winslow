@@ -2,10 +2,12 @@ from textual.message import Message
 
 
 class TaskStatusChanged(Message):
+    """Carries the identity key of the task (see docs/ui-plugins.md)."""
+
     BUBBLE = False
 
-    def __init__(self, task, status):
-        self.task = task
+    def __init__(self, key, status):
+        self.key = key
         self.status = status
         super().__init__()
 
@@ -29,9 +31,9 @@ class BatchCompleted(Message):
 class ExecutionStatusChanged(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task_uuid, status):
+    def __init__(self, batch, task_key, status):
         self.batch = batch
-        self.task_uuid = task_uuid
+        self.task_key = task_key
         self.status = status
         super().__init__()
 
@@ -39,9 +41,9 @@ class ExecutionStatusChanged(Message):
 class TaskLogUpdated(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task_uuid, line):
+    def __init__(self, batch, task_key, line):
         self.batch = batch
-        self.task_uuid = task_uuid
+        self.task_key = task_key
         self.line = line
         super().__init__()
 

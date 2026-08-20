@@ -29,7 +29,7 @@ class ExecutionRecordStore(InteractiveStore):
     copy of the main store. It thus sends them as execution events, which are
     scoped to the batch, and not as live task status. It writes no log line,
     because the main store already logs each status. The store outlives the
-    batch as history, so it keys by the task uuid and holds TaskInfo values,
+    batch as history, so it keys by the identity key and holds TaskInfo values,
     never a task (see release_tasks)."""
 
     item_class = str
@@ -43,29 +43,33 @@ class ExecutionRecordStore(InteractiveStore):
         self._records: dict[str, ExecutionRecord] = {}
 
     def register(self, task):
-        self._records[task.uuid] = ExecutionRecord(
+        self._records[task.identity_key] = ExecutionRecord(
             info=TaskInfo.from_task(task), store=self
         )
-        self[task.uuid] = TaskStatus.READY_TO_PROCESS
+        self[task.identity_key] = TaskStatus.READY_TO_PROCESS
 
     def capture(self, task):
         """Replace the stub of the task with a full capture. The sweep calls
         this outside every store write, which runs under the store lock."""
-        record = self._records.get(task.uuid)
+        record = self._records.get(task.identity_key)
         if record is not None:
             record.info = TaskInfo.from_task(task, full=True, root_dir=self.root_dir)
 
-    def get_record(self, task_uuid) -> ExecutionRecord:
-        return self._records[task_uuid]
+    def get_record(self, task_key) -> ExecutionRecord:
+        return self._records[task_key]
 
     @property
     def records(self):
         return tuple(self._records.values())
 
-    def _emit_status(self, task_uuid, status):
+    def _emit_status(self, task_key, status, excluded_callbacks=None):
         self._emit(
-            StoreListener.on_execution_status, task_uuid, status, self.batch_uuid
+            StoreListener.on_execution_status,
+            task_key,
+            status,
+            self.batch_uuid,
+            excluded=excluded_callbacks,
         )
 
-    def emit_log_appended(self, task_uuid, line):
-        self._emit(StoreListener.on_log_appended, task_uuid, self.batch_uuid, line)
+    def emit_log_appended(self, task_key, line):
+        self._emit(StoreListener.on_log_appended, task_key, self.batch_uuid, line)

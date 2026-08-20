@@ -31,6 +31,7 @@ TaskRowBase {
         .index  { width: 1fr; }
         .name   { width: 8fr; }
         .status { width: 4fr; }
+        .status.stale { color: $warning; }
         .log    { width: 10fr; overflow-x: hidden; }
     }
 }

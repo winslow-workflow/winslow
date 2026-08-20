@@ -27,15 +27,14 @@ class StoreListener:
     deadlock: the worker holds the store lock and waits for the UI thread,
     while the UI thread waits for the store lock to read a status.
 
-    The parameter type encodes the scope of an event. A live-store event
-    (on_task_status) carries the task: its consumers die with the session. An
-    execution event carries the task uuid: it feeds structures that outlive
-    the batch. A batch event carries the ExecutionBatch, which holds no task."""
+    Every payload is a value, never a live task. A task event carries the
+    identity key of the task (see Task.identity_key). A batch event carries
+    the ExecutionBatch, which holds no task."""
 
-    def on_task_status(self, task, status):
+    def on_task_status(self, key, status):
         pass
 
-    def on_execution_status(self, task_uuid, status, batch_uuid):
+    def on_execution_status(self, task_key, status, batch_uuid):
         pass
 
     def on_batch_created(self, batch):
@@ -44,7 +43,7 @@ class StoreListener:
     def on_batch_completed(self, batch):
         pass
 
-    def on_log_appended(self, task_uuid, batch_uuid, line):
+    def on_log_appended(self, task_key, batch_uuid, line):
         pass
 
 
@@ -63,6 +62,12 @@ class ReactiveDict(ListenerMixin, dict):
         log the status."""
 
     def __setitem__(self, key, value) -> None:
+        self.set(key, value)
+
+    def set(self, key, value, excluded_callbacks=None) -> None:
+        """Write, with an optional per-write listener exclusion. A replay of
+        a persisted value excludes its persistence listener; every other
+        listener still sees the write (see SessionPersistenceAdapter)."""
         with self._lock:
             # A redundant write is dropped completely. The dict write is cheap,
             # but the callback and the listeners can be slow (UI adapters).
@@ -74,7 +79,7 @@ class ReactiveDict(ListenerMixin, dict):
             # while no callback blocks, and while no callback takes a second lock
             # that a thread holds while it waits on this one (see StoreListener).
             self.callback(key, value)
-            self._emit_status(key, value)
+            self._emit_status(key, value, excluded_callbacks)
             self._settled.notify_all()
 
     def wait_for_state(self, predicate, timeout=None):
@@ -85,8 +90,15 @@ class ReactiveDict(ListenerMixin, dict):
         with self._settled:
             return self._settled.wait_for(predicate, timeout)
 
-    def _emit_status(self, task, status) -> None:
-        self._emit(StoreListener.on_task_status, task, status)
+    def _emit_status(self, item, status, excluded_callbacks=None) -> None:
+        # The listener payload is the identity key, never the live item. The
+        # derivation is a cached-attribute read, cheap under the store lock.
+        self._emit(
+            StoreListener.on_task_status,
+            getattr(item, "identity_key", item),
+            status,
+            excluded=excluded_callbacks,
+        )
 
     def emit_batch_created(self, batch) -> None:
         self._emit(StoreListener.on_batch_created, batch)
@@ -96,12 +108,13 @@ class ReactiveDict(ListenerMixin, dict):
 
 
 class StatusHistoryMixin:
-    """Record every status of each key, seed included. The key is the item uuid,
-    or str(item): an item key would retain each task past release_tasks."""
+    """Record every status of each key, seed included. The key is the identity
+    key of the item, or str(item): an item key would retain each task past
+    release_tasks."""
 
     @classmethod
     def _history_key(cls, item):
-        return getattr(item, "uuid", None) or str(item)
+        return getattr(item, "identity_key", None) or str(item)
 
     def __init__(self, *args, **kwargs):
         self.history = {}
@@ -139,10 +152,10 @@ class BaseStore(ReactiveDict):
 
         super().__init__({item: self.status_class.INITIALIZED for item in items})
 
-    def __setitem__(self, item, status) -> None:
+    def set(self, item, status, excluded_callbacks=None) -> None:
         if not isinstance(item, self.item_class):
             raise TypeError(f"Expected {self.item_class}, got {type(item)}")
         if not isinstance(status, self.status_class):
             raise TypeError(f"Expected {self.status_class}, got {type(status)}")
 
-        super().__setitem__(item, status)
+        super().set(item, status, excluded_callbacks)

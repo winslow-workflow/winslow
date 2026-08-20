@@ -10,6 +10,7 @@ from textual.widget import Widget
 from textual.widgets import Label, Rule
 from textual.containers import Vertical, VerticalScroll, Horizontal
 
+from winslow.ui.formatting import format_verification
 from winslow.ui.widgets.common import TaskStatusIcon
 from winslow.ui.workflow_events import TaskSelected, TaskStatusChanged
 
@@ -58,6 +59,9 @@ class TaskSummary(Widget):
         "task": "label",
         "groups": "groups_readable",
         "class": "task_class",
+        "last verified": lambda task_info: format_verification(
+            task_info.checked_at, task_info.effective_ttl
+        ),
         "parameters": lambda task_info: (
             Pretty(task_info.parameters) if task_info.parameters else None
         ),
@@ -109,7 +113,7 @@ class TaskSummary(Widget):
 
 
 class TaskDependencyRow(Widget):
-    # A TaskRef: what the row renders. The status arrives by uuid.
+    # A TaskRef: what the row renders. The status arrives by identity key.
     ref = var(None)
     initial_status = var(None)
 
@@ -126,19 +130,17 @@ class TaskDependencies(Widget):
     task_info = var(None)
     dependencies = reactive(None)
 
-    def __init__(self, store, dependency_type=None, *args, **kwargs):
+    def __init__(self, statuses, dependency_type=None, *args, **kwargs):
         self.dependency_type = dependency_type
-        self.store = store
+        # The statuses-by-key mapping that the screen maintains (see
+        # WorkflowRenderContext.task_statuses).
+        self.statuses = statuses
         super().__init__(*args, **kwargs)
 
     def compute_dependencies(self):
         if not self.task_info:
             return None
         return self.dependency_getter(self.task_info)
-
-    def _statuses_by_uuid(self):
-        # Empty after the session end: the lookup misses, the icon goes blank.
-        return {task.uuid: status for task, status in self.store.items()}
 
     def watch_dependencies(self, dependencies):
         if not dependencies:
@@ -149,11 +151,13 @@ class TaskDependencies(Widget):
 
             container.remove_children(TaskDependencyRow)
 
-            statuses = self._statuses_by_uuid()
+            # None arrives from a context built without task_statuses (the
+            # plugin-test seam): the rows then render with an unknown status.
+            statuses = self.statuses or {}
             for ref in dependencies:
                 dep_row = TaskDependencyRow()
                 dep_row.ref = ref
-                dep_row.initial_status = statuses.get(ref.uuid)
+                dep_row.initial_status = statuses.get(ref.key)
                 container.mount(dep_row)
 
     @cached_property
@@ -176,9 +180,9 @@ class TaskDependencies(Widget):
 class TaskInfo(Widget):
     task_info = reactive(None)
 
-    def __init__(self, store, *args, **kwargs):
+    def __init__(self, statuses, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.store = store
+        self.statuses = statuses
 
     @on(TaskSelected)
     def on_task_selected(self, event):
@@ -187,7 +191,7 @@ class TaskInfo(Widget):
     @on(TaskStatusChanged)
     def on_task_status_changed(self, event):
         for row in self.query(TaskDependencyRow).results():
-            if row.ref is not None and row.ref.uuid == event.task.uuid:
+            if row.ref is not None and row.ref.key == event.key:
                 for icon in row.query(TaskStatusIcon).results():
                     icon.status = event.status
 
@@ -210,9 +214,9 @@ class TaskInfo(Widget):
         with VerticalScroll(classes="task-info hidden"):
             yield TaskSummary(classes="round")
             yield TaskDependencies(
-                store=self.store, dependency_type="premier", classes="round"
+                statuses=self.statuses, dependency_type="premier", classes="round"
             )
-            yield TaskDependencies(store=self.store, classes="round")
+            yield TaskDependencies(statuses=self.statuses, classes="round")
             yield TaskDependencies(
-                store=self.store, dependency_type="terminal", classes="round"
+                statuses=self.statuses, dependency_type="terminal", classes="round"
             )

@@ -40,6 +40,11 @@ HistoryPane {
         border: round $secondary-lighten-1;
         padding: 0 1;
 
+        #record-status {
+            width: 26;
+            margin-left: 1;
+        }
+
         .checkboxes {
             width: 7fr;
             align: left middle;

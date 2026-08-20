@@ -14,6 +14,7 @@ from winslow.ui.store_adapter import (
     TuiStoreAdapter,
 )
 from winslow.session import Session
+from winslow.state import create_state_store
 from winslow.util import generate_id
 from winslow.task.context import LogContext, scoped_log_context
 from winslow.logger import run_logger_name
@@ -47,6 +48,9 @@ class Winslow(App):
         # The cache adapter per session id: the end of the session must detach
         # it from the global container, which outlives every session.
         self._cache_adapters = {}
+        # One durable store for every session of the app: manifests, task
+        # snapshots and batch records live here (see winslow.state).
+        self.state_store = create_state_store(orchestrator_config)
 
         super().__init__()
 
@@ -78,16 +82,55 @@ class Winslow(App):
         return self._screen_stacks["dashboard"][0]
 
     async def _create_workflow(self, workflow_kls, form_values):
+        await self._start_session(
+            workflow_kls,
+            orchestrator_overrides=form_values.orchestrator,
+            workflow_values=form_values.workflow,
+        )
+
+    async def _restore_session(self, manifest):
+        """Rebuild one session from its manifest and seed it from its snapshots.
+        The dashboard offers this for every open manifest at app start."""
+        workflow_kls = self.workflow_name_map.get(manifest.workflow_class)
+        if workflow_kls is None:
+            await self.dashboard.add_failed_session(
+                manifest.workflow_class,
+                f"The manifest of {manifest.session_id} names the workflow "
+                f"{manifest.workflow_class!r}, which this repository does not "
+                f"declare. Restore needs the workflow class.",
+            )
+            self.notify(
+                f"Unknown workflow '{manifest.workflow_class}'",
+                title="Restore failed",
+                severity="error",
+            )
+            return
+        await self._start_session(
+            workflow_kls,
+            orchestrator_overrides=manifest.orchestrator_overrides or {},
+            workflow_values=manifest.workflow_values or {},
+            session_id=manifest.session_id,
+            seed=True,
+        )
+
+    async def _start_session(
+        self,
+        workflow_kls,
+        orchestrator_overrides,
+        workflow_values,
+        session_id=None,
+        seed=False,
+    ):
         workflow_name = workflow_kls.get_name()
         self.logger.debug(
-            f"Workflow start message: {workflow_name} - params: {form_values}"
+            f"Workflow start message: {workflow_name} - params: {workflow_values}"
         )
 
         # Generate the session id first, so the same id names the workflow
         # logger, identifies the Session and stamps each log line. session_id
         # needs only the workflow name, which is available before the workflow
-        # exists.
-        session_id = generate_id(workflow_name)
+        # exists. A restore passes the id of the manifest instead.
+        session_id = session_id or generate_id(workflow_name)
 
         row = await self.dashboard.add_pending_session(workflow_name)
 
@@ -116,8 +159,8 @@ class Winslow(App):
                 workflow = await asyncio.to_thread(
                     self.orchestrator.initialize_workflow,
                     workflow_kls=workflow_kls,
-                    orchestrator_overrides=form_values.orchestrator,
-                    workflow_values=form_values.workflow,
+                    orchestrator_overrides=orchestrator_overrides,
+                    workflow_values=workflow_values,
                     workflow_base=self.workflow_context.get(workflow_kls),
                     logger=workflow_logger,
                 )
@@ -137,6 +180,19 @@ class Winslow(App):
                     workflow.check_pipeline_eligibility,
                     logger=workflow.logger,
                 )
+
+                # Persistence starts only once the pipeline is runnable: a kill
+                # during the initialization above leaves no restore candidate.
+                workflow.init_state(
+                    self.state_store,
+                    origin="tui",
+                    orchestrator_overrides=orchestrator_overrides,
+                    workflow_values=workflow_values,
+                )
+
+                if seed:
+                    # After the eligibility pass (see Workflow.seed_from_state).
+                    await asyncio.to_thread(workflow.seed_from_state)
 
                 self.logger.info(f"Workflow '{workflow_name}' ready.")
             except Exception as e:

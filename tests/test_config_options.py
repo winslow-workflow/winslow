@@ -80,3 +80,12 @@ def test_cache_namespace_option_is_reserved():
 
         class Reserved(Workflow):
             cache_namespace = ConfigOption(default="x")
+
+
+def test_run_nonce_option_is_reserved():
+    """run_nonce is the framework property behind the log routing (see
+    Workflow.run_nonce), so a project option cannot bind the name."""
+    with pytest.raises(MisconfigurationError, match="run_nonce.*clashes"):
+
+        class Reserved(Workflow):
+            run_nonce = ConfigOption(default="x")

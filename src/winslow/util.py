@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -56,6 +57,14 @@ def safe_repr(value, limit=100):
         s = f"<unrepresentable: {type(exc).__name__}: {exc}>"
     s = " ".join(s.split())
     return s if len(s) <= limit else s[: limit - 1] + "…"
+
+
+def identity_digest(name, mapping):
+    """The digest of a name plus a mapping: the durable part of an identity
+    key. json with default=repr is lossless: it does not truncate, and a str
+    stays quoted, so the values 1 and '1' digest differently."""
+    payload = json.dumps([name, mapping], sort_keys=True, default=repr)
+    return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
 
 
 def is_tuple_like(value):
@@ -407,13 +416,17 @@ class ListenerMixin:
         with self._listener_lock:
             return tuple(self._listeners)
 
-    def _emit(self, event, *args):
+    def _emit(self, event, *args, excluded=None):
         """Send one event to every listener; `event` is the unbound listener
-        method. A raising listener is logged and skipped: an observer must
-        not break the operation it observes."""
+        method. `excluded` names one listener, or a sequence of them, to skip
+        for this one emission. A raising listener is logged and skipped: an
+        observer must not break the operation it observes."""
+        excluded = to_tuple(excluded) if excluded is not None else ()
         # A snapshot of the listeners: another thread can unsubscribe one
         # while the emission iterates.
         for listener in self.listeners:
+            if listener in excluded:
+                continue
             try:
                 getattr(listener, event.__name__)(*args)
             except Exception:

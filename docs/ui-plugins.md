@@ -28,6 +28,42 @@ A slot with one plugin shows the widget directly. A slot with two or more plugin
 `label` names each tab. When one slot of a row becomes tabbed, the other slots of that row become tabbed
 too, so the row keeps one visual line.
 
+## The payload rule
+
+A Textual message and a store-listener callback carry values: the identity key of the task
+(`Task.identity_key`, a stable string) and `TaskInfo` captures. The task info modal set the precedent
+with `TaskDetailRenderContext.info` (see the context table above). A pane rendered from these payloads
+works the same on a remote client, because every payload can cross a process boundary.
+
+The task events of the workflow screen:
+
+| The event | The payload |
+| --- | --- |
+| `TaskStatusChanged` | `key`, `status` |
+| `ExecutionStatusChanged` | `batch`, `task_key`, `status` |
+| `TaskLogUpdated` | `batch`, `task_key`, `line` |
+
+A pane keys its rows by the identity key, and it reads the current statuses from
+`WorkflowRenderContext.task_statuses`, the `{key: TaskStatus}` mapping that the screen maintains:
+
+```python
+class StatusBoardPlugin(UIPlugin):
+    slot = Slots.TASKS_PANE
+    label = "Status Board"
+
+    def create_widget(self, context):
+        return StatusBoard(statuses=context.task_statuses)
+
+
+class StatusBoard(Widget):
+    @on(TaskStatusChanged)
+    def refresh_row(self, event):
+        self.rows[event.key].status = event.status
+```
+
+An in-process pane can still read the live workflow through `WorkflowRenderContext.workflow`, for
+example to resolve a key back to a task with `workflow.task_index.resolve(key)`.
+
 ## The slots
 
 Each screen declares its slots on the `Slots` class. Press `ctrl+g` on a screen and Winslow covers every

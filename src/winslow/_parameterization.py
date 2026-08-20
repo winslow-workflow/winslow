@@ -1,7 +1,6 @@
 """The parameterization logic. It is in this module to keep the graph clear."""
 
 import collections
-import uuid as _uuid
 from functools import cached_property
 from itertools import product
 from types import SimpleNamespace
@@ -15,6 +14,7 @@ from winslow.exceptions import (
 
 from winslow.descriptors import Parameter, _ParameterMember
 from winslow.util import (
+    identity_digest,
     is_tuple_like,
     to_tuple,
     safe_repr,
@@ -127,17 +127,22 @@ class _ParameterizationMeta(_DeclarationMeta):
 class _ParameterizationBase(_Base, metaclass=_ParameterizationMeta):
     def __init__(self, parameters: SimpleNamespace = None):
         self._params = parameters
-        # The opaque transport identity: history holds this string, never the
-        # task (see TaskInfo). A copy would duplicate it, so never copy a task.
-        self.uuid = str(_uuid.uuid4())
 
     @property
     def _parameters_dict(self):
         return self._params.__dict__ if self._params else {}
 
-    @property
+    @cached_property
     def _parameters_dict_safe(self):
         return {k: safe_repr(v) for k, v in self._parameters_dict.items()}
+
+    @cached_property
+    def identity_key(self):
+        """The session-durable transport identity: the instance name plus a
+        digest of the raw parameter values. A value whose repr embeds a memory
+        address makes the key differ between processes."""
+        digest = identity_digest(self.instance_name, self._parameters_dict)
+        return f"{self.instance_name}-{digest}"
 
     @cached_property
     def _identity(self):

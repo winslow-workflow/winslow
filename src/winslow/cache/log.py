@@ -23,9 +23,9 @@ def cache_logger():
     """The logger for one cache emission, resolved from the ambient log context.
     A cache never stores a logger: a GlobalCache outlives every session."""
     ctx = _log_context()
-    if ctx is not None and ctx.task_uuid is not None:
+    if ctx is not None and ctx.task_key is not None:
         return logging.LoggerAdapter(
-            logging.getLogger(TASK_LOGGER_NAME), {"task_id": ctx.task_uuid}
+            logging.getLogger(TASK_LOGGER_NAME), {"task_id": ctx.task_key}
         )
     if ctx is not None and ctx.session_id is not None:
         # A session-scoped emission outside a task, for example a UI action or

@@ -32,10 +32,10 @@ _CSS = package_css(__package__, "task_detail.tcss")
 
 class TaskLogView(LogView):
     """The Logs tab. History passes the stored lines; without them the view is
-    live and reads the backlog and the stream by the task uuid alone."""
+    live and reads the backlog and the stream by the log key alone."""
 
-    def __init__(self, task_uuid, logs=None, *args, **kwargs):
-        self._task_uuid = task_uuid
+    def __init__(self, log_key, logs=None, *args, **kwargs):
+        self._log_key = log_key
         self._logs = logs
         super().__init__(*args, **kwargs)
         self._log_handler = InteractiveLogHandler(self.write)
@@ -48,13 +48,13 @@ class TaskLogView(LogView):
             # A record between the backlog read and the subscribe is lost. The
             # gap costs one display line at most, so the view accepts it.
             dispatcher = get_task_dispatcher()
-            for record in dispatcher.buffered(self._task_uuid):
+            for record in dispatcher.buffered(self._log_key):
                 self.write(INTERACTIVE_FORMATTER.format(record))
-            dispatcher.add_listener(self._task_uuid, self._log_handler)
+            dispatcher.add_listener(self._log_key, self._log_handler)
 
     def on_unmount(self):
         if self._logs is None:
-            get_task_dispatcher().remove_listener(self._task_uuid, self._log_handler)
+            get_task_dispatcher().remove_listener(self._log_key, self._log_handler)
 
 
 class AttributeTable(DataTable):
@@ -186,6 +186,7 @@ class TaskDetailWidget(Widget):
         self,
         info,
         logs=None,
+        log_key=None,
         transient_snapshots=None,
         cache_snapshots=None,
         *args,
@@ -193,6 +194,7 @@ class TaskDetailWidget(Widget):
     ):
         self.w_info = info
         self._logs = logs
+        self._log_key = log_key
         self._transient_snapshots = transient_snapshots
         self._cache_snapshots = cache_snapshots
         super().__init__(*args, **kwargs)
@@ -202,7 +204,7 @@ class TaskDetailWidget(Widget):
         info = self.w_info
         with TabbedContent(classes="main"):
             with TabPane("Logs"):
-                yield TaskLogView(info.uuid, logs=self._logs)
+                yield TaskLogView(self._log_key, logs=self._logs)
             with TabPane("Attributes"):
                 with VerticalScroll(classes="attributes"):
                     for title, columns, rows in info.attributes or ():
@@ -298,6 +300,7 @@ class TaskDetailPlugin(UIPlugin):
         return TaskDetailWidget(
             context.info,
             logs=context.logs,
+            log_key=context.log_key,
             transient_snapshots=context.transient_snapshots,
             cache_snapshots=context.cache_snapshots,
         )

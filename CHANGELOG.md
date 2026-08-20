@@ -6,6 +6,60 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [Unreleased]
+
+### Added
+
+- `Task.identity_key`: a stable, session-durable identity string (the instance name plus a digest of the
+  parameter reprs). Two builds of one task produce one key, so history, events and a future wire protocol
+  can name a task without holding it. `Workflow.task_index` resolves a key back to the live task of the
+  session through weak references, and it raises `IdentityKeyCollisionError` when two live tasks resolve
+  to one key.
+- The payload rule for UI plugins (see `docs/ui-plugins.md`): a Textual message and a store-listener
+  callback carry the identity key and `TaskInfo` values. `WorkflowRenderContext.task_statuses` carries
+  the `{key: TaskStatus}` mapping that the screen maintains.
+- Session persistence and restore (see `docs/sessions.md`). A `StateStore` adapter persists one
+  directory per session: the manifest, one snapshot file per task with its latest terminal status, and
+  one record per batch with the option snapshot, the task roster, and a log dump at the close.
+  `FileStateStore` is the default backend: live sessions under `WINSLOW_STATE_DIR/open` (default
+  `.winslow/state`), ended sessions archived under `ended/`, and `WINSLOW_STATE_BACKEND` selects a
+  backend that `register_state_backend` registered. The TUI dashboard lists the open manifests in a
+  Restore pane and rebuilds a session under its original id: terminal statuses seed from the snapshots,
+  mid-flight batches land in history as `ExecutionStatus.INTERRUPTED`, and their unsettled tasks come
+  back `READY_TO_PROCESS`.
+- `check_ttl`: a workflow-level default with a per-task override, in seconds. A passing snapshot younger
+  than the effective TTL counts as verified wherever a check would run, without a probe. Snapshots are
+  session-scoped, so the trust window spans a kill and a restore of the same session and never leaks
+  into another session. The default `None` keeps today's behavior: always probe.
+- `TaskStatus.STALE`: a passing status beyond its trust window turns STALE. A sweeper thread flips a
+  status whose TTL lapses live, a restore seeds an untrusted success as STALE, and the next touch
+  re-verifies it. The snapshot keeps the real outcome; `TaskInfo` carries `checked_at` and
+  `effective_ttl` for the detail modal.
+- The History pane filters by status: a dropdown beside the record search narrows the rows to one task
+  status, and composes with the search and the hide-completed toggle.
+
+### Changed
+
+- Breaking for plugin authors: `TaskStatusChanged` carries `(key, status)`; it carried the live task.
+  `ExecutionStatusChanged` and `TaskLogUpdated` name the task with `task_key`; the attribute was
+  `task_uuid`.
+- Breaking for plugin authors: `StoreListener.on_task_status(key, status)` receives the identity key.
+  `on_execution_status` and `on_log_appended` receive it as `task_key`. Every listener payload is a value.
+- Breaking for plugin authors: the Task Overview pane receives the statuses-by-key mapping
+  (`WorkflowRenderContext.task_statuses`); it received the live store.
+- `TaskInfo.uuid` and `TaskRef.uuid` are renamed to `key`, and the value is the identity key. Equality
+  and hash follow the key. `LogContext.task_uuid` is renamed to `task_key` and carries the in-process
+  log routing key (`Task.log_key`, a per-run nonce plus the identity key).
+- Execution history keys by the identity key: `ExecutionRecordStore`, `ExecutionBatch.errored` and the
+  status history of the store all hold identity keys.
+- The Caches pane is unchanged: its rows keep the live `BaseCache` objects, which are process-local UI
+  state.
+
+### Removed
+
+- `Task.uuid`. The identity key replaces it everywhere: log routing uses `Task.log_key`, and everything
+  session-durable uses `Task.identity_key`.
+
 ## [0.5.1] — 2026-08-17
 
 ### Added

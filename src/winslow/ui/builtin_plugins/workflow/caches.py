@@ -313,7 +313,7 @@ class CachesPane(SearchFlowMixin, Widget):
         """The row keys whose entry name or cache name contains the query."""
         query = query.lower()
         return {
-            row.w_task
+            row.search_key
             for row in self._rows.values()
             if query in row.entry_name.lower() or query in row.cache.get_name().lower()
         }

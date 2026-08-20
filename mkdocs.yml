@@ -37,6 +37,7 @@ nav:
       - Parameterization: parameterization.md
       - Constraints: constraints.md
       - Caching: caching.md
+      - Sessions and restore: sessions.md
       - Telemetry: telemetry.md
       - Plugins: plugins.md
       - UI plugins: ui-plugins.md

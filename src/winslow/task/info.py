@@ -323,7 +323,7 @@ class TaskRef:
     """A renderable pointer to another task: what a dependency row needs. No
     nested dependencies, so a TaskInfo stays bounded on a deep graph."""
 
-    uuid: str
+    key: str
     label: str
     is_premier: bool
     is_terminal: bool
@@ -335,7 +335,7 @@ class TaskRef:
     @classmethod
     def from_task(cls, task):
         return cls(
-            uuid=task.uuid,
+            key=task.identity_key,
             label=str(task),
             is_premier=task.is_premier,
             is_terminal=task.is_terminal,
@@ -351,9 +351,9 @@ class TaskInfo:
     from_task has two depths. The stub, the default, carries the identity and
     the dependency refs. The full capture adds attributes, docs, source and
     transients, and it evaluates a getter only with evaluate=True, which only
-    the on-demand detail view passes. Equality and hash use the uuid."""
+    the on-demand detail view passes. Equality and hash use the key."""
 
-    uuid: str
+    key: str
     label: str
     name: str
     is_premier: bool
@@ -366,6 +366,10 @@ class TaskInfo:
     dependencies: tuple = ()
     premier_dependencies: tuple = ()
     terminal_dependencies: tuple = ()
+    # The trust fields of the check_ttl rule, from the session snapshots. None
+    # means no verification on record, or no TTL (see Workflow.task_info).
+    checked_at: float = None
+    effective_ttl: float = None
     # Full-capture fields. None marks a stub, an empty tuple marks a capture
     # that found nothing.
     attributes: tuple = None
@@ -377,12 +381,12 @@ class TaskInfo:
         return self.label
 
     def __hash__(self):
-        return hash(self.uuid)
+        return hash(self.key)
 
     def __eq__(self, other):
         if not isinstance(other, TaskInfo):
             return NotImplemented
-        return self.uuid == other.uuid
+        return self.key == other.key
 
     def get_name(self):
         return self.name
@@ -395,7 +399,15 @@ class TaskInfo:
         return ", ".join(self.groups) if self.groups else None
 
     @classmethod
-    def from_task(cls, task, full=False, evaluate=False, root_dir=None):
+    def from_task(
+        cls,
+        task,
+        full=False,
+        evaluate=False,
+        root_dir=None,
+        checked_at=None,
+        effective_ttl=None,
+    ):
         from winslow.decorators import declared_transient_properties
 
         full = full or evaluate
@@ -403,7 +415,9 @@ class TaskInfo:
         task_cls = task.__class__
 
         return cls(
-            uuid=task.uuid,
+            key=task.identity_key,
+            checked_at=checked_at,
+            effective_ttl=effective_ttl,
             label=str(task),
             name=task.instance_name,
             is_terminal=task.is_terminal,

@@ -93,9 +93,10 @@ class LogContext:
     - task_instance: str(task), the declared name plus the parameter values.
     - batch_uuid:   identifies the execution action, one run or check that a
                     user started. None outside a batch.
-    - task_uuid:    the uuid of the task. It is not stamped onto the records:
-                    an ambient producer reads it to build the routing adapter
-                    of the task (see winslow.cache.cache_logger).
+    - task_key:     the log routing key of the task (see Task.log_key). It is
+                    not stamped onto the records: an ambient producer reads it
+                    to build the routing adapter of the task (see
+                    winslow.cache.cache_logger).
     """
 
     session_id: Optional[str]
@@ -104,7 +105,7 @@ class LogContext:
     task_name: Optional[str]
     task_instance: Optional[str]
     batch_uuid: Optional[str]
-    task_uuid: Optional[str] = None
+    task_key: Optional[str] = None
 
 
 _log_context: ContextVar[Optional[LogContext]] = ContextVar("log_context", default=None)

@@ -41,6 +41,11 @@ class DashboardSessionsPlugin(UIPlugin):
         return SessionsWidget()
 
 
+class RestorableWidget(SessionListWidget):
+    LIST_ID = "restorable-list"
+    EMPTY_TEXT = "No sessions to restore."
+
+
 class DashboardHistoryPlugin(UIPlugin):
     slot = Slots.DASHBOARD_SESSIONS
     label = "History"
@@ -48,3 +53,12 @@ class DashboardHistoryPlugin(UIPlugin):
 
     def create_widget(self, context: RenderContext):
         return HistoryWidget()
+
+
+class DashboardRestorePlugin(UIPlugin):
+    slot = Slots.DASHBOARD_SESSIONS
+    label = "Restore"
+    priority = DashboardHistoryPlugin.priority + 1
+
+    def create_widget(self, context: RenderContext):
+        return RestorableWidget()

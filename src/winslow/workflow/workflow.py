@@ -1,7 +1,9 @@
-import hashlib
-import json
 import operator
+import time
+import uuid
 from argparse import ArgumentParser, Namespace
+from dataclasses import asdict, replace
+from functools import cached_property
 
 from winslow._config import _ConfigBase
 from winslow.cache import (
@@ -12,16 +14,24 @@ from winslow.cache import (
     workflow_cache_context,
 )
 from winslow.filter import FilterRegistry
-from winslow.task import TaskRegistry, TaskStatus
+from winslow.task import TaskIndex, TaskRegistry, TaskStatus
 from winslow.task.context import BatchOptions
+from winslow.task.info import TaskInfo
 from winslow.task.status import PASSING_STATUSES, UNSUCCESSFUL_STATUSES
 from winslow.constants import Mode
 from winslow.runner.store import TaskStore, InteractiveStore
 from winslow.graph import Graph
 from winslow.runner import HeadlessRunner, InteractiveRunner
-from winslow.session import Session
+from winslow.session import Session, SessionStatus
+from winslow.state import (
+    SessionManifest,
+    SessionPersistenceAdapter,
+    StaleSweeper,
+    StoreListenerSlot,
+    is_trusted,
+)
 from winslow.logger import LOGGER
-from winslow.util import slugify
+from winslow.util import identity_digest, slugify
 from winslow.exceptions import MisconfigurationError, InitializationError
 
 
@@ -43,6 +53,11 @@ class Workflow(_ConfigBase):
         Mode.HEADLESS: HeadlessRunner,
         Mode.TUI: InteractiveRunner,
     }
+
+    # The default check TTL of the tasks, in seconds: a passing check younger
+    # than this counts as verified without a probe. None means always probe.
+    # A task overrides it with its own check_ttl (see BaseRunner).
+    check_ttl = None
 
     graph_class = Graph
     registry_class = TaskRegistry
@@ -84,6 +99,7 @@ class Workflow(_ConfigBase):
         # initialize_tasks builds the containers, before it builds the graph.
         self._workflow_cache = None
         self._global_cache = None
+        self._task_index = None
 
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
@@ -180,16 +196,20 @@ class Workflow(_ConfigBase):
     def identity_hash(self):
         """A digest of the full identity: two runs collide only when the name
         and every identifier match, however identity_prefix flattened them."""
-        payload = json.dumps(
-            [self.instance_name, self.identifiers_dict_safe], sort_keys=True
-        )
-        return hashlib.sha1(payload.encode("utf-8")).hexdigest()[:8]
+        return identity_digest(self.instance_name, self.identifiers_dict_safe)
 
     @property
     def cache_namespace(self):
         """The directory of the persistent cache tiers of this run (see
         JsonFileStorage): readable prefix plus digest, stable across sessions."""
         return f"{self.identity_prefix}-{self.identity_hash}"
+
+    @cached_property
+    def run_nonce(self):
+        """The nonce separates two concurrent runs of one workflow in the log
+        routing (see Task.log_key). The property owns the name, so a config
+        option cannot bind it."""
+        return str(uuid.uuid4())
 
     def __str__(self):
         """The display form of the run: the name plus the identifier options,
@@ -220,6 +240,15 @@ class Workflow(_ConfigBase):
                 f"{self} caches read before initialize_tasks built them."
             )
         return self._workflow_cache
+
+    @property
+    def task_index(self):
+        """Resolve an identity key to a live task (see TaskIndex)."""
+        if self._task_index is None:
+            raise InitializationError(
+                f"{self} task index read before initialize_tasks built it."
+            )
+        return self._task_index
 
     def _initialize_caches(self):
         """Build and populate the containers of both scopes: the graph and the
@@ -262,7 +291,14 @@ class Workflow(_ConfigBase):
             # propagate a context variable.
             task._workflow_cache_container = self._workflow_cache
             task._global_cache_container = self._global_cache
+            # The nonce goes first: the buffer registers under log_key, and
+            # the nonce prefixes that key.
+            task._run_nonce = self.run_nonce
+            if self.orchestrator_config.is_interactive:
+                task._enable_log_buffer()
             self.store[task] = TaskStatus.INITIALIZED
+
+        self._task_index = TaskIndex(tasks)
 
         logger.debug(f"{self} initialized {len(self.store)} tasks.")
 
@@ -284,6 +320,174 @@ class Workflow(_ConfigBase):
         # The container dies with the session. Only a new session builds fresh
         # WorkflowCache instances.
         self._workflow_cache = None
+
+    def effective_check_ttl(self, task):
+        """The check TTL of the task: its own declaration when set, else the
+        workflow default (see check_ttl)."""
+        return task.check_ttl if task.check_ttl is not None else self.check_ttl
+
+    def task_info(self, task, **kwargs):
+        """The TaskInfo of the task, with the trust fields of the check_ttl
+        rule filled from the stored snapshot (see TaskInfo.from_task)."""
+        entry = self.load_snapshot(task.identity_key)
+        return TaskInfo.from_task(
+            task,
+            checked_at=entry.checked_at if entry is not None else None,
+            effective_ttl=self.effective_check_ttl(task),
+            **kwargs,
+        )
+
+    # The store owns both listeners: the registration is the one persistence
+    # switch. Each slot refuses a second listener of its kind.
+    persistence_listener = StoreListenerSlot(SessionPersistenceAdapter)
+    stale_sweeper = StoreListenerSlot(StaleSweeper)
+
+    @property
+    def state_store(self):
+        """The store backend of the attached persistence, or None."""
+        listener = self.persistence_listener
+        return listener.state_store if listener is not None else None
+
+    def init_state(
+        self,
+        state_store,
+        origin=None,
+        orchestrator_overrides=None,
+        workflow_values=None,
+    ):
+        """Start persistence for the attached session: the manifest, and the
+        persistence listener on the store. Call this once the pipeline is
+        runnable, after the eligibility pass: the manifest marks the session
+        as a restore candidate. A failure degrades to a run without state."""
+        if self.persistence_listener is not None:
+            # A second registration doubles the writes. The replay exclusion
+            # then misses one adapter (see set_status).
+            return
+        session = self._session
+        adapter = sweeper = None
+        try:
+            adapter = SessionPersistenceAdapter(state_store, session.session_id)
+            self.persistence_listener = adapter
+            sweeper = StaleSweeper(self)
+            self.stale_sweeper = sweeper
+            # The manifest lands last: a failure before this point leaves no
+            # durable state.
+            state_store.save_manifest(
+                SessionManifest(
+                    session_id=session.session_id,
+                    workflow_class=type(self).get_name(),
+                    workflow_namespace=self.cache_namespace,
+                    orchestrator_overrides=orchestrator_overrides,
+                    workflow_values=workflow_values,
+                    origin=origin,
+                    started_at=session.start,
+                )
+            )
+        except Exception:
+            # A persistence failure must not break the session start: the
+            # session degrades to a run without state. The locals include a
+            # listener whose registration failed.
+            for attached in (adapter, sweeper):
+                if attached is not None:
+                    self.store.remove_listener(attached)
+                    attached.close()
+            self.logger.error(
+                f"Could not persist the manifest of {session.session_id} - "
+                f"the session runs without state",
+                exc_info=True,
+            )
+
+    def load_snapshot(self, key):
+        """The latest snapshot of the key, or None. The listener overlays the
+        writes of this session on the initial state, so the read stays in
+        memory (see SessionPersistenceAdapter.get)."""
+        listener = self.persistence_listener
+        return listener.get(key) if listener is not None else None
+
+    def seed_from_state(self):
+        """Feed the persisted state of the session onto the store: the
+        snapshots replay as statuses, and the open batch records register as
+        INTERRUPTED. Call this after the eligibility pass: that pass
+        overwrites earlier status writes."""
+        listener = self.persistence_listener
+        if listener is None:
+            return
+        self._seed_task_statuses(listener.initial_state)
+        self.runner.seed_interrupted_batches(
+            listener.state_store.load_open_batches(self.session_id)
+        )
+
+    def _seed_task_statuses(self, snapshots):
+        """Replay the last terminal status of each task that the eligibility
+        pass left READY_TO_PROCESS."""
+        for task in self.tasks:
+            if self.store[task] is not TaskStatus.READY_TO_PROCESS:
+                continue
+            entry = snapshots.get(task.identity_key)
+            status = TaskStatus.__members__.get(entry.status) if entry else None
+            if status is None:
+                continue
+            if status in PASSING_STATUSES and not is_trusted(
+                entry.checked_at,
+                self.effective_check_ttl(task),
+                self._session.start,
+                time.time(),
+            ):
+                # An untrusted success seeds as STALE: the next touch
+                # re-verifies it (see TaskStatus.STALE).
+                status = TaskStatus.STALE
+            # An ordinary store write, so the listeners see a normal
+            # event. The exclusion keeps checked_at where the probe
+            # left it (see SessionPersistenceAdapter).
+            self.runner.set_status(
+                task, status, None, excluded_callbacks=self.persistence_listener
+            )
+
+    def record_batch_options(self):
+        """Fold the live batch options into the stored manifest. A restore
+        thus rebuilds the session with the toggles the user set."""
+        if self.state_store is None:
+            return
+        try:
+            manifest = self.state_store.load_manifest(self.session_id)
+            if manifest is None:
+                return
+            overrides = {
+                **(manifest.orchestrator_overrides or {}),
+                **asdict(self.batch_options),
+            }
+            self.state_store.save_manifest(
+                replace(manifest, orchestrator_overrides=overrides)
+            )
+        except Exception:
+            self.logger.error(
+                f"Could not update the manifest of {self.session_id}",
+                exc_info=True,
+            )
+
+    def archive_state(self):
+        """End persistence: stop the sweeper and the writer, deregister them,
+        then stamp and archive the manifest. The session end calls this, and
+        a persistence failure must not break the end. A session in ERROR
+        archives as failed (see StateStore.mark_errored)."""
+        if (sweeper := self.stale_sweeper) is not None:
+            sweeper.close()
+            self.store.remove_listener(sweeper)
+        listener = self.persistence_listener
+        if listener is None:
+            return
+        listener.close()
+        self.store.remove_listener(listener)
+        try:
+            if self.session.status is SessionStatus.ERROR:
+                listener.state_store.mark_errored(self.session_id)
+            else:
+                listener.state_store.mark_ended(self.session_id)
+        except Exception:
+            self.logger.error(
+                f"Could not archive the manifest of {self.session_id}",
+                exc_info=True,
+            )
 
     def check_pipeline_eligibility(self, logger=LOGGER):
         tasks = self.tasks

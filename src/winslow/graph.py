@@ -213,10 +213,6 @@ class Graph(_Base):
             elif self._should_initialize_task(task_kls):
                 result.append(self.initialize_task(task_kls))
 
-        if self.orchestrator_config.is_interactive:
-            for task in result:
-                task._enable_log_buffer()
-
         return result
 
     def _should_initialize_task(self, task_kls, parameters=None):

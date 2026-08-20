@@ -22,6 +22,7 @@ TASK_ICONS = {
     TaskStatus.COMPLETED_WITH_ERROR: "🟣",
     TaskStatus.COMPLETED_PREVIOUSLY: "🟢",
     TaskStatus.FORCE_SUCCESS: "🟢",
+    TaskStatus.STALE: "🔴",
     TaskStatus.ABORTED: "⛔",
     TaskStatus.WAITING_FOR_RELEASE: "⏳",
 }
