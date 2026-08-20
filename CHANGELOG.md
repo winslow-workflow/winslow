@@ -42,9 +42,11 @@ versions may include breaking changes).
   status, and composes with the search and the hide-completed toggle.
 - The session event bus (`SessionBus`, on `Workflow.bus`): one event path per session. Every component
   that observes a session subscribes once, by event class (`winslow.events`), with
-  `bus.subscribe(TaskStatusEvent, callback)`. The bus dispatches synchronously on the publishing
-  thread with no defined subscriber order, logs and skips a raising subscriber, and `bus.close()` at
-  session end disconnects every remaining subscriber. blinker >= 1.9 joins the core dependencies.
+  `bus.subscribe(TaskStatusEvent, callback)`. The vocabulary is declared on
+  `SessionBus.event_classes`, and a subclass extends it; an undeclared event class refuses loudly.
+  The bus dispatches synchronously on the publishing thread with no defined subscriber order, logs
+  and skips a raising subscriber, and `bus.close()` at session end disconnects every remaining
+  subscriber. blinker >= 1.9 joins the core dependencies.
 - `Origin` on every store event: `RUN` for a live transition, `SEED` for a restore write. The
   persistence subscriber skips `SEED` events itself, so every other subscriber observes seed writes
   with their origin.

@@ -6,6 +6,14 @@ import threading
 
 from blinker import Signal
 
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    ExecutionStatusEvent,
+    LogLineEvent,
+    SessionEndedEvent,
+    TaskStatusEvent,
+)
 from winslow.exceptions import RegistrationError
 from winslow.logger import LOGGER
 
@@ -50,20 +58,39 @@ class SessionBus:
     deadlock: the worker holds the store lock and waits for the UI thread,
     while the UI thread waits for the store lock to read a status."""
 
+    # The event vocabulary of the bus. A subclass overrides this to extend it.
+    event_classes = (
+        TaskStatusEvent,
+        ExecutionStatusEvent,
+        BatchCreatedEvent,
+        BatchCompletedEvent,
+        LogLineEvent,
+        SessionEndedEvent,
+    )
+
+    @classmethod
+    def get_event_classes(cls):
+        """The declared events of this bus (see event_classes)."""
+        return cls.event_classes
+
     def __init__(self):
         # The lock guards the subscription table. publish runs outside the
         # lock: blinker iterates a snapshot, so a subscriber can unsubscribe
         # from another thread during a dispatch.
         self._lock = threading.Lock()
-        self._signals = {}
+        self._signals = {
+            event_class: Signal() for event_class in self.get_event_classes()
+        }
         self._receivers = {}
         self._closed = False
 
-    def _signal_of(self, event_class):
-        # Only under the lock.
-        if event_class not in self._signals:
-            self._signals[event_class] = Signal()
-        return self._signals[event_class]
+    def _refuse_undeclared(self, event_class):
+        raise RegistrationError(
+            f"{event_class.__name__} is not a declared event of this bus. "
+            f"The declared events are "
+            f"{sorted(k.__name__ for k in self.get_event_classes())}. "
+            f"A subclass extends event_classes."
+        )
 
     def subscribe(self, event_class, callback):
         """Connect the callback to the event class. The bus holds the callback
@@ -76,6 +103,8 @@ class SessionBus:
                     f"to {event_class.__name__}. Subscribe before the session "
                     f"ends."
                 )
+            if event_class not in self._signals:
+                self._refuse_undeclared(event_class)
             if (event_class, callback) in self._receivers:
                 raise RegistrationError(
                     f"{callback!r} is already subscribed to "
@@ -83,7 +112,7 @@ class SessionBus:
                     f"subscription."
                 )
             self._receivers[(event_class, callback)] = receiver
-            self._signal_of(event_class).connect(receiver, weak=False)
+            self._signals[event_class].connect(receiver, weak=False)
 
     def unsubscribe(self, event_class, callback):
         """Disconnect the callback. An unknown callback is a no-op, so a
@@ -99,9 +128,12 @@ class SessionBus:
         subscriber. A publish on a closed bus is a no-op: the session end can
         race a draining worker."""
         with self._lock:
+            if self._closed:
+                return
             signal = self._signals.get(type(event))
-        if signal is not None:
-            signal.send(self, event=event)
+        if signal is None:
+            self._refuse_undeclared(type(event))
+        signal.send(self, event=event)
 
     def close(self):
         """Disconnect every remaining subscriber. The session end calls this
@@ -110,4 +142,6 @@ class SessionBus:
             for (event_class, _), receiver in self._receivers.items():
                 self._signals[event_class].disconnect(receiver)
             self._receivers.clear()
+            # An empty table frees the signals with the session.
+            self._signals.clear()
             self._closed = True

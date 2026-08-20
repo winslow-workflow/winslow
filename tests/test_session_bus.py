@@ -36,6 +36,33 @@ def test_a_raising_subscriber_does_not_stop_the_dispatch():
     assert seen == [SessionEndedEvent(session_id="s")]
 
 
+class _PluginEvent:
+    pass
+
+
+def test_an_undeclared_event_refuses_loudly():
+    bus = SessionBus()
+
+    with pytest.raises(RegistrationError, match="_PluginEvent"):
+        bus.subscribe(_PluginEvent, lambda event: None)
+    with pytest.raises(RegistrationError, match="_PluginEvent"):
+        bus.publish(_PluginEvent())
+
+
+def test_a_subclass_extends_the_event_vocabulary():
+    class PluginBus(SessionBus):
+        event_classes = SessionBus.event_classes + (_PluginEvent,)
+
+    bus = PluginBus()
+    seen = []
+    bus.subscribe(_PluginEvent, seen.append)
+
+    event = _PluginEvent()
+    bus.publish(event)
+
+    assert seen == [event]
+
+
 def test_close_is_idempotent_and_final():
     bus = SessionBus()
     seen = []
