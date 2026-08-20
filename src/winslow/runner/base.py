@@ -1,4 +1,3 @@
-import time
 
 from contextlib import contextmanager
 from dataclasses import asdict, replace
@@ -31,7 +30,7 @@ from winslow.task.context import (
 )
 
 from winslow.events import Origin
-from winslow.state import BatchRecord, is_trusted
+from winslow.state import BatchRecord
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
 from winslow.task.eligibility import check_task_eligibility
@@ -217,9 +216,8 @@ class BaseRunner(_Base):
                 batch.errored.discard(task.identity_key)
             elif status is TaskStatus.ERROR:
                 batch.errored.add(task.identity_key)
-        # A replay of a stored snapshot stamps REPLAY on the event, and the
-        # persistence subscriber returns at once: a fresh stamp would move
-        # checked_at without a probe (see SessionPersistenceAdapter).
+        # A seed write stamps SEED: a fresh stamp would move checked_at
+        # without a probe (see SessionPersistenceAdapter).
         self.store.set(task, status, origin=origin)
 
     def _batch_record(self, batch, tasks):
@@ -380,26 +378,6 @@ class BaseRunner(_Base):
             self.set_status(task, TaskStatus.FORCE_SUCCESS, batch_uuid)
         return True
 
-    def _trusted_by_snapshot(self, task, batch_uuid):
-        """The check_ttl gate: a passing entry inside its TTL replaces the
-        probe. Every check path passes _check_task_success, so the rule is
-        uniform (see docs/sessions.md)."""
-        workflow = self.workflow
-        ttl = workflow.effective_check_ttl(task)
-        if ttl is None:
-            return False
-        entry = workflow.load_snapshot(task.identity_key)
-        if entry is None:
-            return False
-        status = TaskStatus.__members__.get(entry.status)
-        if status not in PASSING_STATUSES:
-            return False
-        if not is_trusted(entry.checked_at, ttl, workflow.session.start, time.time()):
-            return False
-        self.logger.debug(f"{task} verified by its snapshot as {status} - no probe.")
-        self.set_status(task, status, batch_uuid, origin=Origin.REPLAY)
-        return True
-
     def _check_task_success(self, task, batch_uuid, phase=ExecutionPhase.CHECK):
         if self._refuse_ineligible(task):
             return
@@ -407,9 +385,6 @@ class BaseRunner(_Base):
         if self._force_success(
             task, self._execution_context_for(batch_uuid), batch_uuid
         ):
-            return
-
-        if self._trusted_by_snapshot(task, batch_uuid):
             return
 
         self.logger.debug(f"Checking success: {task}")

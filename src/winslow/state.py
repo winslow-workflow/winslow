@@ -356,7 +356,7 @@ class SessionPersistenceAdapter:
     callback only queues, so it stays cheap under the store lock, and the
     writer thread lands the write. A read overlays the writes of this session
     on the initial state. The subscriber acts only on a live transition: a
-    REPLAY or SEED write re-applies a stored value (see Origin)."""
+    SEED write re-applies a stored value (see Origin)."""
 
     def __init__(self, state_store, session_id):
         self.state_store = state_store

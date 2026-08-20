@@ -25,9 +25,9 @@ class ReactiveDict(dict):
         self.set(key, value)
 
     def set(self, key, value, origin=Origin.RUN) -> None:
-        """Write, and stamp the origin of the write on the event. A replay or
-        a seed write names itself, so the persistence subscriber can return
-        at once (see SessionPersistenceAdapter)."""
+        """Write, and stamp the origin of the write on the event. A seed
+        write names itself, so the persistence subscriber can return at once
+        (see SessionPersistenceAdapter)."""
         with self._lock:
             # A redundant write is dropped completely. The dict write is cheap,
             # but the callback and the subscribers can be slow (UI adapters).

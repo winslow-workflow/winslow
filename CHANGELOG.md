@@ -27,10 +27,13 @@ versions may include breaking changes).
   Restore pane and rebuilds a session under its original id: terminal statuses seed from the snapshots,
   mid-flight batches land in history as `ExecutionStatus.INTERRUPTED`, and their unsettled tasks come
   back `READY_TO_PROCESS`.
-- `check_ttl`: a workflow-level default with a per-task override, in seconds. A passing snapshot younger
-  than the effective TTL counts as verified wherever a check would run, without a probe. Snapshots are
-  session-scoped, so the trust window spans a kill and a restore of the same session and never leaks
-  into another session. The default `None` keeps today's behavior: always probe.
+- `check_ttl`: a workflow-level default with a per-task override, in seconds. The trust rule lives in
+  the state writers: a restore seeds a passing snapshot younger than the effective TTL as its recorded
+  status, and the sweeper flips a live status to STALE when its TTL lapses. The runner reads the store:
+  a passing status skips the pre-run check and satisfies dependencies, and an explicit check batch
+  always probes. Snapshots are session-scoped, so the trust window spans a kill and a restore of the
+  same session and never leaks into another session. The default `None` keeps today's behavior: an
+  old success seeds as STALE and re-probes on first touch.
 - `TaskStatus.STALE`: a passing status beyond its trust window turns STALE. A sweeper thread flips a
   status whose TTL lapses live, a restore seeds an untrusted success as STALE, and the next touch
   re-verifies it. The snapshot keeps the real outcome; `TaskInfo` carries `checked_at` and
@@ -42,9 +45,9 @@ versions may include breaking changes).
   `bus.subscribe(TaskStatusEvent, callback)`. The bus dispatches synchronously in subscription order,
   logs and skips a raising subscriber, and `bus.close()` at session end disconnects every remaining
   subscriber. blinker >= 1.9 joins the core dependencies.
-- `Origin` on every store event: `RUN` for a live transition, `REPLAY` for a persisted value
-  re-applied, `SEED` for a restore write. The persistence subscriber skips non-`RUN` events itself,
-  so every other subscriber observes replay and seed writes with their origin.
+- `Origin` on every store event: `RUN` for a live transition, `SEED` for a restore write. The
+  persistence subscriber skips `SEED` events itself, so every other subscriber observes seed writes
+  with their origin.
 - `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
   and the Caches pane subscribe to it instead of polling `has_ended`.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the

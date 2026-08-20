@@ -7,12 +7,10 @@ from enum import Enum
 
 
 class Origin(Enum):
-    """Why a store write happened. RUN is a live transition. REPLAY re-applies
-    a persisted value (see SessionPersistenceAdapter). SEED is a restore write
-    (see Workflow.seed_from_state)."""
+    """Why a store write happened. RUN is a live transition. SEED is a
+    restore write (see Workflow.seed_from_state)."""
 
     RUN = "run"
-    REPLAY = "replay"
     SEED = "seed"
 
 

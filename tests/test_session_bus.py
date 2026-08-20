@@ -63,10 +63,9 @@ def test_close_is_idempotent_and_final():
 def test_the_persistence_subscriber_acts_only_on_run_writes(state_store):
     adapter = SessionPersistenceAdapter(state_store, "sess-origin")
     try:
-        for origin in (Origin.REPLAY, Origin.SEED):
-            adapter.on_task_status(
-                TaskStatusEvent(key="k", status=TaskStatus.COMPLETED, origin=origin)
-            )
+        adapter.on_task_status(
+            TaskStatusEvent(key="k", status=TaskStatus.COMPLETED, origin=Origin.SEED)
+        )
         adapter.flush()
         assert state_store.load_status_snapshots("sess-origin") == {}
 

@@ -110,11 +110,13 @@ class Extract(Task):
         ...
 ```
 
-The rule is uniform wherever a check would run: the check pass, dependency resolution, and the
-pre-run completion check all consult the session's snapshots first. A passing snapshot younger than
-the effective TTL counts as verified, the runner sets that status without calling `check()`, and
-the snapshot keeps its original check time. Because the snapshots survive a process death, the trust
-window spans a kill and a restore of the same session.
+The trust rule lives in the state writers, so the store status itself carries it. A restore seeds a
+passing snapshot younger than the effective TTL as its recorded status, and the session's sweeper
+flips a live status to [STALE](#stale) when its TTL lapses. The runner then reads the store: a
+passing status skips the pre-run completion check and satisfies dependency resolution, and an
+explicit check batch always runs `check()`. The seeded status keeps its original check time, and
+because the snapshots survive a process death, the trust window spans a kill and a restore of the
+same session.
 
 ## STALE
 
