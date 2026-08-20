@@ -4,6 +4,7 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Button, LoadingIndicator
 
+from winslow.events import SessionEndedEvent
 from winslow.session import SessionStatus
 from winslow.ui.formatting import format_status_summary, format_elapsed
 
@@ -48,7 +49,6 @@ class SessionRow(Widget):
         self._workflow_name = workflow_name
         self.session = session
         self.error = error
-        self._ended_posted = False
         super().__init__(*args, **kwargs)
 
     def _summary_label(self):
@@ -98,7 +98,15 @@ class SessionRow(Widget):
         self.border_subtitle = session.workflow.identifier_suffix
         self.is_loading = False
         self._refresh_summary()
+        # The bus fires the end once; the session-end sweep disconnects the
+        # subscription. The tick only refreshes the display.
+        session.workflow.bus.subscribe(SessionEndedEvent, self._on_session_ended)
         self.set_interval(SUMMARY_REFRESH_INTERVAL, self._tick)
+
+    def _on_session_ended(self, event):
+        # This is display only. The SessionLifecycleAdapter of the app does
+        # the finalization, and this row only reads the outcome.
+        self.post_message(SessionEnded(self, self.session))
 
     @classmethod
     def _waiting_text(cls, batches):
@@ -118,14 +126,7 @@ class SessionRow(Widget):
         self._refresh_summary()
         if self.session is None:
             return
-        # This is display only. The SessionLifecycleAdapter of the app does the
-        # finalization, and this row only reads the outcome. The flag prevents a
-        # second post while the removal is in progress.
-        if self.session.has_ended:
-            if not self._ended_posted:
-                self._ended_posted = True
-                self.post_message(SessionEnded(self, self.session))
-        elif self.session.status is SessionStatus.ENDING:
+        if self.session.status is SessionStatus.ENDING:
             self.query_one(".waiting", Label).update(
                 self._waiting_text(self.session.active_batches)
             )

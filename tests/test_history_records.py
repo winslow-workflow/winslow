@@ -15,7 +15,7 @@ import pytest
 
 from winslow.constants import Mode
 from winslow.logger import RUNS_LOGGER_NAME
-from winslow.store import StoreListener
+from winslow.events import ExecutionStatusEvent
 from winslow.task.info import NOT_EVALUATED, TaskInfo, TaskRef
 from winslow.task.status import TaskStatus as S
 from winslow.task.task import Task
@@ -25,6 +25,7 @@ from harness import (
     by_name,
     gated_workflow,
     run_all,
+    run_batch,
     start_gated_batch,
 )
 
@@ -310,20 +311,21 @@ def test_history_search_refuses_a_builtin_filter_subclass():
     assert _foreign_filter_names(filters) == ["project"]
 
 
-class _EventRecorder(StoreListener):
+class _EventRecorder:
     def __init__(self):
         self.statuses = []
 
-    def on_execution_status(self, task_key, status, batch_uuid):
-        self.statuses.append((batch_uuid, task_key, status))
+    def on_execution_status(self, event):
+        self.statuses.append((event.batch_uuid, event.task_key, event.status))
 
 
 def test_execution_events_route_by_batch_and_task_key(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI)
     recorder = _EventRecorder()
-    workflow.store.add_listener(recorder)
+    workflow.bus.subscribe(ExecutionStatusEvent, recorder.on_execution_status)
 
     run_all(workflow)
+    run_batch(workflow, workflow.tasks)
 
     assert recorder.statuses
     batch_uuids = set(workflow.runner.execution_batches_map)
@@ -331,3 +333,5 @@ def test_execution_events_route_by_batch_and_task_key(e2e_repo):
     for batch_uuid, task_key, _ in recorder.statuses:
         assert batch_uuid in batch_uuids
         assert task_key in task_keys
+    # One subscription covers every batch: the events of both batches arrive.
+    assert len({batch_uuid for batch_uuid, _, _ in recorder.statuses}) == 2

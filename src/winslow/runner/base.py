@@ -30,6 +30,7 @@ from winslow.task.context import (
     scoped_log_context,
 )
 
+from winslow.events import Origin
 from winslow.state import BatchRecord, is_trusted
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
@@ -206,7 +207,7 @@ class BaseRunner(_Base):
                 if self.orchestrator_config.reraise_errors:
                     raise
 
-    def set_status(self, task, status, batch_uuid, excluded_callbacks=None):
+    def set_status(self, task, status, batch_uuid, origin=Origin.RUN):
         # The current runners abort on ERROR, but a custom runner may
         # introduce retry logic in a batch. An errored task can then run
         # again in the same batch, and the RUNNING write must reset the flag.
@@ -216,10 +217,10 @@ class BaseRunner(_Base):
                 batch.errored.discard(task.identity_key)
             elif status is TaskStatus.ERROR:
                 batch.errored.add(task.identity_key)
-        # A replay of a stored snapshot excludes the persistence listener of
-        # the session: a fresh stamp would move checked_at without a probe
-        # (see SessionPersistenceAdapter).
-        self.store.set(task, status, excluded_callbacks=excluded_callbacks)
+        # A replay of a stored snapshot stamps REPLAY on the event, and the
+        # persistence subscriber returns at once: a fresh stamp would move
+        # checked_at without a probe (see SessionPersistenceAdapter).
+        self.store.set(task, status, origin=origin)
 
     def _batch_record(self, batch, tasks):
         """The audit record of one batch: the option snapshot and the roster.
@@ -396,9 +397,7 @@ class BaseRunner(_Base):
         if not is_trusted(entry.checked_at, ttl, workflow.session.start, time.time()):
             return False
         self.logger.debug(f"{task} verified by its snapshot as {status} - no probe.")
-        self.set_status(
-            task, status, batch_uuid, excluded_callbacks=workflow.persistence_listener
-        )
+        self.set_status(task, status, batch_uuid, origin=Origin.REPLAY)
         return True
 
     def _check_task_success(self, task, batch_uuid, phase=ExecutionPhase.CHECK):

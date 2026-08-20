@@ -19,6 +19,7 @@ from winslow.cache import (
     StorageRecord,
     declared_entries,
 )
+from winslow.events import SessionEndedEvent
 from winslow.ui.css import package_css
 from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
@@ -165,11 +166,17 @@ class CacheCard(Widget):
         self.border_title = f"{self._title_prefix}  ·  {warm}/{len(infos)} warm "
 
 
+class _SessionEnded(Message):
+    """The bus callback runs on the publishing thread. This message moves the
+    tick stop to the UI thread."""
+
+
 class CachesPane(SearchFlowMixin, Widget):
     DEFAULT_CSS = _CSS
 
     def __init__(self, workflow, *args, **kwargs):
         self.workflow = workflow
+        self._tick_timer = None
         self._rows = {}
         self._cards = {}
         self._search = ""
@@ -211,8 +218,20 @@ class CachesPane(SearchFlowMixin, Widget):
             self._cards[card.cache] = card
             for row in card.query(CacheEntryRow).results():
                 self._rows[(row.cache, row.entry_name)] = row
-        self.set_interval(CACHE_TICK_SECONDS, self._schedule_refresh)
+        self._tick_timer = self.set_interval(
+            CACHE_TICK_SECONDS, self._schedule_refresh
+        )
+        # The session end releases the workflow cache, so a later tick would
+        # read a dead container. The message moves the stop to the UI thread.
+        self.workflow.bus.subscribe(SessionEndedEvent, self._on_session_ended)
         self._schedule_refresh()
+
+    def _on_session_ended(self, event):
+        self.post_message(_SessionEnded())
+
+    @on(_SessionEnded)
+    def _stop_ticking(self):
+        self._tick_timer.stop()
 
     # --- refresh: every render comes from a peek --------------------------
 

@@ -6,10 +6,10 @@ import time
 
 import pytest
 
+from winslow.events import Origin, TaskStatusEvent
 from winslow.runner.execution import ExecutionStatus
 from winslow.session import Session
 from winslow.state import BatchRecord
-from winslow.store import StoreListener
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus as S
 
 from harness import build_workflow, by_name, run_batch
@@ -242,18 +242,20 @@ def test_seed_writes_reach_the_other_listeners(e2e_repo, state_store, mode):
         e2e_repo, state_store, mode, session_id=session.session_id
     )
     seen = {}
+    origins = set()
 
-    class Recorder(StoreListener):
-        def on_task_status(self, key, status):
-            seen[key] = status
+    def record(event):
+        seen[event.key] = event.status
+        origins.add(event.origin)
 
-    second.store.add_listener(Recorder())
+    second.bus.subscribe(TaskStatusEvent, record)
     second.seed_from_state()
 
-    # Every replayed snapshot reached the listener as a normal store event;
-    # only the persistence listener was excluded.
+    # Every replayed snapshot reached the subscriber as a normal store event,
+    # stamped SEED; the persistence subscriber skips that origin itself.
     snapshots = state_store.load_status_snapshots(session.session_id)
     assert set(seen) == set(snapshots)
+    assert origins == {Origin.SEED}
     for key, entry in snapshots.items():
         expected = S[entry.status]
         if expected in PASSING_STATUSES:

@@ -17,14 +17,13 @@ from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
+from winslow.events import Origin
 from winslow.exceptions import (
     MisconfigurationError,
-    RegistrationError,
     SerializationError,
 )
 from winslow.logger import LOGGER
 from winslow.settings import config
-from winslow.store import StoreListener
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
 
@@ -352,11 +351,12 @@ def is_trusted(checked_at, ttl, session_start, now):
 _STOP = object()
 
 
-class SessionPersistenceAdapter(StoreListener):
+class SessionPersistenceAdapter:
     """The single path of a task status onto and off persistence. The
     callback only queues, so it stays cheap under the store lock, and the
     writer thread lands the write. A read overlays the writes of this session
-    on the initial state. A replay excludes this listener (see set_status)."""
+    on the initial state. The subscriber acts only on a live transition: a
+    REPLAY or SEED write re-applies a stored value (see Origin)."""
 
     def __init__(self, state_store, session_id):
         self.state_store = state_store
@@ -384,12 +384,16 @@ class SessionPersistenceAdapter(StoreListener):
         entry = self._written.get(key)
         return entry if entry is not None else self.initial_state.get(key)
 
-    def on_task_status(self, key, status):
-        if status not in SNAPSHOT_STATUSES or self._closed:
+    def on_task_status(self, event):
+        if event.origin is not Origin.RUN:
+            return
+        if event.status not in SNAPSHOT_STATUSES or self._closed:
             return
         # The callback stamps checked_at now, so queue latency cannot move it.
-        entry = StatusSnapshot(key=key, status=status.name, checked_at=time.time())
-        self._written[key] = entry
+        entry = StatusSnapshot(
+            key=event.key, status=event.status.name, checked_at=time.time()
+        )
+        self._written[event.key] = entry
         self._queue.put(entry)
 
     def _drain_queue(self):
@@ -422,7 +426,7 @@ class SessionPersistenceAdapter(StoreListener):
         self._queue.put(_STOP)
 
 
-class StaleSweeper(StoreListener):
+class StaleSweeper:
     """Flips a passing status to STALE when its check TTL lapses. The thread
     sleeps until the next expiry; a status write wakes it, because the write
     can move that deadline. The flip is an ordinary store write, and STALE
@@ -437,7 +441,7 @@ class StaleSweeper(StoreListener):
         )
         self._thread.start()
 
-    def on_task_status(self, key, status):
+    def on_task_status(self, event):
         self._wake.set()
 
     def _loop(self):
@@ -479,34 +483,6 @@ class StaleSweeper(StoreListener):
         persistence teardown (see Workflow.archive_state)."""
         self._closed = True
         self._wake.set()
-
-
-class StoreListenerSlot:
-    """A slot that holds one listener of one kind. The store of the host owns
-    the state: a read scans the store listeners, and an assignment registers
-    the given listener. The slot refuses a second listener of its kind."""
-
-    def __init__(self, listener_type):
-        self.listener_type = listener_type
-
-    def __set_name__(self, owner, name):
-        self._attr_name = name
-
-    def __get__(self, obj, objtype=None):
-        if obj is None:
-            return self
-        for listener in obj.store.listeners:
-            if isinstance(listener, self.listener_type):
-                return listener
-        return None
-
-    def __set__(self, obj, value):
-        if self.__get__(obj) is not None:
-            raise RegistrationError(
-                f"A {self._attr_name} is already attached to the store. "
-                f"Detach it before attaching another."
-            )
-        obj.store.add_listener(value)
 
 
 _BACKENDS = {"file": FileStateStore}

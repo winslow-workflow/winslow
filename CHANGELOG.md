@@ -37,14 +37,29 @@ versions may include breaking changes).
   `effective_ttl` for the detail modal.
 - The History pane filters by status: a dropdown beside the record search narrows the rows to one task
   status, and composes with the search and the hide-completed toggle.
+- The session event bus (`SessionBus`, on `Workflow.bus`): one event path per session. Every component
+  that observes a session subscribes once, by event class (`winslow.events`), with
+  `bus.subscribe(TaskStatusEvent, callback)`. The bus dispatches synchronously in subscription order,
+  logs and skips a raising subscriber, and `bus.close()` at session end disconnects every remaining
+  subscriber. blinker >= 1.9 joins the core dependencies.
+- `Origin` on every store event: `RUN` for a live transition, `REPLAY` for a persisted value
+  re-applied, `SEED` for a restore write. The persistence subscriber skips non-`RUN` events itself,
+  so every other subscriber observes replay and seed writes with their origin.
+- `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
+  and the Caches pane subscribe to it instead of polling `has_ended`.
 
 ### Changed
 
 - Breaking for plugin authors: `TaskStatusChanged` carries `(key, status)`; it carried the live task.
   `ExecutionStatusChanged` and `TaskLogUpdated` name the task with `task_key`; the attribute was
   `task_uuid`.
-- Breaking for plugin authors: `StoreListener.on_task_status(key, status)` receives the identity key.
-  `on_execution_status` and `on_log_appended` receive it as `task_key`. Every listener payload is a value.
+- Breaking for plugin authors: the session bus replaces the store listener API. A subscriber connects
+  one callback per event class and receives one frozen event object; `TaskStatusEvent.key` is the
+  identity key, `ExecutionStatusEvent` and `LogLineEvent` carry it as `task_key`. Every event payload
+  is a value.
+- Breaking: `ReactiveDict.set(key, value, origin=Origin.RUN)` replaces the `excluded_callbacks`
+  parameter on `set`, `set_status` and the emit path. `Workflow.generate_store` receives the bus as
+  its first argument, and the stores take it at construction.
 - Breaking for plugin authors: the Task Overview pane receives the statuses-by-key mapping
   (`WorkflowRenderContext.task_statuses`); it received the live store.
 - `TaskInfo.uuid` and `TaskRef.uuid` are renamed to `key`, and the value is the identity key. Equality
@@ -59,6 +74,9 @@ versions may include breaking changes).
 
 - `Task.uuid`. The identity key replaces it everywhere: log routing uses `Task.log_key`, and everything
   session-durable uses `Task.identity_key`.
+- `StoreListener` and the store subscription methods (`add_listener`, `remove_listener`, `listeners`)
+  on the task stores. The session bus owns every subscription. The cache containers keep
+  `CacheListener` and their own `add_listener`, which are process-scoped.
 
 ## [0.5.1] — 2026-08-17
 

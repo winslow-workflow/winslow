@@ -416,17 +416,13 @@ class ListenerMixin:
         with self._listener_lock:
             return tuple(self._listeners)
 
-    def _emit(self, event, *args, excluded=None):
+    def _emit(self, event, *args):
         """Send one event to every listener; `event` is the unbound listener
-        method. `excluded` names one listener, or a sequence of them, to skip
-        for this one emission. A raising listener is logged and skipped: an
-        observer must not break the operation it observes."""
-        excluded = to_tuple(excluded) if excluded is not None else ()
+        method. A raising listener is logged and skipped: an observer must
+        not break the operation it observes."""
         # A snapshot of the listeners: another thread can unsubscribe one
         # while the emission iterates.
         for listener in self.listeners:
-            if listener in excluded:
-                continue
             try:
                 getattr(listener, event.__name__)(*args)
             except Exception:

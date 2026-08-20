@@ -13,6 +13,13 @@ from winslow.ui.store_adapter import (
     TuiCacheAdapter,
     TuiStoreAdapter,
 )
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    ExecutionStatusEvent,
+    LogLineEvent,
+    TaskStatusEvent,
+)
 from winslow.session import Session
 from winslow.state import create_state_store
 from winslow.util import generate_id
@@ -226,8 +233,17 @@ class Winslow(App):
             name=session.screen_name,
         )
 
-        workflow.store.add_listener(TuiStoreAdapter(self, session.screen_name))
-        workflow.store.add_listener(SessionLifecycleAdapter(self, session))
+        # The bus close at session end disconnects both adapters, so no
+        # explicit unsubscribe is necessary (see Workflow.archive_state).
+        bus = workflow.bus
+        store_adapter = TuiStoreAdapter(self, session.screen_name)
+        bus.subscribe(TaskStatusEvent, store_adapter.on_task_status)
+        bus.subscribe(ExecutionStatusEvent, store_adapter.on_execution_status)
+        bus.subscribe(BatchCreatedEvent, store_adapter.on_batch_created)
+        bus.subscribe(BatchCompletedEvent, store_adapter.on_batch_completed)
+        bus.subscribe(LogLineEvent, store_adapter.on_log_line)
+        lifecycle_adapter = SessionLifecycleAdapter(self, session)
+        bus.subscribe(BatchCompletedEvent, lifecycle_adapter.on_batch_completed)
 
         cache_adapter = TuiCacheAdapter(self, session.screen_name)
         workflow.workflow_cache.add_listener(cache_adapter)

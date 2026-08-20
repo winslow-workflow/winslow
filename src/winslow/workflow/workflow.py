@@ -23,11 +23,12 @@ from winslow.runner.store import TaskStore, InteractiveStore
 from winslow.graph import Graph
 from winslow.runner import HeadlessRunner, InteractiveRunner
 from winslow.session import Session, SessionStatus
+from winslow.bus import SessionBus
+from winslow.events import Origin, SessionEndedEvent, TaskStatusEvent
 from winslow.state import (
     SessionManifest,
     SessionPersistenceAdapter,
     StaleSweeper,
-    StoreListenerSlot,
     is_trusted,
 )
 from winslow.logger import LOGGER
@@ -95,6 +96,10 @@ class Workflow(_ConfigBase):
         # The Session does not exist at construction time. It is created after
         # the workflow init and attaches itself here.
         self._session = None
+        # The workflow owns its persistence adapter and stale sweeper. None
+        # until init_state attaches them; archive_state detaches them.
+        self.persistence_listener = None
+        self.stale_sweeper = None
 
         # initialize_tasks builds the containers, before it builds the graph.
         self._workflow_cache = None
@@ -110,12 +115,17 @@ class Workflow(_ConfigBase):
 
         if store is None:
             self.logger.debug(f"Auto-initializing store for {self}")
+            self.bus = SessionBus()
             self.store = self.generate_store(
+                bus=self.bus,
                 orchestrator_config=orchestrator_config,
                 workflow_config=self.workflow_config,
             )
         else:
+            # A given store carries its bus, so the workflow adopts it: one
+            # bus per session, however the store was built.
             self.store = store
+            self.bus = store.bus
         self.runner = self.runner_classes[orchestrator_config.mode](
             orchestrator_config=orchestrator_config,
             workflow=self,
@@ -126,8 +136,8 @@ class Workflow(_ConfigBase):
         )
 
     @classmethod
-    def generate_store(cls, orchestrator_config, workflow_config):
-        return cls.store_classes[orchestrator_config.mode]()
+    def generate_store(cls, bus, orchestrator_config, workflow_config):
+        return cls.store_classes[orchestrator_config.mode](bus)
 
     @property
     def check(self):
@@ -337,11 +347,6 @@ class Workflow(_ConfigBase):
             **kwargs,
         )
 
-    # The store owns both listeners: the registration is the one persistence
-    # switch. Each slot refuses a second listener of its kind.
-    persistence_listener = StoreListenerSlot(SessionPersistenceAdapter)
-    stale_sweeper = StoreListenerSlot(StaleSweeper)
-
     @property
     def state_store(self):
         """The store backend of the attached persistence, or None."""
@@ -360,15 +365,16 @@ class Workflow(_ConfigBase):
         runnable, after the eligibility pass: the manifest marks the session
         as a restore candidate. A failure degrades to a run without state."""
         if self.persistence_listener is not None:
-            # A second registration doubles the writes. The replay exclusion
-            # then misses one adapter (see set_status).
+            # A second registration doubles the writes.
             return
         session = self._session
         adapter = sweeper = None
         try:
             adapter = SessionPersistenceAdapter(state_store, session.session_id)
+            self.bus.subscribe(TaskStatusEvent, adapter.on_task_status)
             self.persistence_listener = adapter
             sweeper = StaleSweeper(self)
+            self.bus.subscribe(TaskStatusEvent, sweeper.on_task_status)
             self.stale_sweeper = sweeper
             # The manifest lands last: a failure before this point leaves no
             # durable state.
@@ -386,11 +392,13 @@ class Workflow(_ConfigBase):
         except Exception:
             # A persistence failure must not break the session start: the
             # session degrades to a run without state. The locals include a
-            # listener whose registration failed.
+            # subscriber whose registration failed.
             for attached in (adapter, sweeper):
                 if attached is not None:
-                    self.store.remove_listener(attached)
+                    self.bus.unsubscribe(TaskStatusEvent, attached.on_task_status)
                     attached.close()
+            self.persistence_listener = None
+            self.stale_sweeper = None
             self.logger.error(
                 f"Could not persist the manifest of {session.session_id} - "
                 f"the session runs without state",
@@ -436,12 +444,10 @@ class Workflow(_ConfigBase):
                 # An untrusted success seeds as STALE: the next touch
                 # re-verifies it (see TaskStatus.STALE).
                 status = TaskStatus.STALE
-            # An ordinary store write, so the listeners see a normal
-            # event. The exclusion keeps checked_at where the probe
+            # An ordinary store write, so the subscribers see a normal
+            # event. The SEED origin keeps checked_at where the probe
             # left it (see SessionPersistenceAdapter).
-            self.runner.set_status(
-                task, status, None, excluded_callbacks=self.persistence_listener
-            )
+            self.runner.set_status(task, status, None, origin=Origin.SEED)
 
     def record_batch_options(self):
         """Fold the live batch options into the stored manifest. A restore
@@ -466,28 +472,32 @@ class Workflow(_ConfigBase):
             )
 
     def archive_state(self):
-        """End persistence: stop the sweeper and the writer, deregister them,
-        then stamp and archive the manifest. The session end calls this, and
-        a persistence failure must not break the end. A session in ERROR
-        archives as failed (see StateStore.mark_errored)."""
+        """End persistence: stop the sweeper and the writer, unsubscribe them,
+        then stamp and archive the manifest. After the durable writes the bus
+        publishes SessionEndedEvent and closes, which disconnects every
+        remaining subscriber. The session end calls this, and a persistence
+        failure must not break the end. A session in ERROR archives as failed
+        (see StateStore.mark_errored)."""
         if (sweeper := self.stale_sweeper) is not None:
             sweeper.close()
-            self.store.remove_listener(sweeper)
-        listener = self.persistence_listener
-        if listener is None:
-            return
-        listener.close()
-        self.store.remove_listener(listener)
-        try:
-            if self.session.status is SessionStatus.ERROR:
-                listener.state_store.mark_errored(self.session_id)
-            else:
-                listener.state_store.mark_ended(self.session_id)
-        except Exception:
-            self.logger.error(
-                f"Could not archive the manifest of {self.session_id}",
-                exc_info=True,
-            )
+            self.bus.unsubscribe(TaskStatusEvent, sweeper.on_task_status)
+            self.stale_sweeper = None
+        if (listener := self.persistence_listener) is not None:
+            listener.close()
+            self.bus.unsubscribe(TaskStatusEvent, listener.on_task_status)
+            self.persistence_listener = None
+            try:
+                if self.session.status is SessionStatus.ERROR:
+                    listener.state_store.mark_errored(self.session_id)
+                else:
+                    listener.state_store.mark_ended(self.session_id)
+            except Exception:
+                self.logger.error(
+                    f"Could not archive the manifest of {self.session_id}",
+                    exc_info=True,
+                )
+        self.bus.publish(SessionEndedEvent(session_id=self.session_id))
+        self.bus.close()
 
     def check_pipeline_eligibility(self, logger=LOGGER):
         tasks = self.tasks

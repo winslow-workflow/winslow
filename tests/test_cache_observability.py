@@ -29,7 +29,9 @@ from winslow.exceptions import MisconfigurationError
 from winslow.logger import run_logger_name
 from winslow.task.context import LogContext, scoped_log_context
 from winslow.runner.execution import ExecutionPhase
-from winslow.store import ReactiveDict, StoreListener
+from winslow.bus import SessionBus
+from winslow.events import TaskStatusEvent
+from winslow.store import ReactiveDict
 
 from harness import build_workflow, run_all
 
@@ -348,21 +350,20 @@ def test_remove_listener_stops_the_delivery():
     assert listener.events == []
 
 
-def test_store_remove_listener():
-    class Recorder(StoreListener):
-        def __init__(self):
-            self.statuses = []
+def test_bus_unsubscribe_stops_the_delivery():
+    statuses = []
 
-        def on_task_status(self, task, status):
-            self.statuses.append((task, status))
+    def record(event):
+        statuses.append((event.key, event.status))
 
-    store = ReactiveDict()
-    listener = Recorder()
-    store.add_listener(listener)
+    bus = SessionBus()
+    store = ReactiveDict(bus)
+    bus.subscribe(TaskStatusEvent, record)
     store["a"] = 1
-    store.remove_listener(listener)
+    bus.unsubscribe(TaskStatusEvent, record)
+    bus.unsubscribe(TaskStatusEvent, record)  # idempotent
     store["a"] = 2
-    assert listener.statuses == [("a", 1)]
+    assert statuses == [("a", 1)]
 
 
 # --- history capture -------------------------------------------------------

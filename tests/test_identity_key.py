@@ -6,7 +6,7 @@ import pytest
 
 from winslow.constants import Mode
 from winslow.exceptions import IdentityKeyCollisionError
-from winslow.store import StoreListener
+from winslow.events import TaskStatusEvent
 from winslow.task.index import TaskIndex
 
 from harness import build_workflow, by_params, run_all
@@ -104,19 +104,19 @@ def test_task_index_resolve_names_the_missing_key():
         TaskIndex().resolve("deploy-abc12345")
 
 
-class _StatusRecorder(StoreListener):
+class _StatusRecorder:
     def __init__(self):
         self.events = []
 
-    def on_task_status(self, key, status):
-        self.events.append((key, status))
+    def on_task_status(self, event):
+        self.events.append((event.key, event.status))
 
 
 def test_on_task_status_payload_is_the_identity_key(params_workflow):
-    """The payload rule of the listener API: a status event carries the
+    """The payload rule of the event API: a status event carries the
     identity key of the task, never the task."""
     recorder = _StatusRecorder()
-    params_workflow.store.add_listener(recorder)
+    params_workflow.bus.subscribe(TaskStatusEvent, recorder.on_task_status)
 
     run_all(params_workflow)
 
