@@ -19,7 +19,6 @@ from winslow.cache import (
     StorageRecord,
     declared_entries,
 )
-from winslow.events import SessionEndedEvent
 from winslow.ui.css import package_css
 from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
@@ -27,7 +26,7 @@ from winslow.ui.builtin_plugins.workflow.history import HistoryPlugin
 from winslow.ui.modals.cache_value import CacheValue
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
-from winslow.ui.workflow_events import CacheUpdated
+from winslow.ui.workflow_events import CacheUpdated, SessionEnded
 from winslow.util import execute_in_threads, safe_repr
 
 _CSS = package_css(__package__, "_pane_header.tcss", "caches.tcss")
@@ -166,11 +165,6 @@ class CacheCard(Widget):
         self.border_title = f"{self._title_prefix}  ·  {warm}/{len(infos)} warm "
 
 
-class _SessionEnded(Message):
-    """The bus callback runs on the publishing thread. This message moves the
-    tick stop to the UI thread."""
-
-
 class CachesPane(SearchFlowMixin, Widget):
     DEFAULT_CSS = _CSS
 
@@ -218,20 +212,18 @@ class CachesPane(SearchFlowMixin, Widget):
             self._cards[card.cache] = card
             for row in card.query(CacheEntryRow).results():
                 self._rows[(row.cache, row.entry_name)] = row
-        self._tick_timer = self.set_interval(
-            CACHE_TICK_SECONDS, self._schedule_refresh
-        )
-        # The session end releases the workflow cache, so a later tick would
-        # read a dead container. The message moves the stop to the UI thread.
-        self.workflow.bus.subscribe(SessionEndedEvent, self._on_session_ended)
-        self._schedule_refresh()
+        # A pane mounted after the session end is a static snapshot: the
+        # workflow cache is released, so a tick would read a dead container.
+        if not self.workflow.session.has_ended:
+            self._tick_timer = self.set_interval(
+                CACHE_TICK_SECONDS, self._schedule_refresh
+            )
+            self._schedule_refresh()
 
-    def _on_session_ended(self, event):
-        self.post_message(_SessionEnded())
-
-    @on(_SessionEnded)
+    @on(SessionEnded)
     def _stop_ticking(self):
-        self._tick_timer.stop()
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
 
     # --- refresh: every render comes from a peek --------------------------
 

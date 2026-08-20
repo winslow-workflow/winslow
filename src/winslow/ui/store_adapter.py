@@ -61,6 +61,10 @@ class TuiStoreAdapter:
     def on_log_line(self, event):
         self._screen.propagate_task_log(event.task_key, event.batch_uuid, event.line)
 
+    @on_ui_thread
+    def on_session_ended(self, event):
+        self._screen.propagate_session_ended()
+
 
 class TuiCacheAdapter(CacheListener):
     """Send the cache events to the Textual UI as one repaint trigger: the

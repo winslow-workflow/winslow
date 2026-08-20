@@ -26,6 +26,7 @@ from winslow.ui.workflow_events import (
     CacheSelected,
     CacheUpdated,
     ExecutionStatusChanged,
+    SessionEnded,
     TaskLogUpdated,
     TaskSelected,
 )
@@ -206,6 +207,9 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
 
     def propagate_cache_update(self):
         self._dispatch_to_slot(Slots.TASKS_PANE, CacheUpdated())
+
+    def propagate_session_ended(self):
+        self._dispatch_to_slot(Slots.TASKS_PANE, SessionEnded())
 
     @on(TaskRow.Selected)
     async def handle_task_selection(self, event):

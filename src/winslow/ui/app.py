@@ -19,6 +19,7 @@ from winslow.events import (
     BatchCreatedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
+    SessionEndedEvent,
     TaskStatusEvent,
 )
 from winslow.session import Session
@@ -243,6 +244,7 @@ class Winslow(App):
         bus.subscribe(BatchCreatedEvent, store_adapter.on_batch_created)
         bus.subscribe(BatchCompletedEvent, store_adapter.on_batch_completed)
         bus.subscribe(LogLineEvent, store_adapter.on_log_line)
+        bus.subscribe(SessionEndedEvent, store_adapter.on_session_ended)
         lifecycle_adapter = SessionLifecycleAdapter(self, session)
         bus.subscribe(BatchCompletedEvent, lifecycle_adapter.on_batch_completed)
 
@@ -269,17 +271,13 @@ class Winslow(App):
 
         self.logger.debug(f"Ending session: {session_id} ({session.workflow})")
 
-        # Mark the session as ended, which freezes the elapsed timer, but keep
-        # the screen installed and the session in the store. The View button of
-        # the History tab can thus open the workflow screen, which is now
-        # read-only.
-        session.actions.submit(EndSession())
-
-        # Detach the cache adapter: the global container outlives the session
-        # and would otherwise pin the dead adapter (see TuiCacheAdapter).
+        # Detach before the end: a quiet end releases the workflow cache at once.
         if adapter := self._cache_adapters.pop(session_id, None):
             session.workflow.workflow_cache.remove_listener(adapter)
             session.workflow.global_cache.remove_listener(adapter)
+
+        # The screen and the session stay installed for the History View button.
+        session.actions.submit(EndSession())
 
     @on(Button.Pressed, ".view-dashboard")
     async def view_dashboard(self):
