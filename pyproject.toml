@@ -47,12 +47,17 @@ serve = [
     # uvicorn speaks the websocket protocol only with this package installed.
     "websockets>=13.0",
 ]
+mcp = [
+    "mcp>=2.0",
+    "uvicorn>=0.30",
+]
 otel = [
     "opentelemetry-sdk>=1.20",
     "opentelemetry-exporter-otlp-proto-http>=1.20",
     # The serve handshake tests run black-box through the Starlette test client.
     "starlette>=0.40",
     "httpx2>=2.0",
+    "mcp>=2.0",
 ]
 
 [build-system]
@@ -72,6 +77,7 @@ dev = [
     # The serve handshake tests run black-box through the Starlette test client.
     "starlette>=0.40",
     "httpx2>=2.0",
+    "mcp>=2.0",
 ]
 
 [project.urls]

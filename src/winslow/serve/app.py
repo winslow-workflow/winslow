@@ -9,31 +9,16 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 
 from starlette.applications import Starlette
-from starlette.routing import WebSocketRoute
+from starlette.routing import Mount, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
-from winslow.actions import (
-    CheckTasks,
-    EndSession,
-    RunTasks,
-    SetBatchOptions,
-    StopBatch,
-)
+from winslow.exceptions import MisconfigurationError
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
+from winslow.serve.wire import build_action, descriptor_rows, history_rows, session_row
 from winslow.task.info import TaskInfo
 
 PROTOCOL_VERSION = 1
-
-# The wire vocabulary of the actions: the frame names the action, the fields
-# fill the dataclass (see winslow.actions).
-ACTION_CLASSES = {
-    "run_tasks": RunTasks,
-    "check_tasks": CheckTasks,
-    "stop_batch": StopBatch,
-    "end_session": EndSession,
-    "set_batch_options": SetBatchOptions,
-}
 
 # The refusal codes of the handshake. The refusal also rides a hello_error
 # frame: after an accepted upgrade a browser reads the frame, the code, and
@@ -43,84 +28,6 @@ CREDENTIAL_REFUSED = 4401
 HELLO_TIMEOUT = 4408
 # The close code of a client that stays behind a full frame window.
 CLIENT_TOO_SLOW = 1013
-
-
-def session_row(session):
-    return {
-        "session_id": session.session_id,
-        "workflow": str(session.workflow),
-        "status": session.status.name,
-    }
-
-
-def build_action(name, fields):
-    """The action dataclass for one wire frame. Raises ValueError with a
-    directional message on an unknown name or on bad fields."""
-    action_class = ACTION_CLASSES.get(name)
-    if action_class is None:
-        raise ValueError(
-            f"{name!r} names no action. The actions are {sorted(ACTION_CLASSES)}."
-        )
-    fields = dict(fields or {})
-    if "keys" in fields:
-        fields["keys"] = tuple(fields["keys"])
-    try:
-        return action_class(**fields)
-    except TypeError as exc:
-        raise ValueError(f"bad fields for {name}: {exc}") from None
-
-
-def descriptor_rows(orchestrator):
-    """One row per collected workflow, from the ConfigOption declarations:
-    what a remote start form renders."""
-    rows = []
-    for name in orchestrator.workflow_registry.names:
-        workflow_kls = orchestrator.workflow_registry[name]
-        options = [
-            {
-                "name": option_name,
-                "help": option.help_text,
-                "default": option.format_value(option.default),
-                "required": option.required,
-                "choices": (
-                    [str(choice) for choice in option.choices]
-                    if option.choices
-                    else None
-                ),
-                "multiselect": option.multiselect,
-                "type": option.type.__name__ if option.type else None,
-            }
-            for option_name, option in workflow_kls.config_meta.items()
-            if option.show_on_ui
-        ]
-        rows.append({"workflow": name, "options": options})
-    return rows
-
-
-def history_rows(session):
-    """One row per batch, with the per-task outcomes of its record store."""
-    runner = session.workflow.runner
-    rows = []
-    for batch in runner.batches:
-        store = runner.record_store(batch.uuid)
-        rows.append(
-            {
-                "uuid": batch.uuid,
-                "action": batch.action.name,
-                "status": batch.status.name,
-                "task_count": batch.task_count,
-                "created_at": batch.created_at.timestamp(),
-                "completed_at": (
-                    batch.completed_at.timestamp() if batch.completed_at else None
-                ),
-                "tasks": (
-                    {key: status.name for key, status in store.items()}
-                    if store is not None
-                    else {}
-                ),
-            }
-        )
-    return rows
 
 
 class Bridges:
@@ -151,10 +58,11 @@ class Bridges:
 
 
 class ServeApp:
-    """One serve process: the live sessions of the registry over one
-    websocket endpoint. orchestrator and state_store power the descriptor
-    and create_session requests; without them those requests answer with an
-    error."""
+    """One serve process: the live sessions of the registry behind two
+    optional doors, the websocket endpoint and the MCP mount. Each door works
+    alone; both share the registry and the credential policy. orchestrator
+    and state_store power the descriptor and create_session requests; without
+    them those requests answer with an error."""
 
     def __init__(
         self,
@@ -164,6 +72,9 @@ class ServeApp:
         qsize=10_000,
         orchestrator=None,
         state_store=None,
+        ws=True,
+        mcp=False,
+        base_url="http://127.0.0.1:8866",
     ):
         self.registry = registry
         self.credentials = credentials
@@ -172,17 +83,43 @@ class ServeApp:
         self.orchestrator = orchestrator
         self.state_store = state_store
         self.bridges = Bridges(qsize)
+        self.ws_enabled = ws
+        self.base_url = base_url
+        self.mcp_endpoint = self._build_mcp() if mcp else None
+        if not ws and self.mcp_endpoint is None:
+            raise MisconfigurationError(
+                "The serve process needs at least one endpoint - "
+                "enable the websocket, the MCP mount, or both."
+            )
+
+    def _build_mcp(self):
+        try:
+            from winslow.serve.mcp import McpEndpoint
+        except ImportError as e:
+            raise MisconfigurationError(
+                "The MCP endpoint requires the mcp extra - install with: "
+                "pip install 'winslow[mcp]'"
+            ) from e
+        return McpEndpoint(self, self.base_url)
 
     def starlette(self):
-        return Starlette(
-            routes=[WebSocketRoute("/ws", self.ws)], lifespan=self._lifespan
-        )
+        routes = []
+        if self.ws_enabled:
+            routes.append(WebSocketRoute("/ws", self.ws))
+        if self.mcp_endpoint is not None:
+            routes.append(Mount("/", app=self.mcp_endpoint.streamable_http_app()))
+        return Starlette(routes=routes, lifespan=self._lifespan)
 
     @asynccontextmanager
     async def _lifespan(self, app):
-        # The composition point: the MCP session manager mounts here later.
         try:
-            yield
+            if self.mcp_endpoint is not None:
+                # A mounted MCP app must be started by the parent lifespan
+                # (see serve-spikes-findings, spike 3).
+                async with self.mcp_endpoint.session_manager.run():
+                    yield
+            else:
+                yield
         finally:
             self.bridges.close()
 

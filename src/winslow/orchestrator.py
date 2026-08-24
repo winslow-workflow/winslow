@@ -109,6 +109,22 @@ class Orchestrator(_ConfigBase):
         show_on_ui=False,
     )
 
+    mcp = ConfigOption(
+        help_text="Serve the MCP endpoint at /mcp (requires the mcp extra).",
+        action="store_true",
+        default=False,
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
+    no_ws = ConfigOption(
+        help_text="Serve without the websocket endpoint.",
+        action="store_true",
+        default=False,
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
     filter = ConfigOption(
         help_text=(
             "Filter expression for tasks. Supports name matching (bare text), "
@@ -650,16 +666,18 @@ class Orchestrator(_ConfigBase):
         from winslow.session import SessionRegistry
         from winslow.state import create_state_store
 
-        host = self.orchestrator_config.host
-        port = self.orchestrator_config.port
-        self.logger.info(f"Serving on {host}:{port}")
+        config = self.orchestrator_config
+        self.logger.info(f"Serving on {config.host}:{config.port}")
         app = create_app(
             SessionRegistry(),
-            Credentials.from_env(host),
+            Credentials.from_env(config.host),
             orchestrator=self,
-            state_store=create_state_store(self.orchestrator_config),
+            state_store=create_state_store(config),
+            ws=not config.no_ws,
+            mcp=config.mcp,
+            base_url=f"http://{config.host}:{config.port}",
         )
-        uvicorn.run(app, host=host, port=port)
+        uvicorn.run(app, host=config.host, port=config.port)
 
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")

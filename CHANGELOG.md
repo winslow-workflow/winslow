@@ -74,6 +74,12 @@ versions may include breaking changes).
   in the session log. `request` frames serve `create_session` (builds, persists, and registers a live
   session from a collected workflow), `descriptors` (the start-form options from `ConfigOption`),
   `history`, `log_tail`, and `task_detail`.
+- The MCP endpoint (`winslow serve --mcp`, behind the `[mcp]` extra): the tool layer over the action
+  handler, mounted at `/mcp` beside the websocket. The tools mirror the actions (each answers the ack
+  as data, so an agent reads a refusal reason), plus `list_sessions`, `start_session`, `descriptors`,
+  `history`, and `task_detail`. The same `WINSLOW_TOKEN` verifies both doors; a loopback bind serves
+  without a credential. The two endpoints work individually: `--no-ws` runs an MCP-only process, and
+  asking for `--mcp` without the extra refuses with the install message.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the
