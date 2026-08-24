@@ -46,31 +46,47 @@ def build_action(name, fields):
         raise ValueError(f"bad fields for {name}: {exc}") from None
 
 
+def option_row(name, option):
+    """One ConfigOption as form metadata. Defaults travel as formatted
+    strings: right for a form, accepted for an agent (see serve-spec 6.1)."""
+    return {
+        "name": name,
+        "help": option.help_text,
+        "default": option.format_value(option.default),
+        "required": option.required,
+        "choices": (
+            [str(choice) for choice in option.choices] if option.choices else None
+        ),
+        "multiselect": option.multiselect,
+        "type": option.type.__name__ if option.type else None,
+        "identifier": option.identifier,
+        "depends_on": list(option.depends_on),
+    }
+
+
 def descriptor_rows(orchestrator):
-    """One row per collected workflow, from the ConfigOption declarations:
-    what a remote start form renders."""
-    rows = []
+    """The parameter context of the serve process: one row per collected
+    workflow (the `values` of create_session), plus the orchestrator options
+    the start form shows (the `overrides`)."""
+    workflows = []
     for name in orchestrator.workflow_registry.names:
         workflow_kls = orchestrator.workflow_registry[name]
-        options = [
+        workflows.append(
             {
-                "name": option_name,
-                "help": option.help_text,
-                "default": option.format_value(option.default),
-                "required": option.required,
-                "choices": (
-                    [str(choice) for choice in option.choices]
-                    if option.choices
-                    else None
-                ),
-                "multiselect": option.multiselect,
-                "type": option.type.__name__ if option.type else None,
+                "workflow": name,
+                "options": [
+                    option_row(option_name, option)
+                    for option_name, option in workflow_kls.config_meta.items()
+                    if option.show_on_ui
+                ],
             }
-            for option_name, option in workflow_kls.config_meta.items()
-            if option.show_on_ui
-        ]
-        rows.append({"workflow": name, "options": options})
-    return rows
+        )
+    overrides = [
+        option_row(option_name, option)
+        for option_name, option in orchestrator.config_meta.items()
+        if option.show_on_ui
+    ]
+    return {"workflows": workflows, "overrides": overrides}
 
 
 def history_rows(session):

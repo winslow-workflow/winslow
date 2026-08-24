@@ -343,7 +343,7 @@ class Connection:
         if self.app.orchestrator is None:
             self.request_error(frame, "this server serves no workflows")
             return
-        self.result(frame, workflows=descriptor_rows(self.app.orchestrator))
+        self.result(frame, **descriptor_rows(self.app.orchestrator))
 
     async def _request_create_session(self, frame):
         if self.app.orchestrator is None or self.app.state_store is None:

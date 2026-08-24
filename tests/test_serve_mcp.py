@@ -188,3 +188,21 @@ def test_the_tasks_tool_serves_the_keys_for_run_tasks(e2e_repo):
     assert result["tasks"] == {
         key: status.name for key, status in workflow.store.current.items()
     }
+
+
+def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
+    from winslow.serve.wire import descriptor_rows
+
+    from test_serve_actions import serve_orchestrator
+
+    orchestrator = serve_orchestrator(e2e_repo)
+    app = create_app(
+        SessionRegistry(),
+        Credentials(token=TOKEN, require_credential=True),
+        mcp=True,
+        base_url="http://testserver",
+        orchestrator=orchestrator,
+    )
+    (result,) = call_tools(app, [("descriptors", {})])
+    assert result == descriptor_rows(orchestrator)
+    assert {"workflows", "overrides"} <= set(result)

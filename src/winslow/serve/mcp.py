@@ -164,10 +164,11 @@ class McpEndpoint:
         )
 
     @tool
-    async def descriptors(self) -> list:
-        """The workflows this server can start, with their options."""
+    async def descriptors(self) -> dict:
+        """The workflows this server can start (their options fill the
+        `values` of start_session) and the orchestrator overrides."""
         if self.serve_app.orchestrator is None:
-            return [{"error": "this server serves no workflows"}]
+            return {"error": "this server serves no workflows"}
         return descriptor_rows(self.serve_app.orchestrator)
 
     @tool

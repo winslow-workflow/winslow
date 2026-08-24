@@ -312,3 +312,76 @@ def test_requests_without_an_orchestrator_answer_an_error(e2e_repo):
     ws.send_json({"type": "request", "request_id": "r-16", "kind": "create_session"})
     assert "creates no sessions" in frames_until(ws, "error")["reason"]
     ws.close()
+
+
+def test_descriptors_carry_the_overrides_and_form_fields(e2e_repo):
+    orchestrator = serve_orchestrator(e2e_repo)
+    ws = connect(SessionRegistry(), orchestrator=orchestrator)
+    ws.send_json({"type": "request", "request_id": "r-17", "kind": "descriptors"})
+    result = frames_until(ws, "result")
+
+    identified = next(
+        row for row in result["workflows"] if row["workflow"] == "my-identified"
+    )
+    (client,) = [o for o in identified["options"] if o["name"] == "client"]
+    assert client["required"] is True
+    assert client["identifier"] is True
+    assert client["depends_on"] == []
+
+    override_names = [o["name"] for o in result["overrides"]]
+    assert "dry_run" in override_names
+    ws.close()
+
+
+def test_create_session_refuses_a_missing_required_value(e2e_repo, state_store):
+    orchestrator = serve_orchestrator(e2e_repo)
+    registry = SessionRegistry()
+    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-18",
+            "kind": "create_session",
+            "workflow": "my-identified",
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "requires client" in error["reason"]
+    assert "descriptors" in error["reason"]
+    # Refused before any initialization: nothing registered.
+    assert len(registry) == 0
+    ws.close()
+
+
+def test_create_session_refuses_an_unknown_value_name(e2e_repo, state_store):
+    orchestrator = serve_orchestrator(e2e_repo)
+    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-19",
+            "kind": "create_session",
+            "workflow": "my-workflow",
+            "values": {"clientt": "acme"},
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "'clientt' names no option" in error["reason"]
+    ws.close()
+
+
+def test_create_session_refuses_a_value_outside_the_choices(e2e_repo, state_store):
+    orchestrator = serve_orchestrator(e2e_repo)
+    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-20",
+            "kind": "create_session",
+            "workflow": "my-workflow",
+            "overrides": {"mode": "warp"},
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "'warp' is not a choice of mode" in error["reason"]
+    ws.close()

@@ -80,6 +80,11 @@ versions may include breaking changes).
   `history`, and `task_detail`. The same `WINSLOW_TOKEN` verifies both doors; a loopback bind serves
   without a credential. The two endpoints work individually: `--no-ws` runs an MCP-only process, and
   asking for `--mcp` without the extra refuses with the install message.
+- The descriptors carry the whole start form: `{"workflows": [...], "overrides": [...]}` - the workflow
+  options (the `values` of a create) plus the orchestrator options the start form shows (the
+  `overrides`), each row with `identifier` and `depends_on` beside the existing fields. A create with a
+  missing required value, an unknown name, or a value outside the declared choices refuses with a
+  directional message before any initialization work runs.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the

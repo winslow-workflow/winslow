@@ -10,6 +10,45 @@ from winslow.task.context import LogContext, scoped_log_context
 from winslow.util import generate_id
 
 
+def _refuse_value(name, value, option):
+    if option.choices and str(value) not in [str(c) for c in option.choices]:
+        raise ValueError(
+            f"{value!r} is not a choice of {name} - the choices are "
+            f"{[str(c) for c in option.choices]}."
+        )
+
+
+def validate_values(workflow_name, workflow_kls, orchestrator, values, overrides):
+    """Refuse a bad create payload with direction, before any initialization
+    work runs. The descriptors name every option this checks against."""
+    known_values = workflow_kls.config_meta
+    known_overrides = orchestrator.config_meta
+    for name in values:
+        if name not in known_values:
+            raise ValueError(
+                f"{name!r} names no option of {workflow_name} - the options "
+                f"are {sorted(known_values)}."
+            )
+        _refuse_value(name, values[name], known_values[name])
+    for name in overrides:
+        if name not in known_overrides:
+            raise ValueError(
+                f"{name!r} names no orchestrator override - the overrides "
+                f"are {sorted(known_overrides)}."
+            )
+        _refuse_value(name, overrides[name], known_overrides[name])
+    missing = [
+        name
+        for name, option in known_values.items()
+        if option.required and option.default is None and values.get(name) is None
+    ]
+    if missing:
+        raise ValueError(
+            f"{workflow_name} requires {', '.join(missing)} - descriptors "
+            f"names the options of the workflow."
+        )
+
+
 def create_session(
     orchestrator,
     state_store,
@@ -31,6 +70,13 @@ def create_session(
 
     orchestrator_overrides = orchestrator_overrides or {}
     workflow_values = workflow_values or {}
+    validate_values(
+        workflow_name,
+        workflow_kls,
+        orchestrator,
+        workflow_values,
+        orchestrator_overrides,
+    )
     session_id = generate_id(workflow_name)
     workflow_logger = logging.getLogger(run_logger_name(session_id))
     workflow_logger.propagate = True
