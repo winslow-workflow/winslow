@@ -89,6 +89,22 @@ class ActionHandler:
             )
         return method(self, action)
 
+    def submit_guarded(self, action):
+        """submit for a wire transport: an unexpected raise becomes a refused
+        ack with the traceback in the session log, so no exception crosses the
+        wire boundary. The TUI calls submit and keeps the real traceback."""
+        try:
+            return self.submit(action)
+        except Exception:
+            self._workflow.logger.error(
+                f"{type(action).__name__} failed inside the session.", exc_info=True
+            )
+            return self._refuse(
+                action,
+                f"{type(action).__name__} failed inside the session - "
+                f"the session log has the traceback.",
+            )
+
     @classmethod
     def _refuse(cls, action, reason):
         ack_class = BatchAck if isinstance(action, (RunTasks, CheckTasks)) else Ack

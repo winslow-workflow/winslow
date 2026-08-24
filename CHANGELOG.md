@@ -68,7 +68,12 @@ versions may include breaking changes).
   execution statuses, batch created and completed with their `BatchInfo`, and log lines coalesced per
   task per 50ms tick. A resubscribe resets the stream with a fresh snapshot (the recovery after a
   sequence gap), and a client that stays behind a full frame window is disconnected with close code
-  1013. The request layer (actions, reads, session creation) lands next.
+  1013. Actions ride the same socket: an `action` frame (run_tasks, check_tasks, stop_batch,
+  end_session, set_batch_options) answers a typed ack under its request id, through
+  `ActionHandler.submit_guarded`, which turns an unexpected raise into a refused ack with the traceback
+  in the session log. `request` frames serve `create_session` (builds, persists, and registers a live
+  session from a collected workflow), `descriptors` (the start-form options from `ConfigOption`),
+  `history`, `log_tail`, and `task_detail`.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the

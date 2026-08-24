@@ -648,11 +648,17 @@ class Orchestrator(_ConfigBase):
             ) from e
         from winslow.serve.auth import Credentials
         from winslow.session import SessionRegistry
+        from winslow.state import create_state_store
 
         host = self.orchestrator_config.host
         port = self.orchestrator_config.port
         self.logger.info(f"Serving on {host}:{port}")
-        app = create_app(SessionRegistry(), Credentials.from_env(host))
+        app = create_app(
+            SessionRegistry(),
+            Credentials.from_env(host),
+            orchestrator=self,
+            state_store=create_state_store(self.orchestrator_config),
+        )
         uvicorn.run(app, host=host, port=port)
 
     def _handle_interactive_run(self):
