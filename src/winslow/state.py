@@ -5,6 +5,7 @@ backend. A package registers another backend with register_state_backend and
 a deployment selects one with WINSLOW_STATE_BACKEND.
 """
 
+import collections
 import json
 import os
 import queue
@@ -17,13 +18,19 @@ from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
-from winslow.events import Origin
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    LogLineEvent,
+    Origin,
+    TaskStatusEvent,
+)
 from winslow.exceptions import (
     MisconfigurationError,
     SerializationError,
 )
 from winslow.logger import LOGGER
-from winslow.settings import config
+from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE, config
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
 
@@ -351,6 +358,15 @@ def is_trusted(checked_at, ttl, session_start, now):
 _STOP = object()
 
 
+@dataclass(frozen=True)
+class _BatchClose:
+    """A close record on the writer queue. Queue order puts it behind every
+    snapshot of the batch, so a closed record implies durable outcomes."""
+
+    record: "BatchRecord"
+    logs: dict | None
+
+
 class SessionPersistenceAdapter:
     """The single path of a task status onto and off persistence. The
     callback only queues, so it stays cheap on the writing thread, and the
@@ -364,6 +380,9 @@ class SessionPersistenceAdapter:
         # The snapshots this session wrote, by key. get() reads them over the
         # initial state, so a fresh stamp is visible before its write lands.
         self._written = {}
+        # {batch uuid: {task key: lines}}, gathered from the log events and
+        # written with the close record of the batch.
+        self._batch_logs = {}
         self._queue = queue.Queue()
         self._closed = False
         self._writer = threading.Thread(
@@ -408,6 +427,26 @@ class SessionPersistenceAdapter:
     def mark_ended(self):
         self._state_store.mark_ended(self.session_id)
 
+    def _subscriptions(self):
+        return (
+            (TaskStatusEvent, self.on_task_status),
+            (BatchCreatedEvent, self.on_batch_created),
+            (BatchCompletedEvent, self.on_batch_completed),
+            (LogLineEvent, self.on_log_line),
+        )
+
+    def attach(self, workflow):
+        """Wire each handler onto its session event (see TuiStoreAdapter for
+        the same pattern on the UI side)."""
+        for event, handler in self._subscriptions():
+            workflow.subscribe(event, handler)
+
+    def detach(self, workflow):
+        """Disconnect every handler. The rollback of a failed registration
+        calls this (see Workflow.init_state)."""
+        for event, handler in self._subscriptions():
+            workflow.unsubscribe(event, handler)
+
     def on_task_status(self, event):
         if event.origin is not Origin.RUN:
             return
@@ -420,19 +459,72 @@ class SessionPersistenceAdapter:
         self._written[event.key] = entry
         self._queue.put(entry)
 
+    def _batch_record(self, info):
+        """The audit record of one batch, from the event value: the action,
+        the option snapshot, and the roster (see BatchInfo)."""
+        return BatchRecord(
+            batch_uuid=info.uuid,
+            session_id=self.session_id,
+            action=info.action,
+            created_at=info.created_at,
+            execution_options=info.options,
+            tasks=info.tasks,
+        )
+
+    def on_batch_created(self, event):
+        """A record with no close mark seeds as INTERRUPTED on restore. The
+        write runs on the dispatch of the event: on the submitter thread,
+        before any task work, so a crash leaves the open record behind."""
+        if self._closed:
+            return
+        self._state_store.save_batch(self._batch_record(event.info))
+
+    def on_log_line(self, event):
+        if self._closed:
+            return
+        logs = self._batch_logs.setdefault(event.batch_uuid, {})
+        lines = logs.setdefault(
+            event.task_key,
+            collections.deque(maxlen=EXECUTION_RECORD_LOG_BUFFER_SIZE),
+        )
+        lines.append(event.line)
+
+    def on_batch_completed(self, event):
+        """Queue the close record behind the snapshots of the batch. Queue
+        order guarantees that a closed record implies durable outcomes."""
+        if self._closed:
+            return
+        info = event.info
+        closed = replace(
+            self._batch_record(info),
+            closed_status=info.status,
+            completed_at=info.completed_at,
+        )
+        self._queue.put(_BatchClose(closed, self._batch_logs.pop(info.uuid, None)))
+
     def _drain_queue(self):
         while True:
             entry = self._queue.get()
             try:
                 if entry is _STOP:
                     return
-                self._state_store.save_status_snapshot(self.session_id, entry)
+                if isinstance(entry, _BatchClose):
+                    self._save_batch_close(entry)
+                else:
+                    self._state_store.save_status_snapshot(self.session_id, entry)
             except Exception:
-                LOGGER.error(
-                    f"Could not store the snapshot of {entry.key}", exc_info=True
-                )
+                LOGGER.error(f"Could not store {entry}", exc_info=True)
             finally:
                 self._queue.task_done()
+
+    def _save_batch_close(self, entry):
+        self._state_store.save_batch(entry.record)
+        if entry.logs:
+            self._state_store.save_batch_logs(
+                self.session_id,
+                entry.record.batch_uuid,
+                {key: list(lines) for key, lines in entry.logs.items()},
+            )
 
     def flush(self):
         """Block until every queued write has landed on the store. The close

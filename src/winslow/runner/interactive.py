@@ -5,7 +5,7 @@ from contextlib import contextmanager, nullcontext
 from winslow.cache import peek_phase_cache
 from winslow.cache.recording import recording_cache_reads
 from winslow.decorators import snapshot_transients
-from winslow.events import BatchCompletedEvent, BatchCreatedEvent, Origin
+from winslow.events import Origin
 from winslow.exceptions import TaskBlock
 from winslow.logger import InteractiveLogHandler, INLINE_FORMATTER, get_task_dispatcher
 from winslow.task import TaskStatus
@@ -209,13 +209,7 @@ class InteractiveRunner(HeadlessRunner):
             self.workflow.bus, batch.uuid, [], root_dir=root_dir
         )
 
-    def _batch_log_dump(self, batch):
-        store = self._execution_record_store_map[batch.uuid]
-        return {
-            key: lines for key in store if (lines := list(store.get_record(key).logs))
-        }
-
-    def _batch_started(self, batch, tasks):
+    def _batch_admitted(self, batch, tasks):
         root_dir = getattr(self.orchestrator_config, "directory", None)
         # The record store publishes on the session bus, so one subscription
         # covers every batch, past and future.
@@ -226,7 +220,6 @@ class InteractiveRunner(HeadlessRunner):
             exec_store.register(task)
 
         self._execution_record_store_map[batch.uuid] = exec_store
-        self.workflow.bus.publish(BatchCreatedEvent(batch))
 
     def _batch_finished(self, batch, tasks):
         # The sweep replaces each stub with a full capture, so history shows
@@ -234,7 +227,6 @@ class InteractiveRunner(HeadlessRunner):
         store = self._execution_record_store_map[batch.uuid]
         for task in tasks:
             store.capture(task)
-        self.workflow.bus.publish(BatchCompletedEvent(batch))
 
     def submit_check_single(self, task):
         return self._submit(ExecutionAction.CHECK, [task], self._single_check_body)

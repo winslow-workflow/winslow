@@ -171,11 +171,16 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         for slot in (Slots.TASKS_PANE, Slots.TASK_OVERVIEW):
             self._dispatch_to_slot(slot, TaskStatusChanged(key, status))
 
-    def propagate_batch_created(self, batch):
-        self._dispatch_to_slot(Slots.TASKS_PANE, BatchCreated(batch))
+    def propagate_batch_created(self, info):
+        # The event carries the value; the live view resolves the batch.
+        batch = self.runner.get_batch(info.uuid)
+        if batch:
+            self._dispatch_to_slot(Slots.TASKS_PANE, BatchCreated(batch))
 
-    def propagate_batch_completed(self, batch):
-        self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(batch))
+    def propagate_batch_completed(self, info):
+        batch = self.runner.get_batch(info.uuid)
+        if batch:
+            self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(batch))
 
     def propagate_task_log(self, task_key, batch_uuid, line):
         batch = self.runner.get_batch(batch_uuid)

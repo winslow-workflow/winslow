@@ -21,8 +21,8 @@ store. The directory holds three record kinds:
 - **Status snapshots** — one file per task, named by the task identity key, holding the latest terminal
   status (`COMPLETED`, `COMPLETED_WITH_ERROR`, `COMPLETED_PREVIOUSLY`, `FORCE_SUCCESS`, `FAILED`,
   `ERROR`) and the time of the check. Each terminal transition replaces the file atomically. The
-  writes drain through a writer thread of the session, and the close of a batch waits for them, so
-  a closed batch record implies that its snapshots are on disk. Snapshots are session-scoped: a
+  writes drain through a writer thread of the session, and the close record of a batch queues
+  behind them, so a closed batch record implies that its snapshots are on disk. Snapshots are session-scoped: a
   check result is evidence gathered under one session's configuration, so a fresh session always
   starts with zero trust, and only a restore under the same session id inherits the snapshots.
 - **Batch records** — one directory per batch: a `record.json` written on submit and stamped at the

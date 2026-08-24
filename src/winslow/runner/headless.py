@@ -2,11 +2,12 @@ import threading
 from itertools import groupby
 
 from winslow.task import TaskStatus
+from winslow.events import BatchCompletedEvent, BatchCreatedEvent
 from winslow.exceptions import TaskBlock
 from winslow.cache import batch_cache
 
 from .base import BaseRunner
-from .execution import ExecutionAction, new_batch
+from .execution import BatchInfo, ExecutionAction, new_batch
 
 
 class HeadlessRunner(BaseRunner):
@@ -32,9 +33,10 @@ class HeadlessRunner(BaseRunner):
             }
             self._execution_batches_map[batch.uuid] = batch
         batch.start()
+        self._batch_admitted(batch, tasks)
         # On the submitter thread, before any task work: a crash during the
-        # batch must leave the open record behind.
-        self._record_batch_open(batch, tasks)
+        # batch must leave the open record behind (see SessionPersistenceAdapter).
+        self.workflow.bus.publish(BatchCreatedEvent(BatchInfo.from_batch(batch, tasks)))
         return batch, tasks
 
     def _execute_batch(self, batch, tasks, body):
@@ -52,11 +54,13 @@ class HeadlessRunner(BaseRunner):
                 self.logger.error(f"batch {batch.uuid[:8]} raised", exc_info=True)
                 batch.record_error(e)
             finally:
-                # Call complete() first. The _batch_finished listeners read the
-                # final status.
+                # Call complete() first. The _batch_finished hook reads the
+                # final status, and the completed event carries it.
                 batch.complete()
-                self._record_batch_close(batch, tasks)
                 self._batch_finished(batch, tasks)
+                self.workflow.bus.publish(
+                    BatchCompletedEvent(BatchInfo.from_batch(batch, tasks))
+                )
 
     def _submit(self, action, tasks, body):
         batch, tasks = self._open_batch(action, tasks)
@@ -70,6 +74,11 @@ class HeadlessRunner(BaseRunner):
         batch.attach_worker(worker)
         worker.start()
         return batch
+
+    def _batch_admitted(self, batch, tasks):
+        """Hook on the submitter thread, before the created event publishes.
+        The interactive runner registers the record store here, so a created
+        subscriber can read it."""
 
     def _batch_started(self, batch, tasks):
         pass

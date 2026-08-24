@@ -4,6 +4,7 @@ import sys
 import threading
 import time
 from contextlib import contextmanager
+from functools import wraps
 from pathlib import Path
 
 from winslow.constants import Mode
@@ -137,6 +138,22 @@ def ready(workflow):
     return workflow
 
 
+def flushes_state(func):
+    """Land every queued persistence write after the helper returns. Snapshots
+    and batch closes ride the writer queue, so a backend read needs the flush."""
+
+    @wraps(func)
+    def wrapper(workflow, *args, **kwargs):
+        result = func(workflow, *args, **kwargs)
+        listener = workflow.persistence_listener
+        if listener is not None:
+            listener.flush()
+        return result
+
+    return wrapper
+
+
+@flushes_state
 def run_all(workflow):
     """Full run, dispatched the way each mode really drives it: headless_run
     for the CLI path; bulk_run for the interactive path (what the UI's
@@ -148,6 +165,7 @@ def run_all(workflow):
         workflow.runner.bulk_run(workflow.tasks)
 
 
+@flushes_state
 def check_all(workflow):
     """Check-only pass, dispatched the way each mode really drives it. The
     headless leg routes through headless_run, so the workflow must be built
@@ -160,6 +178,7 @@ def check_all(workflow):
         workflow.runner.bulk_check(workflow.tasks)
 
 
+@flushes_state
 def check_batch(workflow, tasks=None):
     """A follow-up check batch, runner-level: what a re-invoked --check CLI or
     the UI's check action does. No eligibility re-pass - re-running it would
@@ -173,6 +192,7 @@ def check_batch(workflow, tasks=None):
         workflow.runner.bulk_check(tasks)
 
 
+@flushes_state
 def run_batch(workflow, tasks=None):
     """A follow-up run batch, runner-level - same contract as check_batch."""
     tasks = workflow.tasks if tasks is None else tasks

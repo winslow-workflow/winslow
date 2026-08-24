@@ -35,12 +35,16 @@ class ExecutionStatusEvent:
 
 @dataclass(frozen=True)
 class BatchCreatedEvent:
-    batch: "ExecutionBatch"  # noqa: F821
+    """One admitted batch, published before its first task work."""
+
+    info: "BatchInfo"  # noqa: F821
 
 
 @dataclass(frozen=True)
 class BatchCompletedEvent:
-    batch: "ExecutionBatch"  # noqa: F821
+    """One completed batch, published after its final status is set."""
+
+    info: "BatchInfo"  # noqa: F821
 
 
 @dataclass(frozen=True)

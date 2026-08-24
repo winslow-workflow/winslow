@@ -184,4 +184,4 @@ def test_an_accepted_action_arrives_as_bus_events(e2e_repo):
 
     ack = submit_and_wait(workflow, RunTasks(keys=(alpha.identity_key,)))
 
-    assert [event.batch.uuid for event in created] == [ack.batch_uuid]
+    assert [event.info.uuid for event in created] == [ack.batch_uuid]

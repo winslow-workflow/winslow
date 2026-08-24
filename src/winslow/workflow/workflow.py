@@ -355,6 +355,11 @@ class Workflow(_ConfigBase):
         """Subscribe the handler to the session events of this workflow."""
         self.bus.subscribe(event_type, handler)
 
+    def unsubscribe(self, event_type, handler):
+        """Disconnect the handler (see subscribe). An unknown handler is a
+        no-op, so a teardown path can run twice."""
+        self.bus.unsubscribe(event_type, handler)
+
     def add_cache_listener(self, listener):
         """Attach the listener to the caches this workflow can see: the
         workflow cache and the global cache."""
@@ -384,7 +389,7 @@ class Workflow(_ConfigBase):
         adapter = sweeper = None
         try:
             adapter = SessionPersistenceAdapter(state_store, session.session_id)
-            self.bus.subscribe(TaskStatusEvent, adapter.on_task_status)
+            adapter.attach(self)
             self.persistence_listener = adapter
             sweeper = StaleSweeper(self)
             self.bus.subscribe(TaskStatusEvent, sweeper.on_task_status)
@@ -406,10 +411,12 @@ class Workflow(_ConfigBase):
             # A persistence failure must not break the session start: the
             # session degrades to a run without state. The locals include a
             # subscriber whose registration failed.
-            for attached in (adapter, sweeper):
-                if attached is not None:
-                    self.bus.unsubscribe(TaskStatusEvent, attached.on_task_status)
-                    attached.close()
+            if adapter is not None:
+                adapter.detach(self)
+                adapter.close()
+            if sweeper is not None:
+                self.bus.unsubscribe(TaskStatusEvent, sweeper.on_task_status)
+                sweeper.close()
             self.persistence_listener = None
             self.stale_sweeper = None
             self.logger.error(

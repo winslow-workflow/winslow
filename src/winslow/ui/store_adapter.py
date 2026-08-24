@@ -71,11 +71,11 @@ class TuiStoreAdapter:
 
     @on_ui_thread
     def on_batch_created(self, event):
-        self._screen.propagate_batch_created(event.batch)
+        self._screen.propagate_batch_created(event.info)
 
     @on_ui_thread
     def on_batch_completed(self, event):
-        self._screen.propagate_batch_completed(event.batch)
+        self._screen.propagate_batch_completed(event.info)
 
     @on_ui_thread
     def on_log_line(self, event):

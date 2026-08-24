@@ -92,6 +92,14 @@ versions may include breaking changes).
   `log_task_status` to `TaskStatusEvent`; `InteractiveStore` is gone, and both modes use `TaskStore`.
 - `Workflow.tasks` is the owned task list, set at initialization in index order and cleared by
   `release_tasks`; it was a property derived from the store keys.
+- Breaking for plugin authors: `BatchCreatedEvent` and `BatchCompletedEvent` carry `info`, a frozen
+  `BatchInfo` value (uuid, action and status names, the roster as `{key: label}`, the option snapshot,
+  epoch timestamps); they carried the live `ExecutionBatch` as `batch`. An in-process consumer resolves
+  the live batch with `runner.get_batch(info.uuid)`. Batch lookup itself moved behind accessors:
+  `runner.get_batch(uuid)`, `runner.batches`, `runner.record_store(uuid)`, `runner.record_stores()`.
+- Batch records persist through the session bus: `SessionPersistenceAdapter` subscribes to the batch
+  and log events and is the only writer. The close record queues behind the status snapshots of the
+  batch on the writer thread, so a closed record implies durable outcomes by queue order.
 
 ### Removed
 

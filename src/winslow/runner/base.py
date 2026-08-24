@@ -1,6 +1,6 @@
 
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from functools import partial
 
@@ -30,7 +30,6 @@ from winslow.task.context import (
 )
 
 from winslow.events import Origin
-from winslow.state import BatchRecord
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
 from winslow.task.eligibility import check_task_eligibility
@@ -232,67 +231,6 @@ class BaseRunner(_Base):
         # A seed write stamps SEED: a fresh stamp would move checked_at
         # without a probe (see SessionPersistenceAdapter).
         self.store.set(task, status, origin=origin)
-
-    def _batch_record(self, batch, tasks):
-        """The audit record of one batch: the option snapshot and the roster.
-        The snapshots hold the task statuses (see winslow.state)."""
-        context = batch.execution_context
-        options = asdict(context) if context is not None else None
-        if options is not None:
-            options.pop("batch_uuid")
-        return BatchRecord(
-            batch_uuid=batch.uuid,
-            session_id=self.workflow.session_id,
-            action=batch.action.name,
-            created_at=batch.created_at.timestamp(),
-            execution_options=options,
-            tasks={task.identity_key: str(task) for task in tasks},
-        )
-
-    def _record_batch_open(self, batch, tasks):
-        """A record with no close mark seeds as INTERRUPTED on restore. A
-        persistence failure must not refuse the batch."""
-        listener = self.workflow.persistence_listener
-        if listener is None:
-            return
-        try:
-            listener.save_batch(self._batch_record(batch, tasks))
-        except Exception:
-            self.logger.error(
-                f"Could not store the record of batch {batch.uuid[:8]}",
-                exc_info=True,
-            )
-
-    def _record_batch_close(self, batch, tasks):
-        """A persistence failure must not mask the batch result."""
-        # One lookup: the session end can deregister the listener while the
-        # close runs, and a second lookup then reads None.
-        listener = self.workflow.persistence_listener
-        if listener is None:
-            return
-        try:
-            # The snapshots of the batch land before its close stamp: a closed
-            # record implies durable outcomes (see SessionPersistenceAdapter).
-            listener.flush()
-            closed = replace(
-                self._batch_record(batch, tasks),
-                closed_status=batch.status.name,
-                completed_at=batch.completed_at.timestamp(),
-            )
-            listener.save_batch(closed)
-            if logs := self._batch_log_dump(batch):
-                listener.save_batch_logs(batch.uuid, logs)
-        except Exception:
-            self.logger.error(
-                f"Could not close the record of batch {batch.uuid[:8]}",
-                exc_info=True,
-            )
-
-    def _batch_log_dump(self, batch):
-        """{identity key: log lines} to archive at the close. Only the
-        interactive runner captures per-batch logs; the session log file
-        holds the complete stream in every mode."""
-        return {}
 
     def seed_interrupted_batches(self, records):
         """Each record that a dead process left open becomes an INTERRUPTED
