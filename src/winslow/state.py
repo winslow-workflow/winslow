@@ -353,7 +353,7 @@ _STOP = object()
 
 class SessionPersistenceAdapter:
     """The single path of a task status onto and off persistence. The
-    callback only queues, so it stays cheap under the store lock, and the
+    callback only queues, so it stays cheap on the writing thread, and the
     writer thread lands the write. A read overlays the writes of this session
     on the initial state. The subscriber acts only on a live transition: a
     SEED write re-applies a stored value (see Origin)."""

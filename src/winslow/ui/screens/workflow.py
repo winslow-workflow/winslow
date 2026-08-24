@@ -75,9 +75,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         self._asyncio_tasks: set[asyncio.Task] = set()
         # The statuses-by-key mirror of the live store, read by the DTO-driven
         # panes (see WorkflowRenderContext.task_statuses).
-        self.statuses_by_key = {
-            task.identity_key: status for task, status in self.workflow.store.items()
-        }
+        self.statuses_by_key = dict(self.workflow.store.current)
 
         super().__init__()
 
@@ -109,8 +107,8 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         return self.workflow.task_index.resolve(key)
 
     async def on_mount(self):
-        for task, status in self.workflow.store.items():
-            self.propagate_task_status(task.identity_key, status)
+        for key, status in self.workflow.store.items():
+            self.propagate_task_status(key, status)
 
     async def on_screen_resume(self):
         # A session that ended is read-only history. Remove the live Tasks and

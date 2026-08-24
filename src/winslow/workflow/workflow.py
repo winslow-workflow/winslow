@@ -19,7 +19,7 @@ from winslow.task.context import BatchOptions
 from winslow.task.info import TaskInfo
 from winslow.task.status import PASSING_STATUSES, UNSUCCESSFUL_STATUSES
 from winslow.constants import Mode
-from winslow.runner.store import TaskStore, InteractiveStore
+from winslow.runner.store import TaskStore, log_task_status
 from winslow.graph import Graph
 from winslow.runner import HeadlessRunner, InteractiveRunner
 from winslow.session import Session, SessionStatus
@@ -47,7 +47,7 @@ class Workflow(_ConfigBase):
 
     store_classes = {
         Mode.HEADLESS: TaskStore,
-        Mode.TUI: InteractiveStore,
+        Mode.TUI: TaskStore,
     }
 
     runner_classes = {
@@ -106,6 +106,9 @@ class Workflow(_ConfigBase):
         self._workflow_cache = None
         self._global_cache = None
         self._task_index = None
+        # The workflow owns the prepared tasks; the task index holds weak
+        # references. initialize fills the list, release_tasks clears it.
+        self.tasks = None
 
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
@@ -127,6 +130,10 @@ class Workflow(_ConfigBase):
             # bus per session, however the store was built.
             self.store = store
             self.bus = store.bus
+        if orchestrator_config.mode is Mode.HEADLESS:
+            # The store publishes each transition; the log line is a
+            # subscriber, and the mode decides who listens (see log_task_status).
+            self.bus.subscribe(TaskStatusEvent, log_task_status)
         self.runner = self.runner_classes[orchestrator_config.mode](
             orchestrator_config=orchestrator_config,
             workflow=self,
@@ -159,10 +166,6 @@ class Workflow(_ConfigBase):
     @property
     def disable_concurrency(self):
         return self.batch_options.disable_concurrency
-
-    @property
-    def tasks(self):
-        return sorted([t for t in self.store.keys()], key=operator.attrgetter("_index"))
 
     @property
     def session(self):
@@ -309,6 +312,7 @@ class Workflow(_ConfigBase):
                 task._enable_log_buffer()
             self.store[task] = TaskStatus.INITIALIZED
 
+        self.tasks = sorted(tasks, key=operator.attrgetter("_index"))
         self._task_index = TaskIndex(tasks)
 
         logger.debug(f"{self} initialized {len(self.store)} tasks.")
@@ -316,18 +320,17 @@ class Workflow(_ConfigBase):
         # The graph is necessary only to build the pipeline and to assign the
         # dependencies of each task, which the tasks now hold. Drop the graph, so
         # the garbage collector can free it and its _task_class_map, which holds
-        # a reference to each task. The store and the task dependency links then
-        # own the tasks.
+        # a reference to each task. The workflow task list and the dependency
+        # links then own the tasks.
         self.graph = None
 
     def release_tasks(self):
         # The single release point, at session end: history holds values and
-        # uuids, so the store is the last owner of each task. Batch errors go
-        # first, because their traceback frames reference tasks. The lock-free
-        # clear is safe only because the session lifecycle guarantees that no
-        # batch runs and that no batch can be admitted here.
+        # uuids, so the workflow task list is the last owner of each task.
+        # Batch errors go first, because their traceback frames reference tasks.
         self.runner.release_batch_errors()
         self.store.clear()
+        self.tasks = None
         # The container dies with the session. Only a new session builds fresh
         # WorkflowCache instances.
         self._workflow_cache = None
@@ -565,7 +568,7 @@ class Workflow(_ConfigBase):
         )
 
         flagged = [
-            t for t, s in self.store.items() if s is TaskStatus.COMPLETED_WITH_ERROR
+            key for key, s in self.store.items() if s is TaskStatus.COMPLETED_WITH_ERROR
         ]
         if flagged:
             self.logger.warning(

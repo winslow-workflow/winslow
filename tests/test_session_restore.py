@@ -32,7 +32,7 @@ def died_mid_flight(e2e_repo, state_store, mode):
 
 def test_restore_seeds_the_terminal_statuses(e2e_repo, state_store, mode):
     first, session = died_mid_flight(e2e_repo, state_store, mode)
-    outcomes = {task.identity_key: status for task, status in first.store.items()}
+    outcomes = dict(first.store.items())
     # A dead batch that names every task: a snapshot wins over the roster, and
     # a roster task with no snapshot stays ready.
     state_store.save_batch(

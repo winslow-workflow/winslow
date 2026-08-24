@@ -3,15 +3,38 @@ must live at the repo root (see iter_dir_module_names' sys.path fallback)."""
 
 from winslow import Task, Workflow
 from winslow.constants import Mode
-from winslow.runner.store import TaskStore, InteractiveStore
-from winslow.store import StatusHistoryMixin
+from winslow.runner.store import TaskStore
+
+
+class StatusHistoryMixin:
+    """Record every status of each key, seed included, on the write-order
+    seam (see ReactiveDict._apply): bus dispatch order is undefined, so only
+    the seam sees the transitions in write order."""
+
+    def __init__(self, *args, **kwargs):
+        self.history = {}
+        super().__init__(*args, **kwargs)
+        # The constructor seed bypasses set, so capture it here.
+        for key, status in self.items():
+            self.history[key] = [status]
+
+    def _apply(self, key, status):
+        self.history.setdefault(key, []).append(status)
+        super()._apply(key, status)
+
+    def assert_history_equals(self, item, expected):
+        """One statement that tests the full status history of an item, with the
+        seed, against `expected`."""
+        actual = self.history.get(self._key(item), [])
+        expected = list(expected)
+        if actual != expected:
+            raise AssertionError(
+                f"{item}: expected history {[str(s) for s in expected]}, "
+                f"got {[str(s) for s in actual]}"
+            )
 
 
 class HistoryTaskStore(StatusHistoryMixin, TaskStore):
-    pass
-
-
-class HistoryInteractiveStore(StatusHistoryMixin, InteractiveStore):
     pass
 
 
@@ -56,7 +79,7 @@ class TargetWorkflow(Workflow):
 
     store_classes = {
         Mode.HEADLESS: HistoryTaskStore,
-        Mode.TUI: HistoryInteractiveStore,
+        Mode.TUI: HistoryTaskStore,
     }
 
     def __init__(self, *args, **kwargs):

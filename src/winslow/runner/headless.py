@@ -26,8 +26,8 @@ class HeadlessRunner(BaseRunner):
             # re-check reaches tasks outside the batch with the uuid of this
             # batch.
             batch.errored = {
-                t.identity_key
-                for t, s in self.store.items()
+                k
+                for k, s in self.store.items()
                 if s in (TaskStatus.ERROR, TaskStatus.COMPLETED_WITH_ERROR)
             }
             self.execution_batches_map[batch.uuid] = batch

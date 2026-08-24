@@ -40,23 +40,22 @@ class SessionBus:
     subscribes here, by event class, and the session-end sweep disconnects
     every remaining subscriber (see close).
 
-    publish dispatches synchronously on the calling thread. For a store event
-    that thread holds the store lock. A callback must not block, and must not
-    take a lock that another thread holds while it waits on this one.
+    publish dispatches synchronously on the calling thread, outside the store
+    lock (see ReactiveDict.set). Dispatch order between events is undefined:
+    a callback that renders state reads store.current for the latest view.
+    A callback must return immediately, because it runs on the thread that
+    produced the event.
 
     Example scenario, the TUI adapter (see TuiStoreAdapter):
 
         1. A worker thread completes a task and writes
-           store[task] = COMPLETED. The write takes the store lock.
-        2. The TaskStatusEvent callback runs on that worker thread, under
-           the lock.
+           store[task] = COMPLETED, then publishes with the lock released.
+        2. The TaskStatusEvent callback runs on that worker thread.
         3. The adapter posts the event to the UI thread and returns
-           immediately. The worker releases the lock and continues.
+           immediately. The worker continues.
 
     A slow body in step 3, for example a synchronous render of the task
-    table, stalls the runner at each write. A wait on the UI thread can
-    deadlock: the worker holds the store lock and waits for the UI thread,
-    while the UI thread waits for the store lock to read a status."""
+    table, stalls that worker at each write."""
 
     # The event vocabulary of the bus. A subclass overrides this to extend it.
     event_classes = (

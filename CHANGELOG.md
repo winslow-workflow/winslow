@@ -82,6 +82,16 @@ versions may include breaking changes).
 - `Graph` takes `logger` at construction and the workflow hands its session logger in, so the task
   initialization messages reach the session log pane. A project `graph_class` subclass that overrides
   `__init__` must accept the keyword.
+- Breaking: the task stores key by identity key. A read accepts a task or its key
+  (`store[task]` and `store[task.identity_key]` return the same status); iteration and `items()` yield
+  the string keys, and `workflow.task_index` resolves a key back to the live task. `store.current` is
+  the storage: an immutable snapshot dict, replaced on each write, so one bind reads a consistent view.
+  `ReactiveDict` is no longer a `dict` subclass. The bus publishes each transition outside the store
+  lock, on the writing thread; a subscriber that renders state reads `store.current`.
+- Breaking: the status log line moved from the store onto the bus. A headless workflow subscribes
+  `log_task_status` to `TaskStatusEvent`; `InteractiveStore` is gone, and both modes use `TaskStore`.
+- `Workflow.tasks` is the owned task list, set at initialization in index order and cleared by
+  `release_tasks`; it was a property derived from the store keys.
 
 ### Removed
 
@@ -90,6 +100,8 @@ versions may include breaking changes).
 - `StoreListener` and the store subscription methods (`add_listener`, `remove_listener`, `listeners`)
   on the task stores. The session bus owns every subscription. The cache containers keep
   `CacheListener` and their own `add_listener`, which are process-scoped.
+- `ReactiveDict.callback` and `winslow.store.StatusHistoryMixin`. The write path has no hook: status
+  logging subscribes to the bus, and a write-order observer overrides the under-lock `_apply` seam.
 
 ## [0.5.1] — 2026-08-17
 
