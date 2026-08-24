@@ -62,7 +62,13 @@ versions may include breaking changes).
   malformed hello, 4401 credential refused, 4408 hello timeout); an accepted hello answers `hello_ok`
   and a session snapshot. A loopback bind requires no credential. `winslow.serve.auth` owns
   `mint_ticket` and `verify_ticket`, so the minting side and the server share one rule. Run it with
-  `winslow serve [--host] [--port]`. The event stream and the request layer land next.
+  `winslow serve [--host] [--port]`. After the hello a client subscribes to sessions: each subscribe
+  answers with the session snapshot (task statuses, batches, stamped with the sequence the events
+  continue from), then the bus events stream as frames with per-session sequence numbers - task and
+  execution statuses, batch created and completed with their `BatchInfo`, and log lines coalesced per
+  task per 50ms tick. A resubscribe resets the stream with a fresh snapshot (the recovery after a
+  sequence gap), and a client that stays behind a full frame window is disconnected with close code
+  1013. The request layer (actions, reads, session creation) lands next.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the
