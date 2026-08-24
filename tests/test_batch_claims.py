@@ -16,7 +16,7 @@ def wait_for_record_status(workflow, batch, task, status, timeout=5.0):
     on the worker thread, so this also absorbs the store's own arrival."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        store = workflow.runner.execution_record_store_map.get(batch.uuid)
+        store = workflow.runner.record_store(batch.uuid)
         if store is not None and store.get(task.identity_key) is status:
             return store
         time.sleep(0.005)

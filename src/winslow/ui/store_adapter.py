@@ -3,6 +3,14 @@ from functools import partial, wraps
 from textual.message import Message
 
 from winslow.cache import CacheListener
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    ExecutionStatusEvent,
+    LogLineEvent,
+    SessionEndedEvent,
+    TaskStatusEvent,
+)
 
 
 class StoreEvent(Message):
@@ -28,8 +36,7 @@ def on_ui_thread(method):
 
 class TuiStoreAdapter:
     """Send the bus events to the Textual UI: the proxy between the session
-    bus and the Textual messages. The bus thus has no dependency on Textual.
-    The app subscribes each handler to its event class (see Winslow)."""
+    bus and the Textual messages. The bus thus has no dependency on Textual."""
 
     def __init__(self, app, screen_name):
         self.app = app
@@ -38,6 +45,19 @@ class TuiStoreAdapter:
     @property
     def _screen(self):
         return self.app.get_screen(self.screen_name)
+
+    def attach(self, workflow):
+        """Wire each handler onto its session event. The bus close at the
+        session end disconnects the adapter (see Workflow.archive_state)."""
+        for event, handler in (
+            (TaskStatusEvent, self.on_task_status),
+            (ExecutionStatusEvent, self.on_execution_status),
+            (BatchCreatedEvent, self.on_batch_created),
+            (BatchCompletedEvent, self.on_batch_completed),
+            (LogLineEvent, self.on_log_line),
+            (SessionEndedEvent, self.on_session_ended),
+        ):
+            workflow.subscribe(event, handler)
 
     @on_ui_thread
     def on_task_status(self, event):
@@ -120,6 +140,9 @@ class SessionLifecycleAdapter:
     def __init__(self, app, session):
         self.app = app
         self.session = session
+
+    def attach(self, workflow):
+        workflow.subscribe(BatchCompletedEvent, self.on_batch_completed)
 
     def on_batch_completed(self, event):
         self.app.post_message(SessionLifecycleEvent(self.session.finalize_if_drained))

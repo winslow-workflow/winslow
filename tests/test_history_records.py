@@ -31,14 +31,14 @@ from harness import (
 
 
 def _record_stores(workflow):
-    return list(workflow.runner.execution_record_store_map.values())
+    return workflow.runner.record_stores()
 
 
 def _wait_for_store(workflow, batch, timeout=5.0):
     """Record stores are born on the worker thread, so poll for arrival."""
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        store = workflow.runner.execution_record_store_map.get(batch.uuid)
+        store = workflow.runner.record_store(batch.uuid)
         if store is not None:
             return store
         time.sleep(0.005)
@@ -92,7 +92,7 @@ def test_session_end_frees_tasks_after_a_reraise(e2e_repo, isolated_winslow_logs
         run_all(workflow)
 
     refs = [weakref.ref(task) for task in workflow.tasks]
-    batches = list(workflow.runner.execution_batches_map.values())
+    batches = workflow.runner.batches
     assert any(batch._error is not None for batch in batches)
 
     workflow.session.end()
@@ -118,7 +118,7 @@ def test_session_end_frees_tasks_after_an_attribute_error(
         run_all(workflow)
 
     refs = [weakref.ref(task) for task in workflow.tasks]
-    batches = list(workflow.runner.execution_batches_map.values())
+    batches = workflow.runner.batches
     assert any(isinstance(batch._error, AttributeError) for batch in batches)
 
     workflow.session.end()
@@ -170,7 +170,7 @@ def test_errored_holds_identity_keys(e2e_repo):
 
     run_all(workflow)
 
-    batch = next(iter(workflow.runner.execution_batches_map.values()))
+    batch = workflow.runner.batches[0]
     assert tasks["Boom"].identity_key in batch.errored
     assert all(isinstance(item, str) for item in batch.errored)
 
@@ -328,7 +328,7 @@ def test_execution_events_route_by_batch_and_task_key(e2e_repo):
     run_batch(workflow, workflow.tasks)
 
     assert recorder.statuses
-    batch_uuids = set(workflow.runner.execution_batches_map)
+    batch_uuids = {batch.uuid for batch in workflow.runner.batches}
     task_keys = {task.identity_key for task in workflow.tasks}
     for batch_uuid, task_key, _ in recorder.statuses:
         assert batch_uuid in batch_uuids

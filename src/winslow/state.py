@@ -359,7 +359,7 @@ class SessionPersistenceAdapter:
     SEED write re-applies a stored value (see Origin)."""
 
     def __init__(self, state_store, session_id):
-        self.state_store = state_store
+        self._state_store = state_store
         self.session_id = session_id
         # The snapshots this session wrote, by key. get() reads them over the
         # initial state, so a fresh stamp is visible before its write lands.
@@ -376,13 +376,37 @@ class SessionPersistenceAdapter:
         """{key: StatusSnapshot} as persisted before this session wrote: the
         one backend read. Only this session writes its directory, so one read
         covers the whole session."""
-        return self.state_store.load_status_snapshots(self.session_id)
+        return self._state_store.load_status_snapshots(self.session_id)
 
     def get(self, key):
         """The latest snapshot of the key, or None: a write of this session
         wins over the initial state."""
         entry = self._written.get(key)
         return entry if entry is not None else self.initial_state.get(key)
+
+    # The adapter is the only face of persistence: it owns the backend and
+    # the session id, so a caller passes neither.
+
+    def save_batch(self, record):
+        self._state_store.save_batch(record)
+
+    def save_batch_logs(self, batch_uuid, logs):
+        self._state_store.save_batch_logs(self.session_id, batch_uuid, logs)
+
+    def load_open_batches(self):
+        return self._state_store.load_open_batches(self.session_id)
+
+    def load_manifest(self):
+        return self._state_store.load_manifest(self.session_id)
+
+    def save_manifest(self, manifest):
+        self._state_store.save_manifest(manifest)
+
+    def mark_errored(self):
+        self._state_store.mark_errored(self.session_id)
+
+    def mark_ended(self):
+        self._state_store.mark_ended(self.session_id)
 
     def on_task_status(self, event):
         if event.origin is not Origin.RUN:
@@ -402,7 +426,7 @@ class SessionPersistenceAdapter:
             try:
                 if entry is _STOP:
                     return
-                self.state_store.save_status_snapshot(self.session_id, entry)
+                self._state_store.save_status_snapshot(self.session_id, entry)
             except Exception:
                 LOGGER.error(
                     f"Could not store the snapshot of {entry.key}", exc_info=True

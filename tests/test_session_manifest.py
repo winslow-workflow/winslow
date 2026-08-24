@@ -96,7 +96,6 @@ def test_a_session_without_a_store_persists_nothing(e2e_repo):
     workflow.record_batch_options()
     session.end()
     assert workflow.persistence_listener is None
-    assert workflow.state_store is None
 
 
 def test_a_second_init_state_registers_nothing(e2e_repo, state_store):
@@ -149,7 +148,6 @@ def test_a_manifest_write_failure_degrades_to_a_non_persistent_session(
     session = Session(workflow)
     workflow.init_state(state_store, origin="tui")
 
-    assert workflow.state_store is None
     assert workflow.persistence_listener is None
 
     # The degraded session still runs and ends.

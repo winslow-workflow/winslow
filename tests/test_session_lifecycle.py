@@ -41,7 +41,7 @@ def test_quiet_end_finalizes_immediately(e2e_repo):
     assert session.task_status_summary == summary
     # History's data outlives the store release - ended sessions keep their
     # batch execution records.
-    assert len(workflow.runner.execution_record_store_map) == 1
+    assert len(workflow.runner.record_stores()) == 1
     # The session's named logger is freed from the process-wide registry.
     assert run_logger_name(session.session_id) not in logging.Logger.manager.loggerDict
     # Idempotent - a second end must not regress ENDED or re-run finalize.

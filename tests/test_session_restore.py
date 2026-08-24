@@ -135,7 +135,7 @@ def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):
     )
     second.seed_from_state()
 
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
     assert batch.task_count == 3
     # The stored option snapshot restores the context of the history card.
@@ -171,7 +171,7 @@ def test_a_record_close_failure_does_not_break_the_restore(
         second.seed_from_state()
 
     # The batch seeded in memory and the session stays a restore candidate.
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
     assert state_store.list_open_manifests()
     # Only the close stamp is lost: the next restore seeds the batch again.
@@ -205,7 +205,7 @@ def test_unsettled_tasks_of_a_dead_batch_stay_ready(e2e_repo, state_store, mode)
     # story. A rerun re-verifies through the normal pre-run check.
     assert second.store[tasks["Alpha"]] is S.READY_TO_PROCESS
     assert second.store[tasks["Ineligible"]] is S.SKIPPED
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
 
 

@@ -129,7 +129,7 @@ class ActionHandler:
         return BatchAck(accepted=True, batch_uuid=batch.uuid)
 
     def stop_batch(self, action):
-        batch = self._runner.execution_batches_map.get(action.batch_uuid)
+        batch = self._runner.get_batch(action.batch_uuid)
         if batch is None:
             return self._refuse(
                 action, f"{action.batch_uuid} names no batch of this session."

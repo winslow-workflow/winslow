@@ -178,14 +178,14 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(batch))
 
     def propagate_task_log(self, task_key, batch_uuid, line):
-        batch = self.runner.execution_batches_map.get(batch_uuid)
+        batch = self.runner.get_batch(batch_uuid)
         if batch:
             self._dispatch_to_slot(
                 Slots.TASKS_PANE, TaskLogUpdated(batch, task_key, line)
             )
 
     def propagate_execution_status(self, task_key, status, batch_uuid):
-        batch = self.runner.execution_batches_map.get(batch_uuid)
+        batch = self.runner.get_batch(batch_uuid)
         if batch:
             self._dispatch_to_slot(
                 Slots.TASKS_PANE, ExecutionStatusChanged(batch, task_key, status)
@@ -249,7 +249,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         if not ack.accepted:
             return
         # The handler filtered the eligibility, so the batch has the count.
-        batch = self.runner.execution_batches_map.get(ack.batch_uuid)
+        batch = self.runner.get_batch(ack.batch_uuid)
         count = batch.task_count if batch else 0
         self.notify(f"{verb} {count} task{'s' if count != 1 else ''}")
 

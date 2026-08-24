@@ -75,9 +75,9 @@ class BaseRunner(_Base):
         self.workflow_config = workflow_config
         # The workflow and the UI share this object and change it live.
         self.batch_options = batch_options
-        # On the base class, so both runners share it. History and the UI look up
-        # a batch by its uuid.
-        self.execution_batches_map = {}
+        # On the base class, so both runners share it. Callers look up a batch
+        # through get_batch and batches.
+        self._execution_batches_map = {}
 
     def _new_execution_context(self, batch_uuid):
         """Snapshot the batch options. A later change in the UI does not affect
@@ -92,22 +92,35 @@ class BaseRunner(_Base):
         )
 
     def _execution_context_for(self, batch_uuid):
-        return self.execution_batches_map[batch_uuid].execution_context
+        return self._execution_batches_map[batch_uuid].execution_context
+
+    def get_batch(self, batch_uuid):
+        """Return the batch with this uuid, or None when the runner holds no
+        batch under it."""
+        return self._execution_batches_map.get(batch_uuid)
+
+    @property
+    def batches(self):
+        # A copy, so iteration survives a map update from another thread.
+        return list(self._execution_batches_map.values())
+
+    def record_store(self, batch_uuid):
+        """Return the execution record store of this batch, or None when the
+        runner keeps no records."""
+        return None
+
+    def record_stores(self):
+        """Return the execution record stores, in batch creation order."""
+        return []
 
     @property
     def active_batches(self):
-        # Iterate over a list. Iteration over the dict fails if another thread
-        # updates the map during the read.
-        return [
-            b
-            for b in list(self.execution_batches_map.values())
-            if b.completed_at is None
-        ]
+        return [b for b in self.batches if b.completed_at is None]
 
     def release_batch_errors(self):
         """Replace the error of each retained batch with a value-only copy, so
         nothing on it keeps a task alive (see ExecutionBatch.release_error)."""
-        for batch in list(self.execution_batches_map.values()):
+        for batch in self.batches:
             batch.release_error()
 
     def _log_context(self, task, batch_uuid):
@@ -210,7 +223,7 @@ class BaseRunner(_Base):
         # The current runners abort on ERROR, but a custom runner may
         # introduce retry logic in a batch. An errored task can then run
         # again in the same batch, and the RUNNING write must reset the flag.
-        batch = self.execution_batches_map.get(batch_uuid)
+        batch = self._execution_batches_map.get(batch_uuid)
         if batch is not None:
             if status is TaskStatus.RUNNING:
                 batch.errored.discard(task.identity_key)
@@ -239,11 +252,11 @@ class BaseRunner(_Base):
     def _record_batch_open(self, batch, tasks):
         """A record with no close mark seeds as INTERRUPTED on restore. A
         persistence failure must not refuse the batch."""
-        store = self.workflow.state_store
-        if store is None:
+        listener = self.workflow.persistence_listener
+        if listener is None:
             return
         try:
-            store.save_batch(self._batch_record(batch, tasks))
+            listener.save_batch(self._batch_record(batch, tasks))
         except Exception:
             self.logger.error(
                 f"Could not store the record of batch {batch.uuid[:8]}",
@@ -266,11 +279,9 @@ class BaseRunner(_Base):
                 closed_status=batch.status.name,
                 completed_at=batch.completed_at.timestamp(),
             )
-            listener.state_store.save_batch(closed)
+            listener.save_batch(closed)
             if logs := self._batch_log_dump(batch):
-                listener.state_store.save_batch_logs(
-                    self.workflow.session_id, batch.uuid, logs
-                )
+                listener.save_batch_logs(batch.uuid, logs)
         except Exception:
             self.logger.error(
                 f"Could not close the record of batch {batch.uuid[:8]}",
@@ -308,10 +319,10 @@ class BaseRunner(_Base):
                 # that marks a batch as active (see active_batches).
                 completed_at=created_at,
             )
-            self.execution_batches_map[batch.uuid] = batch
+            self._execution_batches_map[batch.uuid] = batch
             self._register_seeded_batch(batch)
             try:
-                self.workflow.state_store.save_batch(
+                self.workflow.persistence_listener.save_batch(
                     replace(
                         record,
                         closed_status=ExecutionStatus.INTERRUPTED.name,
@@ -412,7 +423,7 @@ class BaseRunner(_Base):
                 if result:
                     # A check that passes does not remove a defect. A task that
                     # errored after its last run attempt stays flagged.
-                    batch = self.execution_batches_map.get(batch_uuid)
+                    batch = self._execution_batches_map.get(batch_uuid)
                     flagged = batch is not None and task.identity_key in batch.errored
                     if flagged:
                         stat = TaskStatus.COMPLETED_WITH_ERROR

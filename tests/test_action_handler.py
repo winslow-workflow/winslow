@@ -29,7 +29,7 @@ def live_workflow(e2e_repo):
 def submit_and_wait(workflow, action):
     ack = workflow.session.actions.submit(action)
     if ack.accepted:
-        workflow.runner.execution_batches_map[ack.batch_uuid].wait()
+        workflow.runner.get_batch(ack.batch_uuid).wait()
     return ack
 
 
@@ -40,7 +40,7 @@ def test_run_tasks_single_key_creates_a_batch(e2e_repo):
     ack = submit_and_wait(workflow, RunTasks(keys=(alpha.identity_key,)))
 
     assert ack == BatchAck(accepted=True, batch_uuid=ack.batch_uuid)
-    assert ack.batch_uuid in workflow.runner.execution_batches_map
+    assert workflow.runner.get_batch(ack.batch_uuid) is not None
     assert workflow.store[alpha] is S.COMPLETED
 
 
@@ -51,7 +51,7 @@ def test_run_tasks_many_keys_creates_one_batch(e2e_repo):
     ack = submit_and_wait(workflow, RunTasks(keys=keys))
 
     assert ack.accepted
-    batch = workflow.runner.execution_batches_map[ack.batch_uuid]
+    batch = workflow.runner.get_batch(ack.batch_uuid)
     # The admission filtered the ineligible task out of the roster.
     assert batch.task_count == len(keys) - 1
 
@@ -66,7 +66,7 @@ def test_duplicate_keys_collapse_with_a_warning(e2e_repo, caplog):
         )
 
     assert ack.accepted
-    assert workflow.runner.execution_batches_map[ack.batch_uuid].task_count == 1
+    assert workflow.runner.get_batch(ack.batch_uuid).task_count == 1
     assert str(alpha.identity_key) in caplog.text
 
 

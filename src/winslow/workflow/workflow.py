@@ -351,11 +351,20 @@ class Workflow(_ConfigBase):
             **kwargs,
         )
 
-    @property
-    def state_store(self):
-        """The store backend of the attached persistence, or None."""
-        listener = self.persistence_listener
-        return listener.state_store if listener is not None else None
+    def subscribe(self, event_type, handler):
+        """Subscribe the handler to the session events of this workflow."""
+        self.bus.subscribe(event_type, handler)
+
+    def add_cache_listener(self, listener):
+        """Attach the listener to the caches this workflow can see: the
+        workflow cache and the global cache."""
+        self.workflow_cache.add_listener(listener)
+        self.global_cache.add_listener(listener)
+
+    def remove_cache_listener(self, listener):
+        """Detach the listener from both caches (see add_cache_listener)."""
+        self.workflow_cache.remove_listener(listener)
+        self.global_cache.remove_listener(listener)
 
     def init_state(
         self,
@@ -425,9 +434,7 @@ class Workflow(_ConfigBase):
         if listener is None:
             return
         self._seed_task_statuses(listener.initial_state)
-        self.runner.seed_interrupted_batches(
-            listener.state_store.load_open_batches(self.session_id)
-        )
+        self.runner.seed_interrupted_batches(listener.load_open_batches())
 
     def _seed_task_statuses(self, snapshots):
         """Replay the last terminal status of each task that the eligibility
@@ -456,19 +463,18 @@ class Workflow(_ConfigBase):
     def record_batch_options(self):
         """Fold the live batch options into the stored manifest. A restore
         thus rebuilds the session with the toggles the user set."""
-        if self.state_store is None:
+        listener = self.persistence_listener
+        if listener is None:
             return
         try:
-            manifest = self.state_store.load_manifest(self.session_id)
+            manifest = listener.load_manifest()
             if manifest is None:
                 return
             overrides = {
                 **(manifest.orchestrator_overrides or {}),
                 **asdict(self.batch_options),
             }
-            self.state_store.save_manifest(
-                replace(manifest, orchestrator_overrides=overrides)
-            )
+            listener.save_manifest(replace(manifest, orchestrator_overrides=overrides))
         except Exception:
             self.logger.error(
                 f"Could not update the manifest of {self.session_id}",
@@ -492,9 +498,9 @@ class Workflow(_ConfigBase):
             self.persistence_listener = None
             try:
                 if self.session.status is SessionStatus.ERROR:
-                    listener.state_store.mark_errored(self.session_id)
+                    listener.mark_errored()
                 else:
-                    listener.state_store.mark_ended(self.session_id)
+                    listener.mark_ended()
             except Exception:
                 self.logger.error(
                     f"Could not archive the manifest of {self.session_id}",

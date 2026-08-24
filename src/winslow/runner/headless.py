@@ -30,7 +30,7 @@ class HeadlessRunner(BaseRunner):
                 for k, s in self.store.items()
                 if s in (TaskStatus.ERROR, TaskStatus.COMPLETED_WITH_ERROR)
             }
-            self.execution_batches_map[batch.uuid] = batch
+            self._execution_batches_map[batch.uuid] = batch
         batch.start()
         # On the submitter thread, before any task work: a crash during the
         # batch must leave the open record behind.

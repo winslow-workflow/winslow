@@ -100,7 +100,7 @@ class SessionRow(Widget):
         self._refresh_summary()
         # The bus fires the end once; the session-end sweep disconnects the
         # subscription. The tick only refreshes the display.
-        session.workflow.bus.subscribe(SessionEndedEvent, self._on_session_ended)
+        session.workflow.subscribe(SessionEndedEvent, self._on_session_ended)
         self.set_interval(SUMMARY_REFRESH_INTERVAL, self._tick)
 
     def _on_session_ended(self, event):

@@ -28,14 +28,14 @@ class ForceEndModal(BaseModal):
             self.dismiss()
 
     def compose_content(self):
-        store_map = self.session.workflow.runner.execution_record_store_map
+        runner = self.session.workflow.runner
         with VerticalScroll():
             for batch in self.session.active_batches:
                 yield Label(
                     f"{batch.action.value.upper()} · {batch.task_count} task(s)",
                     classes="force-batch",
                 )
-                store = store_map.get(batch.uuid)
+                store = runner.record_store(batch.uuid)
                 for record in store.records if store else ():
                     yield Label(f"  {record.info}", classes="force-task")
         with Horizontal(classes="actions"):

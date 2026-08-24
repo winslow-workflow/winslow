@@ -302,7 +302,7 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._apply_visibility()
 
     def _get_store(self, batch):
-        return self.workflow.runner.execution_record_store_map[batch.uuid]
+        return self.workflow.runner.record_store(batch.uuid)
 
     def _register_card(self, card):
         self._cards[card.batch.uuid] = card
@@ -332,12 +332,7 @@ class HistoryPane(SearchFlowMixin, Widget):
                     # checkbox column of the task bar has the same two rows.
                     yield Checkbox("placeholder", classes="placeholder", disabled=True)
         with VerticalScroll(id="cards-section"):
-            # Iterate over a list. Iteration over the dict fails if another
-            # thread updates the map during the read, because a worker thread
-            # registers a batch.
-            for batch in reversed(
-                list(self.workflow.runner.execution_batches_map.values())
-            ):
+            for batch in reversed(self.workflow.runner.batches):
                 yield from self._compose_batch(batch)
 
     async def on_mount(self):

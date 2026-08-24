@@ -76,7 +76,7 @@ def test_a_killed_session_restores_in_a_fresh_process(e2e_repo, tmp_path):
 
     interrupted = [
         batch
-        for batch in workflow.runner.execution_batches_map.values()
+        for batch in workflow.runner.batches
         if batch.status is ExecutionStatus.INTERRUPTED
     ]
     assert len(interrupted) == 1

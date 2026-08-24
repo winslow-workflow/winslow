@@ -14,14 +14,6 @@ from winslow.ui.store_adapter import (
     TuiStoreAdapter,
 )
 from winslow.actions import EndSession
-from winslow.events import (
-    BatchCompletedEvent,
-    BatchCreatedEvent,
-    ExecutionStatusEvent,
-    LogLineEvent,
-    SessionEndedEvent,
-    TaskStatusEvent,
-)
 from winslow.session import Session
 from winslow.state import create_state_store
 from winslow.util import generate_id
@@ -235,22 +227,13 @@ class Winslow(App):
             name=session.screen_name,
         )
 
-        # The bus close at session end disconnects both adapters, so no
+        # The bus close at session end disconnects both bus adapters, so no
         # explicit unsubscribe is necessary (see Workflow.archive_state).
-        bus = workflow.bus
-        store_adapter = TuiStoreAdapter(self, session.screen_name)
-        bus.subscribe(TaskStatusEvent, store_adapter.on_task_status)
-        bus.subscribe(ExecutionStatusEvent, store_adapter.on_execution_status)
-        bus.subscribe(BatchCreatedEvent, store_adapter.on_batch_created)
-        bus.subscribe(BatchCompletedEvent, store_adapter.on_batch_completed)
-        bus.subscribe(LogLineEvent, store_adapter.on_log_line)
-        bus.subscribe(SessionEndedEvent, store_adapter.on_session_ended)
-        lifecycle_adapter = SessionLifecycleAdapter(self, session)
-        bus.subscribe(BatchCompletedEvent, lifecycle_adapter.on_batch_completed)
+        TuiStoreAdapter(self, session.screen_name).attach(workflow)
+        SessionLifecycleAdapter(self, session).attach(workflow)
 
         cache_adapter = TuiCacheAdapter(self, session.screen_name)
-        workflow.workflow_cache.add_listener(cache_adapter)
-        workflow.global_cache.add_listener(cache_adapter)
+        workflow.add_cache_listener(cache_adapter)
         self._cache_adapters[session.session_id] = cache_adapter
 
     @on(SessionLifecycleEvent)
@@ -273,8 +256,7 @@ class Winslow(App):
 
         # Detach before the end: a quiet end releases the workflow cache at once.
         if adapter := self._cache_adapters.pop(session_id, None):
-            session.workflow.workflow_cache.remove_listener(adapter)
-            session.workflow.global_cache.remove_listener(adapter)
+            session.workflow.remove_cache_listener(adapter)
 
         # The screen and the session stay installed for the History View button.
         session.actions.submit(EndSession())

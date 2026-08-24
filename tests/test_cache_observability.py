@@ -491,7 +491,7 @@ def test_run_records_the_cache_reads_per_phase(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-cache", Mode.TUI)
     run_all(workflow)
 
-    stores = list(workflow.runner.execution_record_store_map.values())
+    stores = workflow.runner.record_stores()
     assert len(stores) == 1
     reads = {}
     for record in stores[0].records:
