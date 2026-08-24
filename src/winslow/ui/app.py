@@ -14,7 +14,7 @@ from winslow.ui.store_adapter import (
     TuiStoreAdapter,
 )
 from winslow.actions import EndSession
-from winslow.session import Session
+from winslow.session import Session, SessionRegistry
 from winslow.state import create_state_store
 from winslow.util import generate_id
 from winslow.task.context import LogContext, scoped_log_context
@@ -45,7 +45,7 @@ class Winslow(App):
         self.workflow_context = workflow_context
         self.orchestrator = orchestrator  # necessary to generate the workflows
 
-        self.session_store = {}
+        self.sessions = SessionRegistry()
         # The cache adapter per session id: the end of the session must detach
         # it from the global container, which outlives every session.
         self._cache_adapters = {}
@@ -168,7 +168,7 @@ class Winslow(App):
 
                 self.logger.info(f"Workflow '{workflow_name}' initialized.")
                 session = Session(workflow, session_id=session_id)
-                self.session_store[session.session_id] = session
+                self.sessions.register(session)
 
                 self.logger.info(f"Initializing tasks: {workflow_name}")
 
@@ -208,7 +208,7 @@ class Winslow(App):
                 self.logger.error(
                     f"Failed to initialize workflow '{workflow_name}' - see session log"
                 )
-                session = self.session_store.pop(session_id, None)
+                session = self.sessions.remove(session_id)
                 if session is not None:
                     session.mark_error(e)
                 await row.remove()
@@ -246,11 +246,11 @@ class Winslow(App):
         )
 
     async def view_session(self, session_id):
-        session = self.session_store[session_id]
+        session = self.sessions.resolve(session_id)
         self.push_screen(session.screen_name)
 
     async def end_session(self, session_id):
-        session = self.session_store[session_id]
+        session = self.sessions.resolve(session_id)
 
         self.logger.debug(f"Ending session: {session_id} ({session.workflow})")
 

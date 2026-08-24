@@ -139,7 +139,7 @@ class DashboardScreen(SlottedScreen):
         except NoMatches:
             return
         manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
-        manifests = [m for m in manifests if m.session_id not in self.app.session_store]
+        manifests = [m for m in manifests if m.session_id not in self.app.sessions]
         if not manifests:
             widget.display = False
             return

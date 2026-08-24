@@ -185,3 +185,45 @@ class Session:
         completed = sum(1 for s in statuses if s in PASSING_STATUSES)
         problematic = sum(1 for s in statuses if s in PROBLEMATIC_STATUSES)
         return completed, problematic, len(statuses)
+
+
+class SessionRegistry:
+    """The live sessions of one process, by session id. One registry serves
+    every consumer of the process: the TUI app, and the serve transports
+    (websocket, MCP), so each resolves the same map."""
+
+    def __init__(self):
+        self._sessions = {}
+        self._lock = threading.Lock()
+
+    def register(self, session):
+        with self._lock:
+            self._sessions[session.session_id] = session
+
+    def resolve(self, session_id):
+        """The live session under the id. Raises KeyError with direction."""
+        session = self.get(session_id)
+        if session is None:
+            raise KeyError(
+                f"session id {session_id!r} does not resolve to a live session - "
+                f"it ended, or it belongs to another process."
+            )
+        return session
+
+    def get(self, session_id):
+        return self._sessions.get(session_id)
+
+    def remove(self, session_id):
+        """Drop and return the session, or None: a teardown can run twice."""
+        with self._lock:
+            return self._sessions.pop(session_id, None)
+
+    def sessions(self):
+        # A tuple, so iteration survives a registration from another thread.
+        return tuple(self._sessions.values())
+
+    def __contains__(self, session_id):
+        return session_id in self._sessions
+
+    def __len__(self):
+        return len(self._sessions)

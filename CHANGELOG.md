@@ -52,6 +52,17 @@ versions may include breaking changes).
   with their origin.
 - `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
   and the Caches pane subscribe to it instead of polling `has_ended`.
+- `SessionRegistry` (`winslow.session`): the thread-safe map of the live sessions of one process,
+  shared by every consumer. The TUI app holds one as `app.sessions` (its private `session_store` dict
+  is gone); the serve transports resolve the same registry.
+- The serve skeleton (`winslow.serve`, behind the `[serve]` extra: starlette, uvicorn, websockets):
+  `create_app(registry, credentials)` serves `/ws` with the hello handshake. The first message is a
+  hello with a ticket (browser, HMAC-signed by the front application) or a bearer token (machine
+  client); a refusal answers with a `hello_error` frame and closes with a semantic code (4400
+  malformed hello, 4401 credential refused, 4408 hello timeout); an accepted hello answers `hello_ok`
+  and a session snapshot. A loopback bind requires no credential. `winslow.serve.auth` owns
+  `mint_ticket` and `verify_ticket`, so the minting side and the server share one rule. Run it with
+  `winslow serve [--host] [--port]`. The event stream and the request layer land next.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the

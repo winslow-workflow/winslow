@@ -36,6 +36,7 @@ INDENT = "\t"
 class Action(Enum):
     RUN = "run"
     SHOW = "show"
+    SERVE = "serve"
 
 
 def _parse_mode(value):
@@ -90,6 +91,21 @@ class Orchestrator(_ConfigBase):
             Action.SHOW.value,
         ),
         # The UI has a workflow selection widget, so it needs no text input.
+        show_on_ui=False,
+    )
+
+    host = ConfigOption(
+        help_text="The bind address of the serve process. Loopback needs no credential.",
+        default="127.0.0.1",
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
+    port = ConfigOption(
+        help_text="The port of the serve process.",
+        type=int,
+        default=8866,
+        subcommands=Action.SERVE.value,
         show_on_ui=False,
     )
 
@@ -323,6 +339,12 @@ class Orchestrator(_ConfigBase):
 
         cls._generate_subcommand(
             subparsers, action=Action.RUN, help_text="Run workflow(s)."
+        )
+
+        cls._generate_subcommand(
+            subparsers,
+            action=Action.SERVE,
+            help_text="Serve the live sessions over one websocket endpoint.",
         )
 
         return parser
@@ -615,6 +637,24 @@ class Orchestrator(_ConfigBase):
             )
             raise
 
+    def _handle_serve(self):
+        try:
+            import uvicorn
+            from winslow.serve.app import create_app
+        except ImportError as e:
+            raise MisconfigurationError(
+                "Serve mode requires the serve extra - install with: "
+                "pip install 'winslow[serve]'"
+            ) from e
+        from winslow.serve.auth import Credentials
+        from winslow.session import SessionRegistry
+
+        host = self.orchestrator_config.host
+        port = self.orchestrator_config.port
+        self.logger.info(f"Serving on {host}:{port}")
+        app = create_app(SessionRegistry(), Credentials.from_env(host))
+        uvicorn.run(app, host=host, port=port)
+
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")
 
@@ -712,6 +752,8 @@ class Orchestrator(_ConfigBase):
 
         if self.orchestrator_config.action is Action.SHOW:
             self._handle_show()
+        elif self.orchestrator_config.action is Action.SERVE:
+            self._handle_serve()
         elif self.orchestrator_config.action is Action.RUN:
             # Runs only: a show produces no errors worth a backend. The finally
             # flushes and unregisters, so an embedding process can start again.
