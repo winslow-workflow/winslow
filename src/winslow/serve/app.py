@@ -13,6 +13,7 @@ from starlette.routing import Mount, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
 from winslow.exceptions import MisconfigurationError
+from winslow.logger import LOGGER
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
 from winslow.serve.wire import build_action, descriptor_rows, history_rows, session_row
@@ -45,11 +46,15 @@ class Bridges:
     def get_or_create(self, session):
         bridge = self._bridges.get(session.session_id)
         if bridge is None:
-            bridge = EventBridge(session, qsize=self.qsize)
+            bridge = EventBridge(session, qsize=self.qsize, owner=self)
             bridge.attach()
             bridge.start()
             self._bridges[session.session_id] = bridge
         return bridge
+
+    def discard(self, session_id):
+        """Drop the entry of a retired bridge (see EventBridge._retire)."""
+        self._bridges.pop(session_id, None)
 
     def close(self):
         for bridge in self._bridges.values():
@@ -250,9 +255,9 @@ class Connection:
         elif kind == "unsubscribe":
             self.handle_unsubscribe(frame.get("session_id"))
         elif kind == "action":
-            self.spawn(self.run_action(frame))
+            self.spawn(frame, self.run_action(frame))
         elif kind == "request":
-            self.spawn(self.run_request(frame))
+            self.spawn(frame, self.run_request(frame))
         else:
             self.reply(
                 {
@@ -262,10 +267,25 @@ class Connection:
                 }
             )
 
-    def spawn(self, coroutine):
-        job = asyncio.get_running_loop().create_task(coroutine)
+    def spawn(self, frame, coroutine):
+        job = asyncio.get_running_loop().create_task(self._answered(frame, coroutine))
         self.jobs.add(job)
         job.add_done_callback(self.jobs.discard)
+
+    async def _answered(self, frame, coroutine):
+        """No spawned job dies silent: the client reads an error frame
+        instead of waiting on an answer that never comes."""
+        try:
+            await coroutine
+        except Exception:
+            LOGGER.error(
+                f"{frame.get('type')} frame failed inside the server", exc_info=True
+            )
+            self.request_error(
+                frame,
+                f"the {frame.get('type')} failed inside the server - the "
+                f"server log has the traceback.",
+            )
 
     def resolve_for(self, frame):
         """The live session of the frame, or None after an error reply."""
@@ -395,7 +415,7 @@ class Connection:
             frame,
             task_key=frame.get("task_key"),
             batch_uuid=frame.get("batch_uuid"),
-            lines=list(record.logs)[-limit:],
+            lines=record.log_tail(limit),
         )
 
     async def _request_task_detail(self, frame):

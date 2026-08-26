@@ -4,8 +4,11 @@ closed with the final status, the per-task outcomes, and the log dump."""
 import json
 from dataclasses import asdict
 
+import pytest
+
 from winslow.constants import Mode
 from winslow.events import BatchCompletedEvent, BatchCreatedEvent
+from winslow.runner.execution import BatchInfo, ExecutionStatus
 from winslow.session import Session
 from winslow.task.status import TaskStatus as S
 
@@ -95,6 +98,33 @@ def test_a_stopped_batch_closes_stopped(e2e_repo, state_store):
     payload = record_payload(state_store, session, batch)
     assert payload["closed_status"] == "STOPPED"
     assert state_store.load_open_batches(session.session_id) == []
+
+
+def test_a_framework_error_closes_the_batch_as_errored(
+    e2e_repo, state_store, mode, monkeypatch
+):
+    workflow = build_workflow(e2e_repo, "my-workflow", mode)
+    session = Session(workflow)
+    workflow.check_pipeline_eligibility()
+    workflow.init_state(state_store, origin="test")
+
+    def explode(self, batch, tasks):
+        raise RuntimeError("ordering exploded")
+
+    monkeypatch.setattr(type(workflow.runner), "_run_body", explode)
+    batch = workflow.runner.submit_run(workflow.tasks)
+    with pytest.raises(RuntimeError, match="ordering exploded"):
+        batch.wait()
+
+    # The abort is not a clean finish: the status says ERRORED and the info
+    # carries the message, so a wire client learns what happened.
+    assert batch.status is ExecutionStatus.ERRORED
+    info = BatchInfo.from_batch(batch, [])
+    assert "ordering exploded" in info.error
+
+    workflow.persistence_listener.flush()
+    payload = record_payload(state_store, session, batch)
+    assert payload["closed_status"] == "ERRORED"
 
 
 def test_a_record_write_failure_does_not_refuse_the_batch(

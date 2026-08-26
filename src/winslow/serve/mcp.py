@@ -201,7 +201,7 @@ class McpEndpoint:
         if session is None:
             return {"error": f"session id {session_id!r} does not resolve"}
         store = session.workflow.store
-        return {"tasks": {key: status.name for key, status in store.current.items()}}
+        return {"tasks": {key: status.name for key, status in store.items()}}
 
     @tool
     async def history(self, session_id: str) -> dict:

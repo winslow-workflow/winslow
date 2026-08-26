@@ -25,6 +25,9 @@ class ExecutionStatus(Enum):
     RUNNING = auto()
     FINISHED = auto()
     STOPPED = auto()
+    # A framework error aborted the batch before it could finish its tasks
+    # (see ExecutionBatch.complete). The error message rides BatchInfo.
+    ERRORED = auto()
     # The process died while the batch ran: a restore found the record open
     # in the state store. Only a restore writes it, into history.
     INTERRUPTED = auto()
@@ -110,6 +113,8 @@ class BatchInfo:
     created_at: float
     started_at: float | None
     completed_at: float | None
+    # The message of the framework error that aborted the batch, or None.
+    error: str | None = None
 
     @classmethod
     def from_batch(cls, batch, tasks):
@@ -131,6 +136,7 @@ class BatchInfo:
             completed_at=(
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
+            error=batch.error,
         )
 
 
@@ -154,6 +160,11 @@ class ExecutionRecord:
     # ExecutionPhase -> tuple[CacheReadSnapshot]. A repeated phase overwrites,
     # so the last occurrence wins, exactly like transient_snapshots.
     cache_snapshots: dict = field(default_factory=dict)
+
+    def __post_init__(self):
+        # append_log runs on worker threads while log_tail snapshots on the
+        # serve loop; an unguarded list(deque) raises mid-append.
+        self._log_lock = threading.Lock()
 
     def __hash__(self):
         return hash(self.info.key)
@@ -191,7 +202,13 @@ class ExecutionRecord:
             span.completed_at = datetime.now()
 
     def append_log(self, line: str):
-        self.logs.append(line)
+        with self._log_lock:
+            self.logs.append(line)
+
+    def log_tail(self, limit):
+        """The last `limit` log lines, as a consistent copy."""
+        with self._log_lock:
+            return list(self.logs)[-limit:]
 
     def notify_display_log(self, line: str):
         if self.store:
@@ -218,12 +235,20 @@ class ExecutionBatch:
         self._stop_event = threading.Event()
         self._worker = None
         self._error = None
+        # Serializes the status transitions: request_stop runs on an action
+        # thread while start and complete run on the worker.
+        self._transition_lock = threading.Lock()
 
     def attach_worker(self, thread):
         self._worker = thread
 
     def record_error(self, exc):
         self._error = exc
+
+    @property
+    def error(self):
+        """The message of a recorded framework error, or None."""
+        return str(self._error) if self._error is not None else None
 
     def release_error(self):
         """Replace a recorded error at session end with a type-and-message copy:
@@ -250,19 +275,26 @@ class ExecutionBatch:
         return self._stop_event.is_set()
 
     def request_stop(self):
-        if self.status not in (ExecutionStatus.QUEUED, ExecutionStatus.RUNNING):
-            return
-        self._stop_event.set()
-        self.status = ExecutionStatus.STOPPED
+        with self._transition_lock:
+            if self.status not in (ExecutionStatus.QUEUED, ExecutionStatus.RUNNING):
+                return
+            self._stop_event.set()
+            self.status = ExecutionStatus.STOPPED
 
     def start(self):
-        self.status = ExecutionStatus.RUNNING
-        self.started_at = datetime.now()
+        with self._transition_lock:
+            self.status = ExecutionStatus.RUNNING
+            self.started_at = datetime.now()
 
     def complete(self):
-        if self.status != ExecutionStatus.STOPPED:
-            self.status = ExecutionStatus.FINISHED
-        self.completed_at = datetime.now()
+        with self._transition_lock:
+            if self.status != ExecutionStatus.STOPPED:
+                self.status = (
+                    ExecutionStatus.ERRORED
+                    if self._error is not None
+                    else ExecutionStatus.FINISHED
+                )
+            self.completed_at = datetime.now()
 
 
 def _detached_error(exc):

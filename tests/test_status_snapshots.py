@@ -96,6 +96,11 @@ def test_a_snapshot_write_failure_does_not_break_the_batch(
     assert statuses & {status for status in SNAPSHOT_STATUSES}
     assert state_store.load_status_snapshots(session.session_id) == {}
 
+    # The dropped writes are counted, so flush and close can report them.
+    listener = workflow.persistence_listener
+    listener.flush()
+    assert listener.write_failures > 0
+
 
 def test_session_end_archives_the_snapshots(e2e_repo, state_store):
     workflow, session = run_persisted(e2e_repo, state_store, Mode.TUI)

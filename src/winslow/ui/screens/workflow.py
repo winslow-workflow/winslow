@@ -75,7 +75,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         self._asyncio_tasks: set[asyncio.Task] = set()
         # The statuses-by-key mirror of the live store, read by the DTO-driven
         # panes (see WorkflowRenderContext.task_statuses).
-        self.statuses_by_key = dict(self.workflow.store.current)
+        self.statuses_by_key = dict(self.workflow.store.items())
 
         super().__init__()
 

@@ -55,10 +55,12 @@ class EventBridge:
     the bus subscribers; the app starts one drain task per bridge on the
     loop; close() disconnects and cancels."""
 
-    def __init__(self, session, qsize=10_000):
+    def __init__(self, session, qsize=10_000, owner=None):
         self.session = session
         self.session_id = session.session_id
         self.qsize = qsize
+        # The Bridges container, so a retired bridge can drop its own entry.
+        self.owner = owner
         self.seq = 0
         self._inbox = queue.SimpleQueue()
         self._subscriptions = []
@@ -79,13 +81,24 @@ class EventBridge:
     def start(self):
         self._task = asyncio.get_running_loop().create_task(self._drain())
 
-    def close(self):
+    def detach(self):
         for event, handler in self._pairs:
             # The session-end sweep can beat this call; unsubscribe is a no-op
             # then (see SessionBus).
             self.session.workflow.unsubscribe(event, handler)
+
+    def close(self):
+        self.detach()
         if self._task is not None:
             self._task.cancel()
+
+    def _retire(self):
+        """The session ended and the frame is fanned out: release the bus
+        handlers and the Bridges entry, so a long serve process does not
+        accumulate one live drain task per ended session."""
+        self.detach()
+        if self.owner is not None:
+            self.owner.discard(self.session_id)
 
     # --- the bus side: worker threads, scalars only ---------------------------
 
@@ -150,7 +163,7 @@ class EventBridge:
             "seq": self.seq,
             "workflow": str(workflow),
             "status": self.session.status.name,
-            "tasks": {key: status.name for key, status in workflow.store.current.items()},
+            "tasks": {key: status.name for key, status in workflow.store.items()},
             "batches": [
                 {
                     "uuid": batch.uuid,
@@ -203,4 +216,7 @@ class EventBridge:
             # overtake the lines that precede it.
             for item in others:
                 self._fan_out(item)
+            if any(item["type"] == "session_ended" for item in others):
+                self._retire()
+                return
             await asyncio.sleep(FLUSH_TICK)

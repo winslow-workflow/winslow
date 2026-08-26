@@ -42,7 +42,7 @@ class SessionBus:
 
     publish dispatches synchronously on the calling thread, outside the store
     lock (see ReactiveDict.set). Dispatch order between events is undefined:
-    a callback that renders state reads store.current for the latest view.
+    a callback that renders state reads the store for the latest view.
     A callback must return immediately, because it runs on the thread that
     produced the event.
 

@@ -226,6 +226,32 @@ def test_log_tail_serves_the_captured_lines(e2e_repo, monkeypatch):
     ws.close()
 
 
+def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+
+    class ExplodingInfo:
+        @classmethod
+        def from_task(cls, *args, **kwargs):
+            raise RuntimeError("capture exploded")
+
+    monkeypatch.setattr("winslow.serve.app.TaskInfo", ExplodingInfo)
+    ws = connect(registry)
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-10",
+            "kind": "task_detail",
+            "session_id": session.session_id,
+            "task_key": alpha.identity_key,
+        }
+    )
+    error = frames_until(ws, "error")
+    assert error["request_id"] == "r-10"
+    assert "server log" in error["reason"]
+    ws.close()
+
+
 def test_task_detail_serves_the_full_capture(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]

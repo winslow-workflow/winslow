@@ -1,4 +1,5 @@
 import collections
+from functools import cached_property
 
 from winslow.registry import Registry
 from .task import Task
@@ -11,6 +12,10 @@ class TaskRegistry(Registry):
         super().__init__(orchestrator_config)
         self.workflow_config = workflow_config
         self._group_registry = collections.defaultdict(set)
+
+    @cached_property
+    def premier_task_classes(self):
+        return {kls for kls in self._name_registry.values() if kls.is_premier}
 
     def get_registration_context(self):
         return super().get_registration_context() + [

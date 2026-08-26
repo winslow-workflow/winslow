@@ -33,6 +33,7 @@ EXECUTION_ICONS = {
     ExecutionStatus.RUNNING: "🟠",
     ExecutionStatus.FINISHED: "🟢",
     ExecutionStatus.STOPPED: "⛔",
+    ExecutionStatus.ERRORED: "❗",
 }
 
 

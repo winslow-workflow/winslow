@@ -6,12 +6,14 @@ behind a full frame window is dropped and disconnected."""
 import asyncio
 import collections
 import json
+import time
 
 from starlette.testclient import TestClient
 
 from winslow.constants import Mode
 from winslow.events import LogLineEvent
 from winslow.serve import Credentials, create_app
+from winslow.serve.app import ServeApp
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
@@ -194,3 +196,30 @@ def test_an_unknown_message_type_answers_an_error(e2e_repo):
     ws.send_json({"type": "shout"})
     assert "unknown message type" in ws.receive_json()["reason"]
     ws.close()
+
+
+def test_the_bridge_retires_when_its_session_ends(e2e_repo):
+    workflow, session = live_session(e2e_repo)
+    registry = SessionRegistry()
+    registry.register(session)
+    credentials = Credentials(token=TOKEN, require_credential=True)
+    serve_app = ServeApp(registry, credentials, hello_timeout=1.0)
+    client = TestClient(serve_app.starlette())
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": "hello", "version": 1, "token": TOKEN})
+        assert ws.receive_json()["type"] == "hello_ok"
+        assert ws.receive_json()["type"] == "snapshot"
+        ws.send_json({"type": "subscribe", "session_id": session.session_id})
+        assert ws.receive_json()["type"] == "snapshot"
+        assert serve_app.bridges.get(session.session_id) is not None
+
+        session.end()
+        frames_until(ws, "session_ended")
+
+        # The drain retires the bridge on the loop after the fan-out; a long
+        # serve process must not keep one live drain task per ended session.
+        for _ in range(200):
+            if serve_app.bridges.get(session.session_id) is None:
+                break
+            time.sleep(0.01)
+        assert serve_app.bridges.get(session.session_id) is None
