@@ -56,10 +56,17 @@ def create_session(
     workflow_name,
     orchestrator_overrides=None,
     workflow_values=None,
+    session_id=None,
+    seed=False,
 ):
     """Build, initialize, persist, and register one session. Raises with a
     directional message on an unknown workflow; a failure after registration
-    marks the session errored and unregisters it."""
+    marks the session errored and unregisters it.
+
+    session_id and seed serve a restore: the caller passes the id of the
+    stored manifest, so the session rebuilds under it, and seed=True replays
+    the stored snapshots onto the store after the eligibility pass (see
+    Workflow.seed_from_state)."""
     try:
         workflow_kls = orchestrator.workflow_registry[workflow_name]
     except KeyError:
@@ -77,7 +84,7 @@ def create_session(
         workflow_values,
         orchestrator_overrides,
     )
-    session_id = generate_id(workflow_name)
+    session_id = session_id or generate_id(workflow_name)
     workflow_logger = logging.getLogger(run_logger_name(session_id))
     workflow_logger.propagate = True
 
@@ -109,6 +116,10 @@ def create_session(
                 orchestrator_overrides=orchestrator_overrides,
                 workflow_values=workflow_values,
             )
+            if seed:
+                # After the eligibility pass: that pass overwrites earlier
+                # status writes (see Workflow.seed_from_state).
+                workflow.seed_from_state()
         except Exception as exc:
             registry.remove(session_id)
             session.mark_error(exc)

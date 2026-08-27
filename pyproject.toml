@@ -46,6 +46,8 @@ serve = [
     "uvicorn>=0.30",
     # uvicorn speaks the websocket protocol only with this package installed.
     "websockets>=13.0",
+    # winslow.codec wraps pydantic.TypeAdapter for the wire edge.
+    "pydantic>=2.0",
 ]
 mcp = [
     "mcp>=2.0",

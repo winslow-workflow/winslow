@@ -367,8 +367,12 @@ class Workflow(_ConfigBase):
         self.global_cache.add_listener(listener)
 
     def remove_cache_listener(self, listener):
-        """Detach the listener from both caches (see add_cache_listener)."""
-        self.workflow_cache.remove_listener(listener)
+        """Detach the listener from both caches (see add_cache_listener). A
+        no-op on the workflow cache once the session end has released it
+        (see release_tasks): a teardown that races the session end must not
+        raise."""
+        if self._workflow_cache is not None:
+            self._workflow_cache.remove_listener(listener)
         self.global_cache.remove_listener(listener)
 
     def init_state(

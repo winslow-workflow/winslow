@@ -118,7 +118,7 @@ def _render_read(key, cache, record):
     scope, cache_name, entry_name = key
     display_style = declared_entries(type(cache))[entry_name].display_style
     try:
-        rendered, summary, encoding = _render_value(
+        rendered, summary, encoding = render_value(
             record.value, resolve_snapshot_cap(type(cache)), display_style
         )
     except Exception as exc:
@@ -148,9 +148,10 @@ def _render_read(key, cache, record):
 _SIZED_BUILTINS = (str, bytes, dict, list, tuple, set, frozenset)
 
 
-def _render_value(value, cap, display_style):
+def render_value(value, cap, display_style):
     """One value as (rendered, summary, encoding), bounded by the cap. Over
-    the cap: the head of the rendering, plus the structural summary."""
+    the cap: the head of the rendering, plus the structural summary. Shared
+    by the history sweep and the live cache_value read of the serve layer."""
     if cap <= 0:
         return "", _summarize(value), SnapshotEncoding.TEXT
     if callable(display_style):

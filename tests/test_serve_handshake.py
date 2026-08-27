@@ -9,6 +9,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from winslow.constants import Mode
 from winslow.serve import Credentials, create_app, mint_ticket, verify_ticket
+from winslow.serve.app import PROTOCOL_VERSION
 from winslow.session import Session, SessionRegistry
 
 from harness import build_workflow
@@ -29,7 +30,7 @@ def client(registry=None, credentials=None, hello_timeout=0.2):
 
 
 def hello(ws, **fields):
-    ws.send_json({"type": "hello", "version": 1, **fields})
+    ws.send_json({"type": "hello", "version": PROTOCOL_VERSION, **fields})
 
 
 def expect_refusal(ws, code, reason_part):
@@ -45,7 +46,11 @@ def expect_refusal(ws, code, reason_part):
 def test_a_ticket_reaches_hello_ok_and_the_snapshot():
     with client().websocket_connect("/ws") as ws:
         hello(ws, ticket=mint_ticket(SECRET, "can"))
-        assert ws.receive_json() == {"type": "hello_ok", "user": "can", "version": 1}
+        assert ws.receive_json() == {
+            "type": "hello_ok",
+            "user": "can",
+            "version": PROTOCOL_VERSION,
+        }
         snapshot = ws.receive_json()
         assert snapshot["type"] == "snapshot"
         assert snapshot["seq"] == 0

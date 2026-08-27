@@ -4,7 +4,9 @@ credential policy, the bridges), Connection owns one socket after its hello
 jobs). create_app builds the ASGI app from a ServeApp."""
 
 import asyncio
+import functools
 import json
+import traceback
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 
@@ -12,14 +14,30 @@ from starlette.applications import Starlette
 from starlette.routing import Mount, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
+from winslow.cache import declared_entries
+from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
-from winslow.logger import LOGGER
+from winslow.filter.builtin import BUILTIN_FILTERS
+from winslow.logger import INLINE_FORMATTER, LOGGER, get_task_dispatcher
+from winslow.model import ActionFrame, RequestFrame
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
-from winslow.serve.wire import build_action, descriptor_rows, history_rows, session_row
-from winslow.task.info import TaskInfo
+from winslow.serve.wire import (
+    FrameTypes,
+    Requests,
+    build_action,
+    cache_value_payload,
+    caches_payload,
+    descriptor_rows,
+    history_rows,
+    manifest_row,
+    record_detail_payload,
+    resolve_cache,
+    session_params_payload,
+    session_row,
+)
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
 # The refusal codes of the handshake. The refusal also rides a hello_error
 # frame: after an accepted upgrade a browser reads the frame, the code, and
@@ -29,6 +47,33 @@ CREDENTIAL_REFUSED = 4401
 HELLO_TIMEOUT = 4408
 # The close code of a client that stays behind a full frame window.
 CLIENT_TOO_SLOW = 1013
+
+
+def request_handler(kind):
+    """Mark a Connection method as the handler of one request kind (see
+    Requests). run_request builds its dispatch table from every method this
+    decorator tags, the same pattern the MCP tool registry uses (see
+    winslow.serve.mcp.tool)."""
+
+    def wrap(method):
+        method._request_kind = kind
+        return method
+
+    return wrap
+
+
+def requires_session(method):
+    """Resolve the session before the method body runs, and pass it as a
+    third argument. A session that does not resolve already answered the
+    error frame (see Connection.resolve_for); the body never runs."""
+
+    @functools.wraps(method)
+    async def wrapper(self, envelope):
+        session = self.resolve_for(envelope)
+        if session is not None:
+            await method(self, envelope, session)
+
+    return wrapper
 
 
 class Bridges:
@@ -136,7 +181,7 @@ class ServeApp:
         await Connection(self, websocket, user).run()
 
     async def _refuse(self, websocket, code, reason):
-        await websocket.send_json({"type": "hello_error", "reason": reason})
+        await websocket.send_json({"type": FrameTypes.HELLO_ERROR, "reason": reason})
         await websocket.close(code=code, reason=reason)
 
     async def _handshake(self, websocket):
@@ -150,7 +195,7 @@ class ServeApp:
             return None
         try:
             hello = json.loads(raw)
-            if hello.get("type") != "hello":
+            if hello.get("type") != FrameTypes.HELLO:
                 raise ValueError
         except (ValueError, AttributeError):
             await self._refuse(
@@ -179,10 +224,13 @@ class Connection:
         self.control = Subscription(wake=self.wake, maxlen=app.qsize)
         self.subscriptions = {}
         self.jobs = set()
+        # (session_id, task_key) pairs this connection subscribed to (see
+        # handle_subscribe_task_log). Cleaned up on disconnect.
+        self.task_log_subscriptions = set()
 
     async def run(self):
         await self.websocket.send_json(
-            {"type": "hello_ok", "user": self.user, "version": PROTOCOL_VERSION}
+            {"type": FrameTypes.HELLO_OK, "user": self.user, "version": PROTOCOL_VERSION}
         )
         await self.websocket.send_json(
             {
@@ -210,23 +258,25 @@ class Connection:
                 bridge = self.app.bridges.get(session_id)
                 if bridge is not None:
                     bridge.unsubscribe(subscription)
+            for session_id, task_key in self.task_log_subscriptions:
+                bridge = self.app.bridges.get(session_id)
+                if bridge is not None:
+                    bridge.unsubscribe_task_log(task_key)
 
     # --- the outgoing side ---------------------------------------------------
 
     def reply(self, payload):
         self.control.push(json.dumps(payload))
 
-    def request_error(self, frame, reason):
-        self.reply(
-            {"type": "error", "request_id": frame.get("request_id"), "reason": reason}
-        )
+    def request_error(self, request_id, reason):
+        self.reply({"type": "error", "request_id": request_id, "reason": reason})
 
-    def result(self, frame, **payload):
+    def result(self, envelope, **payload):
         self.reply(
             {
                 "type": "result",
-                "request_id": frame.get("request_id"),
-                "kind": frame.get("kind"),
+                "request_id": envelope.request_id,
+                "kind": envelope.kind,
                 **payload,
             }
         )
@@ -250,60 +300,91 @@ class Connection:
 
     def handle_frame(self, frame):
         kind = frame.get("type")
-        if kind == "subscribe":
-            self.handle_subscribe(frame)
-        elif kind == "unsubscribe":
-            self.handle_unsubscribe(frame.get("session_id"))
-        elif kind == "action":
-            self.spawn(frame, self.run_action(frame))
-        elif kind == "request":
-            self.spawn(frame, self.run_request(frame))
-        else:
-            self.reply(
-                {
-                    "type": "error",
-                    "reason": f"unknown message type {kind!r} - this server "
-                    f"speaks subscribe, unsubscribe, action, and request.",
-                }
-            )
+        match kind:
+            case FrameTypes.SUBSCRIBE:
+                self.handle_subscribe(frame)
+            case FrameTypes.UNSUBSCRIBE:
+                self.handle_unsubscribe(frame.get("session_id"))
+            case FrameTypes.SUBSCRIBE_TASK_LOG:
+                self.handle_subscribe_task_log(frame)
+            case FrameTypes.UNSUBSCRIBE_TASK_LOG:
+                self.handle_unsubscribe_task_log(frame)
+            case FrameTypes.ACTION:
+                self.dispatch(frame, ActionFrame, self.run_action)
+            case FrameTypes.REQUEST:
+                self.dispatch(frame, RequestFrame, self.run_request)
+            case _:
+                self.reply(
+                    {
+                        "type": "error",
+                        "reason": f"unknown message type {kind!r} - this "
+                        f"server speaks subscribe, unsubscribe, "
+                        f"subscribe_task_log, unsubscribe_task_log, action, "
+                        f"and request.",
+                    }
+                )
 
-    def spawn(self, frame, coroutine):
-        job = asyncio.get_running_loop().create_task(self._answered(frame, coroutine))
+    def dispatch(self, frame, envelope_class, run):
+        """Decode the frame into its envelope and spawn the handler. A
+        malformed frame answers an error and never reaches the handler: the
+        envelope replaces a trusted frame.get(...) read from here on (see
+        winslow.model, winslow.codec)."""
+        try:
+            envelope = CODEC.decode(envelope_class, frame)
+        except ValidationError as exc:
+            self.request_error(
+                frame.get("request_id"),
+                f"the {frame.get('type')} frame is malformed - {exc}",
+            )
+            return
+        self.spawn(envelope, run(envelope))
+
+    def spawn(self, envelope, coroutine):
+        job = asyncio.get_running_loop().create_task(
+            self._answered(envelope, coroutine)
+        )
         self.jobs.add(job)
         job.add_done_callback(self.jobs.discard)
 
-    async def _answered(self, frame, coroutine):
+    async def _answered(self, envelope, coroutine):
         """No spawned job dies silent: the client reads an error frame
         instead of waiting on an answer that never comes."""
         try:
             await coroutine
         except Exception:
             LOGGER.error(
-                f"{frame.get('type')} frame failed inside the server", exc_info=True
+                f"{envelope.type} frame failed inside the server", exc_info=True
             )
             self.request_error(
-                frame,
-                f"the {frame.get('type')} failed inside the server - the "
+                envelope.request_id,
+                f"the {envelope.type} failed inside the server - the "
                 f"server log has the traceback.",
             )
 
-    def resolve_for(self, frame):
-        """The live session of the frame, or None after an error reply."""
-        session = self.app.registry.get(frame.get("session_id"))
+    def resolve(self, session_id, request_id):
+        """The live session under session_id, or None after an error reply."""
+        session = self.app.registry.get(session_id)
         if session is None:
+            LOGGER.debug(
+                f"session id {session_id!r} (request {request_id!r}) does "
+                f"not resolve to a live session."
+            )
             self.request_error(
-                frame,
-                f"session id {frame.get('session_id')!r} does not resolve to a "
-                f"live session - it ended, or it belongs to another process.",
+                request_id,
+                f"session id {session_id!r} does not resolve to a live "
+                f"session - it ended, or it belongs to another process.",
             )
         return session
+
+    def resolve_for(self, envelope):
+        return self.resolve(envelope.session_id, envelope.request_id)
 
     def handle_subscribe(self, frame):
         """Attach, snapshot, and queue - synchronous on the loop, so no drain
         pass lands between the attach and the snapshot. A second subscribe of
         one session resets the queue and resends the snapshot: that is the
         recovery of a client that saw a sequence gap."""
-        session = self.resolve_for(frame)
+        session = self.resolve(frame.get("session_id"), frame.get("request_id"))
         if session is None:
             return
         session_id = session.session_id
@@ -325,49 +406,97 @@ class Connection:
             bridge.unsubscribe(subscription)
         self.reply({"type": "unsubscribed", "session_id": session_id})
 
-    async def run_action(self, frame):
-        session = self.resolve_for(frame)
+    def handle_subscribe_task_log(self, frame):
+        """The backlog and the live stream of one task's log, outside any
+        batch. The backlog answers at once. The live lines ride the session
+        subscription as task_log_batch frames, so the client must also
+        subscribe to the session."""
+        request_id = frame.get("request_id")
+        session = self.resolve(frame.get("session_id"), request_id)
+        if session is None:
+            return
+        task_key = frame.get("task_key")
+        try:
+            task = session.workflow.task_index.resolve(task_key)
+        except KeyError as exc:
+            self.request_error(request_id, exc.args[0])
+            return
+        bridge = self.app.bridges.get_or_create(session)
+        key = (session.session_id, task_key)
+        if key not in self.task_log_subscriptions:
+            self.task_log_subscriptions.add(key)
+            bridge.subscribe_task_log(task_key, task.log_key)
+        backlog = get_task_dispatcher().buffered(task.log_key)
+        self.reply(
+            {
+                "type": "task_log_backlog",
+                "session_id": session.session_id,
+                "task_key": task_key,
+                "lines": [INLINE_FORMATTER.format(record) for record in backlog],
+            }
+        )
+
+    def handle_unsubscribe_task_log(self, frame):
+        session_id = frame.get("session_id")
+        task_key = frame.get("task_key")
+        key = (session_id, task_key)
+        if key in self.task_log_subscriptions:
+            self.task_log_subscriptions.discard(key)
+            bridge = self.app.bridges.get(session_id)
+            if bridge is not None:
+                bridge.unsubscribe_task_log(task_key)
+        self.reply(
+            {
+                "type": "unsubscribed_task_log",
+                "session_id": session_id,
+                "task_key": task_key,
+            }
+        )
+
+    async def run_action(self, envelope):
+        session = self.resolve_for(envelope)
         if session is None:
             return
         try:
-            action = build_action(frame.get("action"), frame.get("fields"))
+            action = build_action(envelope.action, envelope.fields)
         except ValueError as exc:
-            self.request_error(frame, str(exc))
+            self.request_error(envelope.request_id, str(exc))
             return
         # The admission gate can block: the submit runs on a worker thread.
         ack = await asyncio.to_thread(session.actions.submit_guarded, action)
         self.reply(
-            {"type": "ack", "request_id": frame.get("request_id"), **asdict(ack)}
+            {"type": "ack", "request_id": envelope.request_id, **asdict(ack)}
         )
 
-    async def run_request(self, frame):
-        kind = frame.get("kind")
-        handlers = {
-            "create_session": self._request_create_session,
-            "descriptors": self._request_descriptors,
-            "history": self._request_history,
-            "log_tail": self._request_log_tail,
-            "task_detail": self._request_task_detail,
-        }
-        handler = handlers.get(kind)
+    async def run_request(self, envelope):
+        handler = self._request_handlers.get(envelope.kind)
         if handler is None:
             self.request_error(
-                frame,
-                f"{kind!r} names no request. The requests are "
-                f"{', '.join(sorted(handlers))}.",
+                envelope.request_id,
+                f"{envelope.kind!r} names no request. The requests are "
+                f"{', '.join(sorted(self._request_handlers))}.",
             )
             return
-        await handler(frame)
+        await handler(self, envelope)
 
-    async def _request_descriptors(self, frame):
+    def _root_dir(self):
+        return (
+            getattr(self.app.orchestrator.orchestrator_config, "directory", None)
+            if self.app.orchestrator is not None
+            else None
+        )
+
+    @request_handler(Requests.DESCRIPTORS)
+    async def _request_descriptors(self, envelope):
         if self.app.orchestrator is None:
-            self.request_error(frame, "this server serves no workflows")
+            self.request_error(envelope.request_id, "this server serves no workflows")
             return
-        self.result(frame, **descriptor_rows(self.app.orchestrator))
+        self.result(envelope, **descriptor_rows(self.app.orchestrator))
 
-    async def _request_create_session(self, frame):
+    @request_handler(Requests.CREATE_SESSION)
+    async def _request_create_session(self, envelope):
         if self.app.orchestrator is None or self.app.state_store is None:
-            self.request_error(frame, "this server creates no sessions")
+            self.request_error(envelope.request_id, "this server creates no sessions")
             return
         try:
             session = await asyncio.to_thread(
@@ -375,68 +504,249 @@ class Connection:
                 self.app.orchestrator,
                 self.app.state_store,
                 self.app.registry,
-                frame.get("workflow"),
-                frame.get("overrides"),
-                frame.get("values"),
+                envelope.workflow,
+                envelope.overrides,
+                envelope.values,
             )
         except Exception as exc:
-            self.request_error(frame, str(exc.args[0] if exc.args else exc))
+            self.reply(
+                {
+                    "type": "error",
+                    "request_id": envelope.request_id,
+                    "reason": str(exc.args[0] if exc.args else exc),
+                    "detail": traceback.format_exc(),
+                }
+            )
             return
-        self.result(frame, **session_row(session))
+        self.result(envelope, **session_row(session))
 
-    async def _request_history(self, frame):
-        session = self.resolve_for(frame)
-        if session is not None:
-            self.result(frame, batches=history_rows(session))
+    @request_handler(Requests.HISTORY)
+    @requires_session
+    async def _request_history(self, envelope, session):
+        self.result(envelope, batches=history_rows(session))
 
-    async def _request_log_tail(self, frame):
-        session = self.resolve_for(frame)
-        if session is None:
-            return
-        store = session.workflow.runner.record_store(frame.get("batch_uuid"))
+    @request_handler(Requests.LOG_TAIL)
+    @requires_session
+    async def _request_log_tail(self, envelope, session):
+        store = session.workflow.runner.record_store(envelope.batch_uuid)
         if store is None:
             self.request_error(
-                frame,
-                f"batch {frame.get('batch_uuid')!r} keeps no records in this "
+                envelope.request_id,
+                f"batch {envelope.batch_uuid!r} keeps no records in this "
                 f"session.",
             )
             return
         try:
-            record = store.get_record(frame.get("task_key"))
+            record = store.get_record(envelope.task_key)
         except KeyError:
             self.request_error(
-                frame,
-                f"task {frame.get('task_key')!r} is not in the roster of "
-                f"batch {frame.get('batch_uuid')!r}.",
+                envelope.request_id,
+                f"task {envelope.task_key!r} is not in the roster of "
+                f"batch {envelope.batch_uuid!r}.",
             )
             return
-        limit = frame.get("limit") or 200
+        limit = envelope.limit or 200
         self.result(
-            frame,
-            task_key=frame.get("task_key"),
-            batch_uuid=frame.get("batch_uuid"),
+            envelope,
+            task_key=envelope.task_key,
+            batch_uuid=envelope.batch_uuid,
             lines=record.log_tail(limit),
         )
 
-    async def _request_task_detail(self, frame):
-        session = self.resolve_for(frame)
-        if session is None:
+    @request_handler(Requests.TASK_DETAIL)
+    @requires_session
+    async def _request_task_detail(self, envelope, session):
+        try:
+            task = session.workflow.task_index.resolve(envelope.task_key)
+        except KeyError as exc:
+            self.request_error(envelope.request_id, exc.args[0])
+            return
+        # The full capture evaluates user code: a worker thread runs it. The
+        # session's task_info fills checked_at and effective_ttl from the
+        # snapshots and evaluates cold descriptors, matching the local TUI
+        # detail view.
+        info = await asyncio.to_thread(
+            session.workflow.task_info,
+            task,
+            full=True,
+            evaluate=True,
+            root_dir=self._root_dir(),
+        )
+        self.result(envelope, info=asdict(info))
+
+    @request_handler(Requests.ROSTER)
+    @requires_session
+    async def _request_roster(self, envelope, session):
+        workflow = session.workflow
+        tasks = workflow.get_filtered_tasks()
+        self.result(envelope, tasks=[asdict(workflow.task_info(t)) for t in tasks])
+
+    @request_handler(Requests.CACHES)
+    @requires_session
+    async def _request_caches(self, envelope, session):
+        self.result(envelope, **caches_payload(session.workflow))
+
+    @request_handler(Requests.CACHE_VALUE)
+    @requires_session
+    async def _request_cache_value(self, envelope, session):
+        cache = resolve_cache(session.workflow, envelope.cache_name)
+        if cache is None:
+            self.request_error(
+                envelope.request_id,
+                f"{envelope.cache_name!r} names no cache of this session.",
+            )
+            return
+        if envelope.entry_name not in declared_entries(type(cache)):
+            self.request_error(
+                envelope.request_id,
+                f"{cache} has no entry {envelope.entry_name!r}.",
+            )
+            return
+        payload = await asyncio.to_thread(
+            cache_value_payload, cache, envelope.entry_name
+        )
+        self.result(envelope, **payload)
+
+    @request_handler(Requests.RECORD_DETAIL)
+    @requires_session
+    async def _request_record_detail(self, envelope, session):
+        store = session.workflow.runner.record_store(envelope.batch_uuid)
+        if store is None:
+            self.request_error(
+                envelope.request_id,
+                f"batch {envelope.batch_uuid!r} keeps no records in this "
+                f"session.",
+            )
             return
         try:
-            task = session.workflow.task_index.resolve(frame.get("task_key"))
-        except KeyError as exc:
-            self.request_error(frame, exc.args[0])
+            record = store.get_record(envelope.task_key)
+        except KeyError:
+            self.request_error(
+                envelope.request_id,
+                f"task {envelope.task_key!r} is not in the roster of "
+                f"batch {envelope.batch_uuid!r}.",
+            )
             return
-        root_dir = (
-            getattr(self.app.orchestrator.orchestrator_config, "directory", None)
-            if self.app.orchestrator is not None
-            else None
+        self.result(envelope, **record_detail_payload(record))
+
+    @request_handler(Requests.BATCH_OPTIONS)
+    @requires_session
+    async def _request_batch_options(self, envelope, session):
+        self.result(envelope, options=asdict(session.workflow.batch_options))
+
+    @request_handler(Requests.SESSION_PARAMS)
+    @requires_session
+    async def _request_session_params(self, envelope, session):
+        self.result(envelope, **session_params_payload(session.workflow))
+
+    @request_handler(Requests.APPLY_FILTER)
+    @requires_session
+    async def _request_apply_filter(self, envelope, session):
+        try:
+            query = session.workflow.filter_registry.parse(envelope.query)
+        except ValueError as exc:
+            self.request_error(envelope.request_id, str(exc))
+            return
+        if envelope.builtin_only:
+            foreign = sorted(
+                {
+                    type(f).get_name()
+                    for f in query.filters()
+                    if type(f) not in BUILTIN_FILTERS
+                }
+            )
+            if foreign:
+                self.request_error(
+                    envelope.request_id,
+                    f"this search supports only the builtin filters (name, "
+                    f"group) - not: {', '.join(foreign)}.",
+                )
+                return
+        keys = [task.identity_key for task in query.apply(session.workflow.tasks)]
+        self.result(envelope, keys=keys)
+
+    @request_handler(Requests.MANIFESTS)
+    async def _request_manifests(self, envelope):
+        if self.app.state_store is None:
+            self.request_error(
+                envelope.request_id, "this server keeps no session state"
+            )
+            return
+        manifests = self.app.state_store.list_open_manifests()
+        self.result(
+            envelope,
+            manifests=[
+                manifest_row(m)
+                for m in manifests
+                if m.session_id not in self.app.registry
+            ],
         )
-        # The full capture evaluates user code: a worker thread runs it.
-        info = await asyncio.to_thread(
-            TaskInfo.from_task, task, full=True, root_dir=root_dir
+
+    @request_handler(Requests.RESTORE_SESSION)
+    async def _request_restore_session(self, envelope):
+        if self.app.orchestrator is None or self.app.state_store is None:
+            self.request_error(envelope.request_id, "this server creates no sessions")
+            return
+        if envelope.session_id in self.app.registry:
+            self.request_error(
+                envelope.request_id,
+                f"{envelope.session_id!r} is already a live session.",
+            )
+            return
+        manifest = next(
+            (
+                m
+                for m in self.app.state_store.list_open_manifests()
+                if m.session_id == envelope.session_id
+            ),
+            None,
         )
-        self.result(frame, info=asdict(info))
+        if manifest is None:
+            self.request_error(
+                envelope.request_id,
+                f"{envelope.session_id!r} names no open manifest to restore.",
+            )
+            return
+        if manifest.workflow_class not in self.app.orchestrator.workflow_registry.names:
+            self.request_error(
+                envelope.request_id,
+                f"the manifest names workflow {manifest.workflow_class!r}, "
+                f"which this server does not collect.",
+            )
+            return
+        try:
+            session = await asyncio.to_thread(
+                create_session,
+                self.app.orchestrator,
+                self.app.state_store,
+                self.app.registry,
+                manifest.workflow_class,
+                manifest.orchestrator_overrides or {},
+                manifest.workflow_values or {},
+                manifest.session_id,
+                True,
+            )
+        except Exception as exc:
+            self.reply(
+                {
+                    "type": "error",
+                    "request_id": envelope.request_id,
+                    "reason": str(exc.args[0] if exc.args else exc),
+                    "detail": traceback.format_exc(),
+                }
+            )
+            return
+        self.result(envelope, **session_row(session))
+
+
+# The dispatch table of run_request, built once from every method
+# @request_handler tagged: adding a request means one method, tagged where
+# it is declared, and nothing to keep in sync elsewhere.
+Connection._request_handlers = {
+    method._request_kind: method
+    for method in vars(Connection).values()
+    if hasattr(method, "_request_kind")
+}
 
 
 def create_app(registry, credentials, hello_timeout=5.0, qsize=10_000, **kwargs):

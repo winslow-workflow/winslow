@@ -8,6 +8,7 @@ from starlette.testclient import TestClient
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.serve import Credentials, create_app
+from winslow.serve.app import PROTOCOL_VERSION
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 
@@ -34,7 +35,7 @@ def connect(registry, orchestrator=None, state_store=None):
         state_store=state_store,
     )
     ws = TestClient(app).websocket_connect("/ws").__enter__()
-    ws.send_json({"type": "hello", "version": 1, "token": TOKEN})
+    ws.send_json({"type": "hello", "version": PROTOCOL_VERSION, "token": TOKEN})
     assert ws.receive_json()["type"] == "hello_ok"
     assert ws.receive_json()["type"] == "snapshot"
     return ws
@@ -227,15 +228,15 @@ def test_log_tail_serves_the_captured_lines(e2e_repo, monkeypatch):
 
 
 def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
+    from winslow.task.info import TaskInfo
+
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
 
-    class ExplodingInfo:
-        @classmethod
-        def from_task(cls, *args, **kwargs):
-            raise RuntimeError("capture exploded")
+    def explode(*args, **kwargs):
+        raise RuntimeError("capture exploded")
 
-    monkeypatch.setattr("winslow.serve.app.TaskInfo", ExplodingInfo)
+    monkeypatch.setattr(TaskInfo, "from_task", classmethod(explode))
     ws = connect(registry)
     ws.send_json(
         {

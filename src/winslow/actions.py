@@ -3,9 +3,12 @@ user input into one action dataclass and submits it to the ActionHandler of
 the session. Action fields are values only: identity keys, scalars (the
 payload rule, see winslow.events)."""
 
-from dataclasses import dataclass, fields
+from dataclasses import asdict, dataclass, fields
 
+from winslow.cache import declared_entries
+from winslow.events import BatchOptionsChangedEvent
 from winslow.exceptions import SessionEndingError
+from winslow.util import execute_in_threads
 
 
 @dataclass(frozen=True)
@@ -54,6 +57,22 @@ class SetBatchOptions:
     force_run: bool | None = None
     force_success: bool | None = None
     disable_concurrency: bool | None = None
+
+
+@dataclass(frozen=True)
+class LoadCacheEntries:
+    """Bulk-only, like RunTasks: a single selection sends a one-pair list.
+    Each pair is (cache_name, entry_name)."""
+
+    entries: tuple
+
+
+@dataclass(frozen=True)
+class ClearCacheEntries:
+    """Bulk-only, like LoadCacheEntries. "Clear" is the action verb on the
+    wire; the handler calls cache.invalidate internally."""
+
+    entries: tuple
 
 
 class ActionHandler:
@@ -169,7 +188,58 @@ class ActionHandler:
             if value is not None:
                 setattr(options, field.name, value)
         self._workflow.record_batch_options()
+        self._workflow.bus.publish(BatchOptionsChangedEvent(options=asdict(options)))
         return Ack(accepted=True)
+
+    def _caches(self):
+        return (
+            *self._workflow.workflow_cache.caches(),
+            *self._workflow.global_cache.caches(),
+        )
+
+    def _resolve_cache_entries(self, action):
+        """(cache, entry_name) pairs for the wire pairs of the action, or a
+        refusal reason naming the first unknown cache or entry."""
+        caches_by_name = {cache.get_name(): cache for cache in self._caches()}
+        resolved = []
+        for cache_name, entry_name in action.entries:
+            cache = caches_by_name.get(cache_name)
+            if cache is None:
+                return None, f"{cache_name!r} names no cache of this session."
+            if entry_name not in declared_entries(type(cache)):
+                return None, f"{cache} has no entry {entry_name!r}."
+            resolved.append((cache, entry_name))
+        return resolved, None
+
+    def _load_cache_entry(self, cache, entry_name):
+        # A loader failure is data, not an action failure: the entry reports
+        # ERRORED and the session log carries the traceback (see
+        # BaseCache._entry_value). The ack still accepts.
+        try:
+            getattr(cache, entry_name)
+        except Exception:
+            self._workflow.logger.error(
+                f"Cache '{cache.get_name()}': the load of '{entry_name}' failed.",
+                exc_info=True,
+            )
+
+    def _clear_cache_entry(self, cache, entry_name):
+        cache.invalidate(entry_name)
+
+    def _cache_entries_action(self, action, work):
+        if not action.entries:
+            return self._refuse(action, "the entries list is empty - nothing to do.")
+        resolved, reason = self._resolve_cache_entries(action)
+        if reason is not None:
+            return self._refuse(action, reason)
+        execute_in_threads(work, resolved)
+        return Ack(accepted=True)
+
+    def load_cache_entries(self, action):
+        return self._cache_entries_action(action, self._load_cache_entry)
+
+    def clear_cache_entries(self, action):
+        return self._cache_entries_action(action, self._clear_cache_entry)
 
     # Adding an action means one dataclass and one method, registered here.
     _methods = {
@@ -178,4 +248,6 @@ class ActionHandler:
         StopBatch: stop_batch,
         EndSession: end_session,
         SetBatchOptions: set_batch_options,
+        LoadCacheEntries: load_cache_entries,
+        ClearCacheEntries: clear_cache_entries,
     }

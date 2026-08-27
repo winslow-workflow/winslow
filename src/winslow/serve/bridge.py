@@ -11,15 +11,18 @@ import collections
 import json
 import queue
 from dataclasses import asdict, dataclass, field
+from functools import partial
 
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
+    BatchOptionsChangedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
     SessionEndedEvent,
     TaskStatusEvent,
 )
+from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
 
 FLUSH_TICK = 0.05
 
@@ -72,11 +75,24 @@ class EventBridge:
             (BatchCompletedEvent, self._on_batch_completed),
             (LogLineEvent, self._on_log_line),
             (SessionEndedEvent, self._on_session_ended),
+            (BatchOptionsChangedEvent, self._on_batch_options_changed),
         )
+        # The session_log lane (see _on_session_log_line): a second handler,
+        # not a bus subscription, because workflow.logger is a plain logger.
+        self._session_log_handler = InteractiveLogHandler(
+            self._on_session_log_line, formatter=INLINE_FORMATTER
+        )
+        # task_key -> {"log_key": str, "handler": InteractiveLogHandler,
+        # "refcount": int}. More than one connection can subscribe to the
+        # same task; the bridge keeps one dispatcher listener per task and
+        # ref-counts it (see subscribe_task_log).
+        self._task_log_listeners = {}
 
     def attach(self):
         for event, handler in self._pairs:
             self.session.workflow.subscribe(event, handler)
+        self.session.workflow.add_cache_listener(self)
+        self.session.workflow.logger.addHandler(self._session_log_handler)
 
     def start(self):
         self._task = asyncio.get_running_loop().create_task(self._drain())
@@ -86,11 +102,65 @@ class EventBridge:
             # The session-end sweep can beat this call; unsubscribe is a no-op
             # then (see SessionBus).
             self.session.workflow.unsubscribe(event, handler)
+        self.session.workflow.remove_cache_listener(self)
+        self.session.workflow.logger.removeHandler(self._session_log_handler)
+        dispatcher = get_task_dispatcher()
+        for entry in self._task_log_listeners.values():
+            dispatcher.remove_listener(entry["log_key"], entry["handler"])
+        self._task_log_listeners.clear()
 
     def close(self):
         self.detach()
         if self._task is not None:
             self._task.cancel()
+
+    # --- the task_log lane: one dispatcher listener per subscribed task ------
+
+    def subscribe_task_log(self, task_key, log_key):
+        entry = self._task_log_listeners.get(task_key)
+        if entry is not None:
+            entry["refcount"] += 1
+            return
+        handler = InteractiveLogHandler(
+            partial(self._on_task_log_line, task_key), formatter=INLINE_FORMATTER
+        )
+        get_task_dispatcher().add_listener(log_key, handler)
+        self._task_log_listeners[task_key] = {
+            "log_key": log_key,
+            "handler": handler,
+            "refcount": 1,
+        }
+
+    def unsubscribe_task_log(self, task_key):
+        entry = self._task_log_listeners.get(task_key)
+        if entry is None:
+            return
+        entry["refcount"] -= 1
+        if entry["refcount"] <= 0:
+            get_task_dispatcher().remove_listener(entry["log_key"], entry["handler"])
+            del self._task_log_listeners[task_key]
+
+    # --- the cache lane: duck-typed CacheListener callbacks -------------------
+    # (see winslow.cache.CacheListener; ListenerMixin dispatches by method
+    # name, so no explicit base class is necessary).
+
+    def on_entry_computed(self, info, previous_state):
+        self._inbox.put({"type": "cache_updated", "cache_name": info.cache_name})
+
+    def on_entries_invalidated(self, scope, dropped, trigger):
+        for name in dropped:
+            self._inbox.put({"type": "cache_updated", "cache_name": name})
+
+    def on_eager_population_started(self, scope, entries):
+        for name in entries:
+            self._inbox.put({"type": "cache_updated", "cache_name": name})
+
+    def on_eager_population_finished(self, scope, entries):
+        for name in entries:
+            self._inbox.put({"type": "cache_updated", "cache_name": name})
+
+    def on_entry_error(self, scope, cache_name, entry_name, error):
+        self._inbox.put({"type": "cache_updated", "cache_name": cache_name})
 
     def _retire(self):
         """The session ended and the frame is fanned out: release the bus
@@ -141,6 +211,15 @@ class EventBridge:
 
     def _on_session_ended(self, event):
         self._inbox.put({"type": "session_ended"})
+
+    def _on_batch_options_changed(self, event):
+        self._inbox.put({"type": "batch_options_changed", "options": event.options})
+
+    def _on_session_log_line(self, line):
+        self._inbox.put({"type": "session_log", "line": line})
+
+    def _on_task_log_line(self, task_key, line):
+        self._inbox.put({"type": "task_log", "task_key": task_key, "line": line})
 
     # --- the loop side ---------------------------------------------------------
 
@@ -195,12 +274,24 @@ class EventBridge:
                     batch.append(self._inbox.get_nowait())
                 except queue.Empty:
                     break
-            logs, others = {}, []
+            logs = {}
+            session_log_lines = []
+            task_logs = {}
+            # A dict, not a set: iteration must keep the first-seen order,
+            # and a plain dict does that for free.
+            cache_names = {}
+            others = []
             for item in batch:
                 if item["type"] == "log":
                     logs.setdefault((item["task_key"], item["batch_uuid"]), []).append(
                         item["line"]
                     )
+                elif item["type"] == "session_log":
+                    session_log_lines.append(item["line"])
+                elif item["type"] == "task_log":
+                    task_logs.setdefault(item["task_key"], []).append(item["line"])
+                elif item["type"] == "cache_updated":
+                    cache_names[item["cache_name"]] = None
                 else:
                     others.append(item)
             for (task_key, batch_uuid), lines in logs.items():
@@ -212,6 +303,14 @@ class EventBridge:
                         "lines": lines,
                     }
                 )
+            if session_log_lines:
+                self._fan_out({"type": "session_log_batch", "lines": session_log_lines})
+            for task_key, lines in task_logs.items():
+                self._fan_out(
+                    {"type": "task_log_batch", "task_key": task_key, "lines": lines}
+                )
+            for cache_name in cache_names:
+                self._fan_out({"type": "cache_updated", "cache_name": cache_name})
             # After the logs of the same pass: a control event must not
             # overtake the lines that precede it.
             for item in others:

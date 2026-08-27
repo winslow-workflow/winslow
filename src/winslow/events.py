@@ -59,3 +59,12 @@ class LogLineEvent:
 @dataclass(frozen=True)
 class SessionEndedEvent:
     session_id: str
+
+
+@dataclass(frozen=True)
+class BatchOptionsChangedEvent:
+    """The live batch options after a SetBatchOptions action lands (see
+    ActionHandler.set_batch_options). A remote checkbox tracks the value a
+    different client set."""
+
+    options: dict

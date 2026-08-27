@@ -42,7 +42,12 @@ from winslow.cache.inspection import (
     SnapshotEncoding,
 )
 from winslow.cache.listener import CacheListener
-from winslow.cache.recording import CacheReadRecorder, recording_cache_reads
+from winslow.cache.recording import (
+    CacheReadRecorder,
+    recording_cache_reads,
+    render_value,
+    resolve_snapshot_cap,
+)
 from winslow.cache.registry import (
     GlobalCacheRegistry,
     WorkflowCacheRegistry,
