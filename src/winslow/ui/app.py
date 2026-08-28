@@ -82,6 +82,25 @@ class Winslow(App):
         yield Header()  # todo color coding on env and annotate debug mode
         yield Footer()
 
+    def on_mount(self):
+        # The wire emits on its receiver thread; the message hops to the UI
+        # thread. The local transport emits nothing (see subscribe_connection).
+        self.client.subscribe_connection(self._relay_connection)
+
+    def _relay_connection(self, event):
+        self.post_message(
+            SessionLifecycleEvent(partial(self._notify_connection, event))
+        )
+
+    def _notify_connection(self, event):
+        if event.connected:
+            self.notify("Reconnected to the serve process.")
+        else:
+            self.notify(
+                "Connection to the serve process lost - reconnecting.",
+                severity="warning",
+            )
+
     @property
     def dashboard(self):
         # The dashboard is a MODE. Its base screen is not in the registry of the

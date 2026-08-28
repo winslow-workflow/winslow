@@ -44,6 +44,18 @@ class AppClient:
         """Return the SessionClient of one live session."""
         raise NotImplementedError
 
+    def subscribe_connection(self, handler):
+        """Connect the handler to the ConnectionEvent lane (see
+        winslow.model). The wire transport emits on a drop and on the
+        reconnect; the in-process transport keeps the handler idle. A
+        handler can run on any thread."""
+        raise NotImplementedError
+
+    def unsubscribe_connection(self, handler):
+        """Disconnect the handler (see subscribe_connection). An unknown
+        handler is a no-op, so a teardown path can run twice."""
+        raise NotImplementedError
+
 
 class SessionClient:
     """One session: the reads, the subscriptions, and the actions."""

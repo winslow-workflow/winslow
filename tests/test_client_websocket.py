@@ -26,6 +26,7 @@ from winslow.model import (
     BatchInfo,
     CacheCard,
     CacheUpdatedEvent,
+    ConnectionEvent,
     SessionLogEvent,
     SourceNode,
     TaskLogEvent,
@@ -435,9 +436,11 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
     try:
         remote = client.session(session.session_id)
         statuses = []
+        connection_events = []
         done = threading.Event()
         remote.subscribe(TaskStatusEvent, statuses.append)
         remote.subscribe(BatchCompletedEvent, lambda e: done.set())
+        client.subscribe_connection(connection_events.append)
         time.sleep(0.3)
 
         process.stop()
@@ -445,12 +448,20 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
             lambda: _read_refused(remote),
             "a read during the outage never refused",
         )
+        wait_for(
+            lambda: ConnectionEvent(connected=False) in connection_events,
+            "the drop never emitted a ConnectionEvent",
+        )
 
         # The same port again: the client reconnects on its own and the
         # recovery snapshot re-emits the task statuses.
         process.start()
         wait_for(lambda: statuses, "no healing events after the reconnect")
         assert {e.key for e in statuses} == set(remote.snapshot().tasks)
+        wait_for(
+            lambda: connection_events[-1] == ConnectionEvent(connected=True),
+            "the recovery never emitted a ConnectionEvent",
+        )
 
         # The lane is live again: a run streams to completion.
         alpha = by_name(workflow)["Alpha"]

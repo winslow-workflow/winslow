@@ -161,6 +161,13 @@ class LocalAppClient(AppClient):
     def session(self, session_id):
         return LocalSessionClient(self.registry.resolve(session_id))
 
+    def subscribe_connection(self, handler):
+        # The in-process transport has no connection to lose.
+        pass
+
+    def unsubscribe_connection(self, handler):
+        pass
+
 
 class LocalSessionClient(SessionClient):
     """One live session, in-process. The reads build the same dataclasses

@@ -108,6 +108,17 @@ def test_sessions_serves_a_row_per_live_session(e2e_repo):
     assert row.task_status_summary.completed == completed
 
 
+def test_connection_subscription_is_idle_in_process(e2e_repo):
+    """The in-process transport has no connection: the handler is accepted
+    and never called (see AppClient.subscribe_connection)."""
+    workflow, session, registry = registered(e2e_repo)
+    app = LocalAppClient(registry)
+    events = []
+    app.subscribe_connection(events.append)
+    app.unsubscribe_connection(events.append)
+    assert events == []
+
+
 def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
     app = LocalAppClient(SessionRegistry(), orchestrator=local_orchestrator(e2e_repo))
     descriptors = app.descriptors()

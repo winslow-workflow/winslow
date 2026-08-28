@@ -42,6 +42,7 @@ from winslow.model import (
     BatchInfo,
     CacheCard,
     CacheUpdatedEvent,
+    ConnectionEvent,
     CacheValueView,
     Descriptors,
     HistoryRow,
@@ -139,6 +140,8 @@ class Wire:
         # keeps one subscription per session per socket, so a second client
         # of the same session must not reset the first one's stream.
         self._lanes = {}
+        # The ConnectionEvent handlers (see subscribe_connection).
+        self._connection_handlers = []
 
     def connect(self):
         try:
@@ -201,6 +204,22 @@ class Wire:
         for request_id, pending_lane in tuple(self._subscribe_pending.items()):
             if pending_lane is lane:
                 self._subscribe_pending.pop(request_id, None)
+
+    def subscribe_connection(self, handler):
+        with self._lock:
+            if handler not in self._connection_handlers:
+                self._connection_handlers.append(handler)
+
+    def unsubscribe_connection(self, handler):
+        with self._lock:
+            if handler in self._connection_handlers:
+                self._connection_handlers.remove(handler)
+
+    def _emit_connection(self, connected):
+        with self._lock:
+            handlers = tuple(self._connection_handlers)
+        for handler in handlers:
+            handler(ConnectionEvent(connected=connected))
 
     # --- the outgoing side -----------------------------------------------------
 
@@ -343,8 +362,10 @@ class Wire:
     def _reconnect(self):
         """Reopen the socket with backoff, then resubscribe every lane. A
         read during the outage raises ConnectionError; the resubscription
-        snapshots heal the subscribers (see RemoteSessionClient.resubscribe)."""
+        snapshots heal the subscribers (see RemoteSessionClient.resubscribe).
+        The ConnectionEvent lane reports the drop and the recovery."""
         self._fail_pending(CONNECTION_DOWN)
+        self._emit_connection(False)
         delay = RECONNECT_DELAY
         while not self._closing.is_set():
             try:
@@ -358,6 +379,7 @@ class Wire:
                     lanes = tuple(self._lanes.values())
                 for lane in lanes:
                     lane.resubscribe()
+                self._emit_connection(True)
                 return True
             time.sleep(delay)
             delay = min(delay * 2, RECONNECT_DELAY_MAX)
@@ -445,6 +467,12 @@ class RemoteAppClient(AppClient):
 
     def session(self, session_id):
         return self.wire.session_lane(session_id)
+
+    def subscribe_connection(self, handler):
+        self.wire.subscribe_connection(handler)
+
+    def unsubscribe_connection(self, handler):
+        self.wire.unsubscribe_connection(handler)
 
 
 def _payload(frame):

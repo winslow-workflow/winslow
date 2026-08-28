@@ -1106,3 +1106,12 @@ class TaskLogEvent:
 
     task_key: str
     line: str
+
+
+@dataclass(frozen=True)
+class ConnectionEvent:
+    """The connection state of the wire transport: connected is False on a
+    drop and True once the reconnect lands. Only the wire transport emits
+    it (see AppClient.subscribe_connection)."""
+
+    connected: bool
