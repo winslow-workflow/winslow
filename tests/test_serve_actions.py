@@ -177,7 +177,7 @@ def test_history_serves_the_batches_with_their_outcomes(e2e_repo):
     result = frames_until(ws, "result")
     (row,) = result["batches"]
     assert row["uuid"] == ack["batch_uuid"]
-    assert row["tasks"][alpha.identity_key] == "COMPLETED"
+    assert row["tasks"][alpha.identity_key]["status"] == "COMPLETED"
     ws.close()
 
 

@@ -141,7 +141,7 @@ def test_history_and_task_detail_serve_reads(e2e_repo):
     )
     (batch,) = history["batches"]
     assert batch["uuid"] == ack["batch_uuid"]
-    assert batch["tasks"][alpha.identity_key] == "COMPLETED"
+    assert batch["tasks"][alpha.identity_key]["status"] == "COMPLETED"
     assert detail["key"] == alpha.identity_key
 
 

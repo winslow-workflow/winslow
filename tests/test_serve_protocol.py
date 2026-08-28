@@ -284,7 +284,7 @@ def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
     ws.close()
 
 
-# --- record_detail, history tasks_detail --------------------------------------
+# --- record_detail, history tasks -----------------------------------------
 
 
 def test_record_detail_serves_the_phase_timeline_and_snapshots(e2e_repo):
@@ -311,7 +311,7 @@ def test_history_rows_carry_started_at_duration_and_last_log_per_task(e2e_repo):
     wait_for_status(workflow, alpha, S.COMPLETED)
     result = request(ws, "r-15", Requests.HISTORY, session_id=session.session_id)
     (row,) = result["batches"]
-    detail = row["tasks_detail"][alpha.identity_key]
+    detail = row["tasks"][alpha.identity_key]
     assert detail["status"] == "COMPLETED"
     assert detail["started_at"] is not None
     assert detail["duration"] is not None

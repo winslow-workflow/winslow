@@ -297,10 +297,9 @@ def _task_detail_row(status, record):
 
 
 def history_rows(session):
-    """One row per batch, with the per-task outcomes of its record store.
-    tasks_detail adds started_at, duration and the last log line per task,
-    so a client joining mid-flight renders rows without one log_tail per
-    task."""
+    """One row per batch, with the per-task outcomes of its record store:
+    status, started_at, duration and the last log line, so a client joining
+    mid-flight renders rows without one log_tail per task."""
     runner = session.workflow.runner
     rows = []
     for batch in runner.batches:
@@ -316,11 +315,6 @@ def history_rows(session):
                     batch.completed_at.timestamp() if batch.completed_at else None
                 ),
                 "tasks": (
-                    {key: status.name for key, status in store.items()}
-                    if store is not None
-                    else {}
-                ),
-                "tasks_detail": (
                     {
                         key: _task_detail_row(status, store.get_record(key))
                         for key, status in store.items()
