@@ -17,7 +17,6 @@ from starlette.websockets import WebSocketDisconnect
 from winslow.cache import declared_entries
 from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
-from winslow.filter.builtin import enforce_builtin_only
 from winslow.logger import INTERACTIVE_FORMATTER, LOGGER, get_task_dispatcher
 from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
 from winslow.serve.bridge import EventBridge, Subscription
@@ -26,7 +25,6 @@ from winslow.serve.wire import (
     REQUEST_CLASSES,
     FrameTypes,
     Requests,
-    apply_filter_keys,
     build_action,
     cache_value_payload,
     caches_payload,
@@ -713,19 +711,22 @@ class Connection:
         self.result(envelope, **session_params_payload(session.workflow))
 
     @request_handler(Requests.APPLY_FILTER)
-    @requires_live_session
+    @requires_session
     async def _request_apply_filter(self, envelope, session):
+        # A project filter can run arbitrary code, so a worker thread applies
+        # the query. The history scope also serves an ended session (see
+        # Workflow.filter_keys).
         try:
-            query = session.workflow.filter_registry.parse(envelope.query)
-            if envelope.builtin_only:
-                enforce_builtin_only(query)
+            keys = await asyncio.to_thread(
+                session.workflow.filter_keys,
+                envelope.query,
+                envelope.scope,
+                envelope.builtin_only,
+            )
         except ValueError as exc:
             self.request_error(envelope.request_id, str(exc))
             return
-        keys = await asyncio.to_thread(
-            apply_filter_keys, query, session.workflow.tasks
-        )
-        self.result(envelope, keys=keys)
+        self.result(envelope, keys=list(keys))
 
     @request_handler(Requests.MANIFESTS)
     async def _request_manifests(self, envelope):

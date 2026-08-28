@@ -14,6 +14,7 @@ from winslow.cache import (
     workflow_cache_context,
 )
 from winslow.filter import FilterRegistry
+from winslow.filter.builtin import enforce_builtin_only
 from winslow.task import TaskIndex, TaskRegistry, TaskStatus
 from winslow.task.context import BatchOptions
 from winslow.model import TaskInfo
@@ -575,6 +576,43 @@ class Workflow(_ConfigBase):
                 exc_info=True,
             )
             return self.tasks
+
+    def record_infos(self):
+        """One TaskInfo per task with an execution record, across every
+        batch. The record stores survive the session end, so a history
+        search works after the task release (see ExecutionRecordStore)."""
+        return tuple(
+            {
+                record.info.key: record.info
+                for store in self.runner.record_stores()
+                for record in store.records
+            }.values()
+        )
+
+    def filter_keys(self, query, scope="tasks", builtin_only=False):
+        """The identity keys the parsed query matches. scope names the
+        corpus: 'tasks' applies the full registry over the live tasks, and
+        'history' applies the builtin filters over the record infos. The
+        server owns the one parser, so a client never parses the query
+        language itself. Raises ValueError with direction on a bad query,
+        an unknown scope, or a tasks search after the session end."""
+        parsed = self.filter_registry.parse(query)
+        if scope == "history":
+            enforce_builtin_only(parsed)
+            return tuple(info.key for info in parsed.apply(self.record_infos()))
+        if scope != "tasks":
+            raise ValueError(
+                f"{scope!r} names no filter scope - the scopes are "
+                f"'tasks' and 'history'."
+            )
+        if builtin_only:
+            enforce_builtin_only(parsed)
+        if self.tasks is None:
+            raise ValueError(
+                f"{self} has ended and released its tasks - search the "
+                f"execution records with scope='history'."
+            )
+        return tuple(task.identity_key for task in parsed.apply(self.tasks))
 
     def headless_run(self):
         # This looks unused, but the construction of the Session attaches it as

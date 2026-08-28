@@ -431,6 +431,42 @@ def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatc
     ws.close()
 
 
+def test_apply_filter_history_scope_serves_record_keys_after_the_end(e2e_repo):
+    """The history scope matches over the record infos, so a client with no
+    parser of its own searches an ended session through the one endpoint."""
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ws = connect(registry)
+    action(ws, "r-60", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key])
+    wait_for_status(workflow, alpha, S.COMPLETED)
+    session.end()
+    assert session.has_ended
+
+    result = request(
+        ws,
+        "r-61",
+        Requests.APPLY_FILTER,
+        session_id=session.session_id,
+        query="alpha",
+        scope="history",
+    )
+    assert result["keys"] == [alpha.identity_key]
+
+    # The tasks scope refuses the ended session with direction.
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-62",
+            "kind": Requests.APPLY_FILTER,
+            "session_id": session.session_id,
+            "query": "alpha",
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "scope='history'" in error["reason"]
+    ws.close()
+
+
 # --- session_log and task_log lanes --------------------------------------------
 
 

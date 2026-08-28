@@ -76,10 +76,11 @@ class SessionClient:
         encoding, and the error context."""
         raise NotImplementedError
 
-    def apply_filter(self, query, builtin_only=False):
-        """Return the identity keys the parsed query matches. A bad query
-        raises ValueError with the parse error. builtin_only also refuses a
-        project filter (see enforce_builtin_only)."""
+    def apply_filter(self, query, builtin_only=False, scope="tasks"):
+        """Return the identity keys the parsed query matches. scope names
+        the corpus: 'tasks' or 'history' (see Workflow.filter_keys). A bad
+        query raises ValueError with the parse error. builtin_only also
+        refuses a project filter (see enforce_builtin_only)."""
         raise NotImplementedError
 
     def batch_options(self):

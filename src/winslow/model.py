@@ -133,12 +133,16 @@ class SessionParamsRequest:
 
 @dataclass(frozen=True)
 class ApplyFilterRequest:
+    """An apply_filter request. scope names the corpus: 'tasks' or 'history'
+    (see Workflow.filter_keys)."""
+
     type: str
     kind: str
     session_id: str
     query: str
     request_id: str | None = None
     builtin_only: bool = False
+    scope: str = "tasks"
 
 
 @dataclass(frozen=True)

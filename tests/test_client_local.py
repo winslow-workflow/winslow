@@ -719,3 +719,55 @@ def test_create_session_fills_unsent_options_from_the_cli_base(
     row = app.create_session("my-identified", values={"client": "beta"})
     session = registry.get(row.session_id)
     assert session.workflow.workflow_config.client == "beta"
+
+
+# --- the apply_filter scopes ------------------------------------------------------
+
+
+def test_apply_filter_history_scope_matches_the_record_infos(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    run_to_completion(workflow, client, alpha)
+    assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)
+    # A task with no execution record is not in the corpus.
+    assert client.apply_filter("no-such-task", scope="history") == ()
+    with pytest.raises(ValueError, match="names no filter scope"):
+        client.apply_filter("alpha", scope="records")
+
+
+def test_apply_filter_history_scope_survives_the_session_end(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    run_to_completion(workflow, client, alpha)
+    ack = client.submit(EndSession())
+    assert ack.accepted
+    wait_for(lambda: session.has_ended, "the session never ended")
+
+    assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)
+    with pytest.raises(ValueError, match="scope='history'"):
+        client.apply_filter("alpha")
+
+
+def test_apply_filter_history_scope_refuses_a_project_filter(e2e_repo, monkeypatch):
+    from winslow.filter.builtin import GroupFilter
+
+    monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
+    workflow, session, client = session_client(e2e_repo)
+    with pytest.raises(ValueError, match="supports only the builtin filters"):
+        client.apply_filter("alpha", scope="history")
+
+
+def test_apply_filter_history_scope_covers_a_task_outside_the_roster(e2e_repo):
+    """A record survives its task leaving the roster: the history corpus is
+    the record infos, not the launch-filtered task list."""
+    workflow = build_workflow(
+        e2e_repo, "my-workflow", Mode.TUI, "--filter", "no-such-task"
+    )
+    session = Session(workflow)
+    workflow.check_pipeline_eligibility()
+    client = LocalSessionClient(session)
+    alpha = by_name(workflow)["Alpha"]
+    assert alpha not in workflow.get_filtered_tasks()
+
+    run_to_completion(workflow, client, alpha)
+    assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)

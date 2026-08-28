@@ -8,7 +8,6 @@ from functools import partial
 from winslow.cache import declared_entries
 from winslow.client.base import AppClient, SessionClient
 from winslow.exceptions import MisconfigurationError
-from winslow.filter.builtin import enforce_builtin_only
 from winslow.logger import (
     INTERACTIVE_FORMATTER,
     InteractiveLogHandler,
@@ -238,12 +237,9 @@ class LocalSessionClient(SessionClient):
             raise KeyError(f"{cache} has no entry {entry_name!r}.")
         return CacheValueView.from_entry(cache, entry_name)
 
-    def apply_filter(self, query, builtin_only=False):
-        parsed = self._workflow.filter_registry.parse(query)
-        if builtin_only:
-            enforce_builtin_only(parsed)
-        return tuple(
-            task.identity_key for task in parsed.apply(self._workflow.tasks)
+    def apply_filter(self, query, builtin_only=False, scope="tasks"):
+        return self._workflow.filter_keys(
+            query, scope=scope, builtin_only=builtin_only
         )
 
     def batch_options(self):

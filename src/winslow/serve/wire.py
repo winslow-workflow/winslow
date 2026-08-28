@@ -169,13 +169,6 @@ def roster_payload(workflow):
     return {"tasks": [asdict(workflow.task_info(t)) for t in workflow.roster_tasks()]}
 
 
-def apply_filter_keys(query, tasks):
-    """The identity keys of the tasks a parsed filter query matches. A
-    project filter can run arbitrary code, so a caller runs this off the
-    event loop (see Connection._request_apply_filter)."""
-    return [task.identity_key for task in query.apply(tasks)]
-
-
 def build_action(name, fields):
     """The action dataclass for one wire frame. Raises ValueError with a
     directional message on an unknown name or on bad fields."""
