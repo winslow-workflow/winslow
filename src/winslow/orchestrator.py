@@ -692,7 +692,8 @@ class Orchestrator(_ConfigBase):
             ) from e
 
         # Validate the CLI args before any effect, so a typo fails immediately.
-        workflow_args_map = self.collect_workflow_args()
+        # The descriptors read of the app parses them again per request.
+        self.collect_workflow_args()
 
         # Set up the winslow.runs sink and the propagate=False boundary BEFORE a
         # workflow logger or a task logger starts to propagate. The run logs then
@@ -700,17 +701,9 @@ class Orchestrator(_ConfigBase):
         # headless run keeps the console output.
         setup_run_logging()
 
-        # The parsed workflow args fill the parameter forms of the UI.
-        workflow_context = {
-            kls: args
-            for kls, args in workflow_args_map.items()
-            if kls.should_be_initialized(self.orchestrator_config)
-        }
-
         self.app = Winslow(
             orchestrator_config=self.orchestrator_config,
             orchestrator=self,
-            workflow_context=workflow_context,
         )
 
         # app.run() blocks until the TUI stops. Then flush and stop the

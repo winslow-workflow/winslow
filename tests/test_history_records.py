@@ -298,17 +298,19 @@ def test_buffered_record_with_object_extra_cannot_retain_it():
     assert ref() is None, "the buffered record retained the extra object"
 
 
-def test_history_search_refuses_a_builtin_filter_subclass():
-    """The search gate is by exact type: a project subclass of a builtin
-    filter can touch live-task API, so history must refuse it."""
-    from winslow.filter.builtin import GroupFilter, NameFilter
-    from winslow.ui.builtin_plugins.workflow.history import _foreign_filter_names
+def test_history_search_parses_builtin_filters_only():
+    """The history search parses with the builtin resolver alone: it can
+    construct only NameFilter and GroupFilter, so a project filter cannot
+    reach live-task API through it."""
+    import pytest
 
-    class ProjectFilter(NameFilter):
-        long_command = "project"
+    from winslow.filter.builtin import GroupFilter, NameFilter, parse_builtin
 
-    filters = [NameFilter("a"), GroupFilter("b"), ProjectFilter("c")]
-    assert _foreign_filter_names(filters) == ["project"]
+    parsed = parse_builtin("!g infra & alpha")
+    assert {type(f) for f in parsed.filters()} == {NameFilter, GroupFilter}
+
+    with pytest.raises(ValueError, match="not a builtin filter"):
+        parse_builtin("!project c")
 
 
 class _EventRecorder:

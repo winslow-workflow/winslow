@@ -1,4 +1,6 @@
-import dataclasses
+import asyncio
+import time
+from dataclasses import dataclass
 from datetime import datetime
 
 from textual import on
@@ -18,8 +20,7 @@ from textual.widgets import (
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from winslow.actions import StopBatch
-from winslow.filter.builtin import BUILTIN_FILTERS
-from winslow.runner.execution import ExecutionStatus
+from winslow.filter.builtin import parse_builtin
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
@@ -48,17 +49,12 @@ _STATUS_OPTIONS = (
     *((str(status), status) for status in TaskStatus),
 )
 
-
-def _foreign_filter_names(filters):
-    """The names of the filters that history cannot run. The test is by exact
-    type: a subclass of a builtin filter can touch live-task API."""
-    return sorted(
-        {type(f).get_name() for f in filters if type(f) not in BUILTIN_FILTERS}
-    )
+# The batch statuses a stop request can still reach.
+_STOPPABLE_STATUSES = ("QUEUED", "RUNNING")
 
 
-# (execution-context attribute, pill label, css class). The UI shows a pill on
-# the header of the batch card if the flag is set.
+# (batch option name, pill label, css class). The UI shows a pill on the
+# header of the batch card if the flag is set.
 _FLAG_PILLS = (
     ("dry_run", "dry run", "dry-run"),
     ("force_run", "force run", "force-run"),
@@ -67,9 +63,49 @@ _FLAG_PILLS = (
 )
 
 
+@dataclass
+class BatchView:
+    """The card model of one batch, from either port shape: a HistoryRow at
+    compose time, a BatchInfo from a batch_created event."""
+
+    uuid: str
+    action: str
+    status: str
+    task_count: int
+    created_at: float
+    options: dict | None
+    # (identity key, TaskOutcome or None) per task. An event view starts
+    # with no outcomes; the completion refresh fills them (see HistoryPane).
+    entries: tuple
+
+    @classmethod
+    def from_history_row(cls, row):
+        return cls(
+            uuid=row.uuid,
+            action=row.action,
+            status=row.status,
+            task_count=row.task_count,
+            created_at=row.created_at,
+            options=row.options,
+            entries=tuple(row.tasks.items()),
+        )
+
+    @classmethod
+    def from_batch_info(cls, info):
+        return cls(
+            uuid=info.uuid,
+            action=info.action,
+            status=info.status,
+            task_count=info.task_count,
+            created_at=info.created_at,
+            options=info.options,
+            entries=tuple((key, None) for key in info.tasks),
+        )
+
+
 class RecordRow(TaskRowBase):
-    """A history row: w_task holds the TaskInfo of the record, never the task,
-    so a row of an ended session retains nothing."""
+    """A history row: w_task holds the roster TaskInfo of the task, and the
+    outcome value fills the runtime and the log columns."""
 
     status = reactive(None, layout=False)
 
@@ -78,118 +114,129 @@ class RecordRow(TaskRowBase):
             self.record_row = record_row
             super().__init__()
 
-    def __init__(self, store, info, *args, **kwargs):
-        self.exec_store = store
+    class InfoRequested(Message):
+        def __init__(self, record_row):
+            self.record_row = record_row
+            super().__init__()
+
+    def __init__(self, batch_uuid, key, info, outcome=None, *args, **kwargs):
+        self.batch_uuid = batch_uuid
+        self.key = key
+        self._outcome = outcome
+        # The first live status observation, for the elapsed display of a
+        # record whose outcome has not arrived yet.
+        self._running_since = None
         super().__init__(info, *args, **kwargs)
 
-    def on_click(self, event):
-        self.post_message(self.Selected(self))
-
     @property
-    def record(self):
-        return self.exec_store.get_record(self.w_task.key)
+    def search_key(self):
+        return self.key
 
-    @classmethod
-    def _fmt_runtime(cls, record):
-        if record.duration is not None:
-            return f"{record.duration:.1f}s"
-        if record.started_at is not None:
-            return f"{(datetime.now() - record.started_at).total_seconds():.1f}s"
+    def _fmt_runtime(self):
+        outcome = self._outcome
+        if outcome is not None and outcome.duration is not None:
+            return f"{outcome.duration:.1f}s"
+        if outcome is not None and outcome.started_at is not None:
+            return f"{time.time() - outcome.started_at:.1f}s"
+        if self._running_since is not None:
+            return f"{time.time() - self._running_since:.1f}s"
         return ""
 
     def compose(self) -> ComposeResult:
+        info = self.w_task
+        index = f"{info.index + 1}." if info is not None else ""
+        label = str(info) if info is not None else self.key
         with Horizontal(classes="row-content"):
             yield Label("", classes="icon")
-            yield Label(f"{self.w_task.index + 1}.", classes="index")
-            yield Label(str(self.w_task), classes="name")
+            yield Label(index, classes="index")
+            yield Label(label, classes="name")
             yield Label("", classes="runtime")
             yield Label("", classes="status")
             yield InlineLog(classes="log")
         yield Button("info", classes="info-btn")
 
+    def on_click(self, event):
+        self.post_message(self.Selected(self))
+
     def on_mount(self):
-        self.status = self.exec_store.get(self.w_task.key)
-        self.log_line = self.record.last_log
+        outcome = self._outcome
+        if outcome is not None:
+            self.status = TaskStatus[outcome.status]
+            self.log_line = outcome.last_log
+        else:
+            self.watch_status(self.status)
+
+    def update_outcome(self, outcome):
+        self._outcome = outcome
+        self.log_line = outcome.last_log
+        # The reactive repaints the row; an equal status still needs the
+        # runtime refresh, so paint it directly first.
+        self.watch_status(TaskStatus[outcome.status])
+        self.status = TaskStatus[outcome.status]
 
     def watch_status(self, status):
+        if not self.is_mounted:
+            return
+        if self._outcome is None and self._running_since is None:
+            self._running_since = time.time()
         self.query_one(".icon", Label).update(get_task_icon(status))
-        self.query_one(".runtime", Label).update(self._fmt_runtime(self.record))
+        self.query_one(".runtime", Label).update(self._fmt_runtime())
         self.query_one(".status", Label).update(str(status or ""))
 
     @on(Button.Pressed, ".info-btn")
-    def show_info(self):
-        # The record info, not the row info: the sweep replaced the stub there.
-        record = self.record
-        self.app.push_screen(
-            TaskDetail(
-                record.info,
-                registry=self.screen.plugin_registry,
-                logs=record.logs,
-                transient_snapshots=record.transient_snapshots,
-                cache_snapshots=record.cache_snapshots,
-            )
-        )
+    def show_info(self, event):
+        event.stop()
+        self.post_message(self.InfoRequested(self))
 
 
 class BatchDetailModal(BaseModal):
-    def __init__(self, batch, *args, **kwargs):
-        self.batch = batch
+    def __init__(self, view, *args, **kwargs):
+        self.view = view
         super().__init__(*args, **kwargs)
 
     @property
     def modal_title(self):
-        ts = self.batch.created_at.strftime("%H:%M:%S")
-        return f"{self.batch.action.value.upper()}  ·  {ts}"
+        ts = datetime.fromtimestamp(self.view.created_at).strftime("%H:%M:%S")
+        return f"{self.view.action}  ·  {ts}"
 
     def compose_content(self):
-        ctx = self.batch.execution_context
-        params = {
-            f.name: getattr(ctx, f.name)
-            for f in dataclasses.fields(ctx)
-            if f.name != "batch_uuid"
-        }
         with TabbedContent():
             with TabPane("Parameters", id="parameters"):
-                yield ParamsTable(params)
+                yield ParamsTable(self.view.options or {})
 
 
 class BatchCard(Widget):
-    def __init__(self, batch, store, *args, **kwargs):
-        self.batch = batch
-        self.exec_store = store
+    def __init__(self, view, infos_by_key, *args, **kwargs):
+        self.view = view
+        self._infos_by_key = infos_by_key
         super().__init__(*args, **kwargs)
 
     def _refresh_title(self):
-        statuses = list(self.exec_store.values())
+        statuses = [row.status for row in self.query(RecordRow).results()]
         completed = sum(1 for s in statuses if s in PASSING_STATUSES)
         problematic = sum(1 for s in statuses if s in PROBLEMATIC_STATUSES)
         summary = format_status_summary(completed, problematic, len(statuses))
-        exec_status = str(self.batch.status)
+        exec_status = self.view.status.replace("_", " ")
         self.border_title = f"{self._title_prefix}  ·  {summary}  ·  {exec_status} "
 
     def compose(self) -> ComposeResult:
-        ts = self.batch.created_at.strftime("%H:%M:%S")
-        action = self.batch.action.value.upper()
-        short_uuid = str(self.batch.uuid)[:8]
-        self._title_prefix = f" {action}  ·  {ts}  ·  {short_uuid}"
+        view = self.view
+        ts = datetime.fromtimestamp(view.created_at).strftime("%H:%M:%S")
+        short_uuid = str(view.uuid)[:8]
+        self._title_prefix = f" {view.action}  ·  {ts}  ·  {short_uuid}"
 
-        ctx = self.batch.execution_context
+        options = view.options or {}
         pills = [
-            (label, cls)
-            for attr, label, cls in _FLAG_PILLS
-            if ctx and getattr(ctx, attr, False)
+            (label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)
         ]
 
-        stoppable = self.batch.status in (
-            ExecutionStatus.QUEUED,
-            ExecutionStatus.RUNNING,
-        )
+        stoppable = view.status in _STOPPABLE_STATUSES
         with Horizontal(classes="batch-header"):
             with Horizontal(classes="batch-tags"):
                 for label, cls in pills:
                     yield Label(label, classes=f"tag {cls}")
             yield Button("info", classes="details-btn", variant="default")
-            if self.batch.task_count > 1:
+            if view.task_count > 1:
                 yield Button(
                     "stop",
                     classes="stop-btn",
@@ -197,32 +244,42 @@ class BatchCard(Widget):
                     disabled=not stoppable,
                 )
 
-        for record in self.exec_store.records:
-            yield RecordRow(store=self.exec_store, info=record.info)
+        for key, outcome in view.entries:
+            yield RecordRow(
+                batch_uuid=view.uuid,
+                key=key,
+                info=self._infos_by_key.get(key),
+                outcome=outcome,
+            )
 
     def on_mount(self):
         self._refresh_title()
 
+    def batch_completed(self, info):
+        self.view.status = info.status
+        if self.view.task_count > 1:
+            self.query_one(".stop-btn", Button).disabled = True
+        self._refresh_title()
+
     @on(Button.Pressed, ".details-btn")
     def show_details(self):
-        self.app.push_screen(BatchDetailModal(self.batch))
+        self.app.push_screen(BatchDetailModal(self.view))
 
     @on(Button.Pressed, ".stop-btn")
     def request_stop(self):
-        # The workflow screen owns the session; the card reaches the action
-        # handler through it. The acceptance means "stop requested".
-        ack = self.screen.session.actions.submit(StopBatch(batch_uuid=self.batch.uuid))
+        # The workflow screen owns the session client; the card reaches the
+        # action handler through it. The acceptance means "stop requested".
+        ack = self.screen.submit_action(StopBatch(batch_uuid=self.view.uuid))
         if ack.accepted:
             self.query_one(".stop-btn", Button).disabled = True
-        else:
-            self.notify(ack.reason, severity="warning")
 
 
 class HistoryPane(SearchFlowMixin, Widget):
     DEFAULT_CSS = _CSS
 
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    def __init__(self, client, infos_by_key, *args, **kwargs):
+        self.client = client
+        self._infos_by_key = infos_by_key
         self._rows: dict[tuple, RecordRow] = {}
         self._cards: dict[str, BatchCard] = {}
         self._init_search()
@@ -232,24 +289,18 @@ class HistoryPane(SearchFlowMixin, Widget):
         super().__init__(*args, **kwargs)
 
     def _matching_tasks(self, query: str, warn=True) -> set:
-        """The row infos that the query matches. Only the builtin filters can
-        run on an info; a project filter is refused, with a warning on submit.
-        The typing preview passes warn=False, so it does not toast per tick."""
-        infos = [row.search_key for row in self.query(RecordRow).results()]
+        """The identity keys the query matches over the row infos. The parse
+        knows only the builtin filters, so a search of stored rows needs no
+        live session. The typing preview passes warn=False, so it does not
+        toast per tick."""
+        infos = [row.w_task for row in self.query(RecordRow).results() if row.w_task]
         try:
-            parsed = self.workflow.filter_registry.parse(query)
-        except ValueError:
-            return set()
-        foreign = _foreign_filter_names(parsed.filters())
-        if foreign:
+            parsed = parse_builtin(query)
+        except ValueError as exc:
             if warn:
-                self.notify(
-                    f"History search supports only the builtin filters "
-                    f"(name, group) - not: {', '.join(foreign)}",
-                    severity="warning",
-                )
+                self.notify(str(exc), severity="warning")
             return set()
-        return set(parsed.apply(infos))
+        return {info.key for info in parsed.apply(infos)}
 
     def search_rows(self):
         return self.query(RecordRow).results()
@@ -301,15 +352,12 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._status_filter = event.value
         self._apply_visibility()
 
-    def _get_store(self, batch):
-        return self.workflow.runner.record_store(batch.uuid)
-
     def _register_card(self, card):
-        self._cards[card.batch.uuid] = card
+        self._cards[card.view.uuid] = card
 
     def _register_rows(self, widget):
         for row in widget.query(RecordRow):
-            self._rows[(row.exec_store.batch_uuid, row.w_task.key)] = row
+            self._rows[(row.batch_uuid, row.key)] = row
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="search-section", classes="pane-header"):
@@ -317,7 +365,9 @@ class HistoryPane(SearchFlowMixin, Widget):
                 "view dashboard"
             )
             yield PaneSearch(
-                self.workflow, placeholder="search records...", input_id="record-search"
+                parse_builtin,
+                placeholder="search records...",
+                input_id="record-search",
             )
             yield Select(
                 _STATUS_OPTIONS,
@@ -332,28 +382,52 @@ class HistoryPane(SearchFlowMixin, Widget):
                     # checkbox column of the task bar has the same two rows.
                     yield Checkbox("placeholder", classes="placeholder", disabled=True)
         with VerticalScroll(id="cards-section"):
-            for batch in reversed(self.workflow.runner.batches):
-                yield from self._compose_batch(batch)
+            for row in reversed(self.client.history()):
+                yield BatchCard(BatchView.from_history_row(row), self._infos_by_key)
 
     async def on_mount(self):
         for card in self.query(BatchCard):
             self._register_card(card)
         self._register_rows(self)
 
-    def _compose_batch(self, batch):
-        yield BatchCard(batch, self._get_store(batch))
+    def _open_detail(self, row):
+        """The RecordDetail of one row, or None with a toast when the record
+        is gone."""
+        try:
+            return self.client.record_detail(row.batch_uuid, row.key)
+        except KeyError as exc:
+            self.notify(str(exc), severity="warning")
+            return None
 
     @on(RecordRow.Selected)
     def on_record_selected(self, event):
         self.query(RecordRow).remove_class("selected")
         event.record_row.add_class("selected")
         # The record info, not the row info: the sweep replaced the stub there.
-        self.screen.show_task_detail(event.record_row.record.info)
+        detail = self._open_detail(event.record_row)
+        if detail is not None:
+            self.screen.show_task_detail(detail.info)
+
+    @on(RecordRow.InfoRequested)
+    def on_record_info(self, event):
+        row = event.record_row
+        detail = self._open_detail(row)
+        if detail is None:
+            return
+        self.app.push_screen(
+            TaskDetail(
+                detail.info,
+                registry=self.screen.plugin_registry,
+                logs=self.client.log_tail(row.batch_uuid, row.key),
+                transient_snapshots=detail.transient_snapshots,
+                cache_snapshots=detail.cache_snapshots,
+            )
+        )
 
     @on(BatchCreated)
     async def on_batch_created(self, event):
         scroll = self.query_one(VerticalScroll)
-        card = BatchCard(event.batch, self._get_store(event.batch))
+        card = BatchCard(BatchView.from_batch_info(event.info), self._infos_by_key)
         await scroll.mount(card, before=0)
         self._register_card(card)
         self._register_rows(card)
@@ -362,27 +436,41 @@ class HistoryPane(SearchFlowMixin, Widget):
 
     @on(BatchCompleted)
     def on_batch_completed(self, event):
-        card = self._cards.get(event.batch.uuid)
-        if not card:
+        card = self._cards.get(event.info.uuid)
+        if card:
+            card.batch_completed(event.info)
+        # The completion refresh reads the exact outcomes: runtime and last
+        # log come from the record store, not from a local clock.
+        self.run_worker(
+            self._refresh_outcomes(event.info.uuid), group="history-refresh"
+        )
+
+    async def _refresh_outcomes(self, batch_uuid):
+        rows = await asyncio.to_thread(self.client.history)
+        row = next((r for r in rows if r.uuid == batch_uuid), None)
+        if row is None:
             return
-        if card.batch.task_count > 1:
-            card.query_one(".stop-btn", Button).disabled = True
-        card._refresh_title()
+        for key, outcome in row.tasks.items():
+            if record_row := self._rows.get((batch_uuid, key)):
+                record_row.update_outcome(outcome)
+        self._apply_visibility()
+        if card := self._cards.get(batch_uuid):
+            card._refresh_title()
 
     @on(ExecutionStatusChanged)
     def on_execution_status_changed(self, event):
-        row = self._rows.get((event.batch.uuid, event.task_key))
+        row = self._rows.get((event.batch_uuid, event.task_key))
         if row:
             row.status = event.status
             row.display = self._row_visible(row)
-        card = self._cards.get(event.batch.uuid)
+        card = self._cards.get(event.batch_uuid)
         if card:
             card._refresh_title()
             card.display = any(r.display for r in card.query(RecordRow).results())
 
     @on(TaskLogUpdated)
     def on_task_log_updated(self, event):
-        row = self._rows.get((event.batch.uuid, event.task_key))
+        row = self._rows.get((event.batch_uuid, event.task_key))
         if row:
             row.log_line = event.line
 
@@ -393,4 +481,7 @@ class HistoryPlugin(UIPlugin):
     priority = TasksPanePlugin.priority + 1
 
     def create_widget(self, context: RenderContext):
-        return HistoryPane(workflow=context.workflow)
+        return HistoryPane(
+            client=context.client,
+            infos_by_key={info.key: info for info in context.roster},
+        )

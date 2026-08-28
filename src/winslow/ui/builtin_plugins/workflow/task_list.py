@@ -20,7 +20,6 @@ from winslow.ui.widgets.common import (
 )
 
 from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
-from winslow.exceptions import MisconfigurationError
 
 
 # The UI hides the action buttons, and does not disable them, for a status that a
@@ -180,8 +179,12 @@ class TaskRow(TaskRowBase):
 
 
 class TaskList(VerticalScroll):
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    """The task rows, from the roster of the port: one stub TaskInfo per
+    task, with the initial status from the statuses mirror of the screen."""
+
+    def __init__(self, roster, statuses, *args, **kwargs):
+        self._roster = roster
+        self._statuses = statuses
         super().__init__(*args, **kwargs)
 
     @on(TaskRow.Selected)
@@ -190,14 +193,7 @@ class TaskList(VerticalScroll):
         event.task_row.add_class("selected")
 
     def compose(self):
-        # If the --filter at launch is bad, the UI shows each task and does not
-        # stop. get_filtered_tasks raises an error for an invalid filter.
-        try:
-            tasks = self.workflow.get_filtered_tasks()
-        except MisconfigurationError:
-            tasks = self.workflow.tasks
-
-        for task in tasks:
-            row = TaskRow(info=self.workflow.task_info(task))
-            row.status = self.workflow.store[task]
+        for info in self._roster:
+            row = TaskRow(info=info)
+            row.status = self._statuses.get(info.key)
             yield row

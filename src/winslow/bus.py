@@ -47,12 +47,12 @@ class SessionBus:
     A callback must return immediately, because it runs on the thread that
     produced the event.
 
-    Example scenario, the TUI adapter (see TuiStoreAdapter):
+    Example scenario, the workflow screen of the TUI (see WorkflowScreen):
 
         1. A worker thread completes a task and writes
            store[task] = COMPLETED, then publishes with the lock released.
         2. The TaskStatusEvent callback runs on that worker thread.
-        3. The adapter posts the event to the UI thread and returns
+        3. The screen handler posts the event to the UI thread and returns
            immediately. The worker continues.
 
     A slow body in step 3, for example a synchronous render of the task

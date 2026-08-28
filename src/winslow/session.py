@@ -192,16 +192,53 @@ class Session:
 
 
 def _refuse_value(name, value, option):
-    if option.choices and str(value) not in [str(c) for c in option.choices]:
+    if not option.choices:
+        return
+    # A multiselect value is a list; each element must be a choice.
+    items = (
+        value
+        if option.multiselect and isinstance(value, (list, tuple))
+        else [value]
+    )
+    choices = [str(c) for c in option.choices]
+    for item in items:
+        if str(item) not in choices:
+            raise ValueError(
+                f"{item!r} is not a choice of {name} - the choices are "
+                f"{choices}."
+            )
+
+
+def _convert_value(name, value, option):
+    """Parse a string value with the declared option type. A value that
+    already has a type passes through, so a typed payload stays as it is."""
+    if option.type is None or option.type is str or not isinstance(value, str):
+        return value
+    try:
+        return option.type(value)
+    except (TypeError, ValueError) as exc:
         raise ValueError(
-            f"{value!r} is not a choice of {name} - the choices are "
-            f"{[str(c) for c in option.choices]}."
-        )
+            f"{value!r} is not a valid {name} - the option expects "
+            f"{option.type.__name__}: {exc}"
+        ) from exc
 
 
-def validate_values(workflow_name, workflow_kls, orchestrator, values, overrides):
+def _converted(name, value, option):
+    if value is None:
+        return None
+    if option.multiselect and isinstance(value, (list, tuple)):
+        return [_convert_value(name, item, option) for item in value]
+    return _convert_value(name, value, option)
+
+
+def validate_values(
+    workflow_name, workflow_kls, orchestrator, values, overrides, workflow_base=None
+):
     """Refuse a bad create payload with direction, before any initialization
-    work runs. The descriptors name every option this checks against."""
+    work runs. The descriptors name every option this checks against; the
+    parsed CLI base satisfies a required option the caller did not send.
+    Return the (values, overrides) pair with each string value parsed through
+    the declared option type, so every door hands the workflow typed values."""
     known_values = workflow_kls.config_meta
     known_overrides = orchestrator.config_meta
     for name in values:
@@ -221,13 +258,26 @@ def validate_values(workflow_name, workflow_kls, orchestrator, values, overrides
     missing = [
         name
         for name, option in known_values.items()
-        if option.required and option.default is None and values.get(name) is None
+        if option.required
+        and option.default is None
+        and values.get(name) is None
+        and getattr(workflow_base, name, None) is None
     ]
     if missing:
         raise ValueError(
             f"{workflow_name} requires {', '.join(missing)} - descriptors "
             f"names the options of the workflow."
         )
+    return (
+        {
+            name: _converted(name, value, known_values[name])
+            for name, value in values.items()
+        },
+        {
+            name: _converted(name, value, known_overrides[name])
+            for name, value in overrides.items()
+        },
+    )
 
 
 def create_session(
@@ -261,12 +311,17 @@ def create_session(
 
     orchestrator_overrides = orchestrator_overrides or {}
     workflow_values = workflow_values or {}
-    validate_values(
+    # The parsed CLI base fills every option the caller did not send, so an
+    # option outside the form keeps its command-line value (see
+    # Orchestrator.collect_workflow_args).
+    workflow_base = orchestrator.collect_workflow_args().get(workflow_kls)
+    workflow_values, orchestrator_overrides = validate_values(
         workflow_name,
         workflow_kls,
         orchestrator,
         workflow_values,
         orchestrator_overrides,
+        workflow_base=workflow_base,
     )
     session_id = session_id or generate_id(workflow_name)
     workflow_logger = logging.getLogger(run_logger_name(session_id))
@@ -289,6 +344,7 @@ def create_session(
             workflow_kls=workflow_kls,
             orchestrator_overrides=orchestrator_overrides,
             workflow_values=workflow_values,
+            workflow_base=workflow_base,
             logger=workflow_logger,
         )
         session = Session(workflow, session_id=session_id)

@@ -163,11 +163,10 @@ def session_row(session):
 
 
 def roster_payload(workflow):
-    """The stub TaskInfo of every task, in launch-filter order. get_filtered_tasks
+    """The stub TaskInfo of every task, in launch-filter order. roster_tasks
     can run project filter code and task_info builds one stub per task, so a
     caller runs this off the event loop (see Connection._request_roster)."""
-    tasks = workflow.get_filtered_tasks()
-    return {"tasks": [asdict(workflow.task_info(t)) for t in tasks]}
+    return {"tasks": [asdict(workflow.task_info(t)) for t in workflow.roster_tasks()]}
 
 
 def apply_filter_keys(query, tasks):
@@ -217,11 +216,7 @@ def cache_card_payload(cache):
 
 
 def caches_payload(workflow):
-    return asdict(
-        CachesPayload(
-            caches=tuple(CacheCard.from_cache(cache) for cache in workflow.caches())
-        )
-    )
+    return asdict(CachesPayload.from_workflow(workflow))
 
 
 def cache_value_payload(cache, entry_name):

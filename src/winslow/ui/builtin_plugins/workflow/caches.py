@@ -1,8 +1,6 @@
 import asyncio
 
-from contextlib import nullcontext
 from enum import StrEnum
-from functools import partial
 
 from textual import on
 from textual.message import Message
@@ -11,14 +9,9 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Select
 from textual.containers import Horizontal, VerticalScroll
 
-from winslow.cache import (
-    GLOBAL_SCOPE,
-    WORKFLOW_SCOPE,
-    BaseCache,
-    EntryState,
-    StorageRecord,
-    declared_entries,
-)
+from winslow.actions import ClearCacheEntries, LoadCacheEntries
+from winslow.cache import GLOBAL_SCOPE, WORKFLOW_SCOPE
+from winslow.model import EntryState
 from winslow.ui.css import package_css
 from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
@@ -27,7 +20,6 @@ from winslow.ui.modals.cache_value import CacheValue
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.workflow_events import CacheUpdated, SessionEnded
-from winslow.util import execute_in_threads, safe_repr
 
 _CSS = package_css(__package__, "_pane_header.tcss", "caches.tcss")
 
@@ -57,11 +49,6 @@ _ENTRY_ACTIONS = (
 )
 
 
-def has_registered_caches(workflow):
-    """With no cache in either scope, the cache panes stay off the screen."""
-    return bool(workflow.workflow_cache.caches() or workflow.global_cache.caches())
-
-
 class CacheEntryRow(TaskRowBase):
     """One entry of a cache card, in the shared task-row shell. The value
     preview uses the log column, in the style of an inline task log."""
@@ -72,8 +59,8 @@ class CacheEntryRow(TaskRowBase):
     error = reactive(None, layout=False, always_update=True)
 
     class Action(Message):
-        def __init__(self, cache, entry_name, action):
-            self.cache = cache
+        def __init__(self, cache_name, entry_name, action):
+            self.cache_name = cache_name
             self.entry_name = entry_name
             self.action = action
             super().__init__()
@@ -83,12 +70,12 @@ class CacheEntryRow(TaskRowBase):
             self.row = row
             super().__init__()
 
-    def __init__(self, cache, entry_name, *args, **kwargs):
-        self.cache = cache
+    def __init__(self, cache_name, entry_name, *args, **kwargs):
+        self.cache_name = cache_name
         self.entry_name = entry_name
         # The row key fills w_task: the filter helpers match on it, and it
         # stays unique across same-named entries of different caches.
-        super().__init__((cache, entry_name), *args, **kwargs)
+        super().__init__((cache_name, entry_name), *args, **kwargs)
 
     def compose(self):
         with Horizontal(classes="row-content"):
@@ -118,7 +105,7 @@ class CacheEntryRow(TaskRowBase):
 
     def show_unobservable(self):
         """The storage of the cache cannot be observed: the row shows that
-        instead of a stale state (see CachesPane._collect)."""
+        instead of a stale state (see CacheCard.unobservable)."""
         if not self.is_mounted:
             return
         self.remove_class(*(str(s) for s in EntryState))
@@ -134,31 +121,35 @@ class CacheEntryRow(TaskRowBase):
     def post_action(self, event):
         event.stop()
         action = CacheAction(event.button.name)
-        self.post_message(self.Action(self.cache, self.entry_name, action))
+        self.post_message(self.Action(self.cache_name, self.entry_name, action))
 
 
-class CacheCard(Widget):
+class CacheCardWidget(Widget):
     class Selected(Message):
-        def __init__(self, cache):
-            self.cache = cache
+        def __init__(self, cache_name):
+            self.cache_name = cache_name
             super().__init__()
 
-    def __init__(self, cache, *args, **kwargs):
-        self.cache = cache
-        self._title_prefix = f" {cache.get_name()}  ·  {cache.scope}"
+    def __init__(self, card, *args, **kwargs):
+        # The CacheCard value at compose time; the pane refreshes the rows
+        # from later snapshots (see CachesPane._apply).
+        self.card = card
+        self._title_prefix = f" {card.name}  ·  {card.scope}"
         super().__init__(*args, **kwargs)
 
+    @property
+    def cache_name(self):
+        return self.card.name
+
     def compose(self):
-        # From the declarations, never from a peek: a broken storage must not
-        # break the compose (see CachesPane._collect).
-        for name in declared_entries(type(self.cache)):
-            yield CacheEntryRow(self.cache, name)
+        for entry in self.card.entries:
+            yield CacheEntryRow(self.card.name, entry.name)
 
     def on_mount(self):
         self.border_title = f"{self._title_prefix} "
 
     def on_click(self, event):
-        self.post_message(self.Selected(self.cache))
+        self.post_message(self.Selected(self.card.name))
 
     def refresh_summary(self, infos):
         warm = sum(1 for info in infos if info.state is EntryState.WARM)
@@ -166,29 +157,27 @@ class CacheCard(Widget):
 
 
 class CachesPane(SearchFlowMixin, Widget):
+    """The caches of the session, rendered from the caches read of the port.
+    The cards mount on the first snapshot; every later snapshot updates the
+    rows in place."""
+
     DEFAULT_CSS = _CSS
 
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    def __init__(self, client, session_ended=False, *args, **kwargs):
+        self.client = client
+        self._session_ended = session_ended
         self._tick_timer = None
         self._rows = {}
         self._cards = {}
+        # The latest CacheCard per name, for the overview pane selection.
+        self._card_values = {}
         self._search = ""
         self._init_search()
         self._scope = _SCOPE_ALL
-        # The caches the tick cannot observe: the first failure logs, a
-        # recovery clears the mark and the badge.
-        self._unobservable = set()
-        # True while a collect thread runs: exclusive workers cancel only the
+        # True while a snapshot thread runs: exclusive workers cancel only the
         # awaiting coroutine, so the flag stops the threads from stacking.
         self._collecting = False
         super().__init__(*args, **kwargs)
-
-    def _caches(self):
-        return (
-            *self.workflow.workflow_cache.caches(),
-            *self.workflow.global_cache.caches(),
-        )
 
     def compose(self):
         with Horizontal(id="cache-header", classes="pane-header"):
@@ -203,18 +192,12 @@ class CachesPane(SearchFlowMixin, Widget):
             with Horizontal(classes="actions"):
                 yield Button("clear all", id="cache-clear-all", variant="error")
                 yield Button("load all", id="cache-load-all", variant="success")
-        with VerticalScroll(id="cache-cards"):
-            for cache in self._caches():
-                yield CacheCard(cache)
+        yield VerticalScroll(id="cache-cards")
 
     def on_mount(self):
-        for card in self.query(CacheCard).results():
-            self._cards[card.cache] = card
-            for row in card.query(CacheEntryRow).results():
-                self._rows[(row.cache, row.entry_name)] = row
-        # A pane mounted after the session end is a static snapshot: the
-        # workflow cache is released, so a tick would read a dead container.
-        if not self.workflow.session.has_ended:
+        # A pane of an ended session is a static snapshot: no tick, and the
+        # caches read of the port has nothing live to observe.
+        if not self._session_ended:
             self._tick_timer = self.set_interval(
                 CACHE_TICK_SECONDS, self._schedule_refresh
             )
@@ -225,7 +208,7 @@ class CachesPane(SearchFlowMixin, Widget):
         if self._tick_timer is not None:
             self._tick_timer.stop()
 
-    # --- refresh: every render comes from a peek --------------------------
+    # --- refresh: every render comes from a caches read -----------------------
 
     def _schedule_refresh(self):
         # exclusive: a new refresh replaces a slow one instead of queueing.
@@ -240,73 +223,59 @@ class CachesPane(SearchFlowMixin, Widget):
             return
         self._collecting = True
         try:
-            snapshot = await asyncio.to_thread(self._collect)
+            cards = await asyncio.to_thread(self.client.caches)
         finally:
             self._collecting = False
         try:
-            self._apply(snapshot)
+            await self._apply(cards)
         except Exception:
             # A raise would tear the whole app down: log and continue.
-            self.workflow.logger.error("The cache pane repaint failed.", exc_info=True)
+            self.app.logger.error("The cache pane repaint failed.", exc_info=True)
 
-    def _collect(self):
-        """One peek pass over every cache, off the UI thread. A cache whose
-        storage raises is marked unobservable; the others keep refreshing."""
-        snapshot = []
-        for cache in self._caches():
-            try:
-                infos = cache.inspect()
-                values = {
-                    info.entry_name: self._value_repr(cache, info)
-                    for info in infos
-                    if info.written_at is not None
-                }
-            except Exception:
-                if cache not in self._unobservable:
-                    self._unobservable.add(cache)
-                    self.workflow.logger.error(
-                        f"The cache pane cannot observe '{cache.get_name()}'.",
-                        exc_info=True,
-                    )
-                snapshot.append((cache, None, None))
+    async def _mount_card(self, card):
+        widget = CacheCardWidget(card)
+        await self.query_one("#cache-cards", VerticalScroll).mount(widget)
+        self._cards[card.name] = widget
+        for row in widget.query(CacheEntryRow).results():
+            self._rows[(card.name, row.entry_name)] = row
+
+    async def _apply(self, cards):
+        for card in cards:
+            self._card_values[card.name] = card
+            widget = self._cards.get(card.name)
+            if widget is None:
+                await self._mount_card(card)
+                widget = self._cards[card.name]
+            if card.error is not None:
+                widget.border_subtitle = " storage error "
+                for row in widget.query(CacheEntryRow).results():
+                    row.tooltip = card.error
+                    row.show_unobservable()
                 continue
-            self._unobservable.discard(cache)
-            snapshot.append((cache, infos, values))
-        return snapshot
-
-    @classmethod
-    def _value_repr(cls, cache, info):
-        record = cache.peek(info.entry_name)
-        return safe_repr(record.value) if isinstance(record, StorageRecord) else ""
-
-    def _apply(self, snapshot):
-        for cache, infos, values in snapshot:
-            card = self._cards.get(cache)
-            if infos is None:
-                if card:
-                    card.border_subtitle = " storage error "
-                    for row in card.query(CacheEntryRow).results():
-                        row.show_unobservable()
-                continue
-            if card:
-                card.border_subtitle = ""
-                card.refresh_summary(infos)
-            for info in infos:
-                if row := self._rows.get((cache, info.entry_name)):
+            widget.border_subtitle = ""
+            widget.refresh_summary(card.info)
+            for info in card.info:
+                if row := self._rows.get((card.name, info.entry_name)):
+                    row.tooltip = None
                     row.state = info.state
                     row.error = info.error
-                    row.log_line = values.get(info.entry_name, "")
+                    row.log_line = card.values.get(info.entry_name) or ""
+        self._apply_visibility()
 
     # --- filters ----------------------------------------------------------
 
+    def _row_scope(self, row):
+        card = self._card_values.get(row.cache_name)
+        return card.scope if card is not None else None
+
     def _row_visible(self, row):
-        if self._scope != _SCOPE_ALL and row.cache.scope != self._scope:
+        if self._scope != _SCOPE_ALL and self._row_scope(row) != self._scope:
             return False
         if not self._search:
             return True
         return (
             self._search in row.entry_name.lower()
-            or self._search in row.cache.get_name().lower()
+            or self._search in row.cache_name.lower()
         )
 
     def _apply_visibility(self):
@@ -326,7 +295,7 @@ class CachesPane(SearchFlowMixin, Widget):
         return {
             row.search_key
             for row in self._rows.values()
-            if query in row.entry_name.lower() or query in row.cache.get_name().lower()
+            if query in row.entry_name.lower() or query in row.cache_name.lower()
         }
 
     def apply_search(self, query):
@@ -348,90 +317,65 @@ class CachesPane(SearchFlowMixin, Widget):
 
     # --- selection ----------------------------------------------------------
 
-    def _select_cache(self, cache):
-        self.screen.show_cache_detail(cache)
+    def _select_cache(self, cache_name):
+        if card := self._card_values.get(cache_name):
+            self.screen.show_cache_detail(card)
 
-    @on(CacheCard.Selected)
+    @on(CacheCardWidget.Selected)
     def on_card_selected(self, event):
-        self._select_cache(event.cache)
+        self._select_cache(event.cache_name)
 
     @on(CacheEntryRow.Selected)
     def on_row_selected(self, event):
         self.query(CacheEntryRow).remove_class("selected")
         event.row.add_class("selected")
-        self._select_cache(event.row.cache)
+        self._select_cache(event.row.cache_name)
 
     # --- actions ------------------------------------------------------------
 
-    def _run_action(self, work):
-        """One cache action off the UI thread, then a repaint from a re-peek.
-        The session log scope routes the cache emissions to the session logger,
-        so the log pane shows them (see Session.log_scope)."""
-        session = self.workflow.session
-        scope = session.log_scope() if session else nullcontext()
-
-        async def action():
-            with scope:
-                try:
-                    await asyncio.to_thread(work)
-                except Exception:
-                    # A raise would tear the whole app down: log and continue.
-                    self.workflow.logger.error(
-                        "The cache action failed.", exc_info=True
-                    )
-            self._schedule_refresh()
-
-        self.run_worker(action(), group="cache-actions")
-
-    def _load_entry(self, cache, entry_name):
-        """Load one entry and continue past a failure: the log carries the
-        error, and the repaint shows the row state."""
-        try:
-            getattr(cache, entry_name)
-        except Exception:
-            self.workflow.logger.error(
-                f"Cache '{cache.get_name()}': the load of '{entry_name}' failed.",
-                exc_info=True,
-            )
-
     @on(CacheEntryRow.Action)
     def handle_entry_action(self, event):
+        pair = (event.cache_name, event.entry_name)
         match event.action:
             case CacheAction.VIEW:
                 self.app.push_screen(
-                    CacheValue.for_entry(
-                        event.cache, event.entry_name, self.workflow.logger
-                    )
+                    CacheValue.for_entry(self.client, *pair)
                 )
             case CacheAction.LOAD:
-                self._run_action(
-                    partial(self._load_entry, event.cache, event.entry_name)
-                )
+                self.screen.submit_action(LoadCacheEntries(entries=(pair,)))
             case CacheAction.CLEAR:
-                self._run_action(partial(event.cache.invalidate, event.entry_name))
+                self.screen.submit_action(ClearCacheEntries(entries=(pair,)))
 
-    def _visible_rows(self):
-        return [row for row in self._rows.values() if self._row_visible(row)]
+    def _visible_pairs(self):
+        return tuple(
+            (row.cache_name, row.entry_name)
+            for row in self._rows.values()
+            if self._row_visible(row)
+        )
 
     @on(Button.Pressed, "#cache-load-all")
     def handle_load_all(self):
-        jobs = [(row.cache, row.entry_name) for row in self._visible_rows()]
-        if not jobs:
+        pairs = self._visible_pairs()
+        if not pairs:
             self.notify("No cache entries are visible - nothing to load")
             return
-        self.notify(f"Loading {len(jobs)} cache entr{'y' if len(jobs) == 1 else 'ies'}")
-        # One flat pool, like the eager population: independent entries load
-        # in parallel, a dependent blocks on the field lock of its upstream.
-        self._run_action(partial(execute_in_threads, self._load_entry, jobs))
+        ack = self.screen.submit_action(LoadCacheEntries(entries=pairs))
+        if ack.accepted:
+            self.notify(
+                f"Loading {len(pairs)} cache entr{'y' if len(pairs) == 1 else 'ies'}"
+            )
 
     @on(Button.Pressed, "#cache-clear-all")
     def handle_clear_all(self):
-        caches = sorted({row.cache for row in self._visible_rows()}, key=str)
-        if not caches:
-            self.notify("No caches are visible - nothing to clear")
+        pairs = self._visible_pairs()
+        if not pairs:
+            self.notify("No cache entries are visible - nothing to clear")
             return
-        self.notify(f"Clearing {len(caches)} cache{'' if len(caches) == 1 else 's'}")
-        self._run_action(partial(execute_in_threads, BaseCache.invalidate_all, caches))
+        ack = self.screen.submit_action(ClearCacheEntries(entries=pairs))
+        if ack.accepted:
+            self.notify(
+                f"Clearing {len(pairs)} cache entr{'y' if len(pairs) == 1 else 'ies'}"
+            )
 
 
 class CachesPanePlugin(UIPlugin):
@@ -441,7 +385,10 @@ class CachesPanePlugin(UIPlugin):
 
     @classmethod
     def should_render(cls, context):
-        return has_registered_caches(context.workflow)
+        return bool(context.snapshot.cache_names)
 
     def create_widget(self, context: RenderContext):
-        return CachesPane(workflow=context.workflow)
+        return CachesPane(
+            client=context.client,
+            session_ended=context.snapshot.status == "ENDED",
+        )

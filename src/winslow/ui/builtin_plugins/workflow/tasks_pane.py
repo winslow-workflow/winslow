@@ -1,19 +1,24 @@
 from textual import on
 from textual.widget import Widget
+from textual.widgets import Checkbox
 
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.task_bar import TaskBar
 from winslow.ui.builtin_plugins.workflow.task_list import TaskList, TaskRow
 from winslow.task.status import PASSING_STATUSES
-from winslow.ui.workflow_events import TaskStatusChanged, TaskLogUpdated
+from winslow.ui.workflow_events import (
+    BatchOptionsChanged,
+    TaskStatusChanged,
+    TaskLogUpdated,
+)
 
 
 class TasksPaneWidget(Widget):
     DEFAULT_CSS = package_css(__package__, "_pane_header.tcss", "tasks_pane.tcss")
 
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    def __init__(self, context, *args, **kwargs):
+        self._context = context
         self._rows_by_key: dict = {}
         super().__init__(*args, **kwargs)
 
@@ -35,9 +40,24 @@ class TasksPaneWidget(Widget):
         if row := self._rows_by_key.get(event.task_key):
             row.log_line = event.line
 
+    @on(BatchOptionsChanged)
+    def on_batch_options_changed(self, event):
+        # Track a change another client set. An equal value leaves the
+        # reactive unchanged, so this cannot loop through the submit path.
+        for name, value in event.options.items():
+            for checkbox in self.query(f"#{name.replace('_', '-')}").results(Checkbox):
+                checkbox.value = value
+
     def compose(self):
-        yield TaskBar(workflow=self.workflow, classes="task-bar round pane-header")
-        yield TaskList(workflow=self.workflow, classes="round")
+        context = self._context
+        yield TaskBar(
+            client=context.client,
+            options=context.client.batch_options(),
+            classes="task-bar round pane-header",
+        )
+        yield TaskList(
+            roster=context.roster, statuses=context.task_statuses, classes="round"
+        )
 
 
 class TasksPanePlugin(UIPlugin):
@@ -46,4 +66,4 @@ class TasksPanePlugin(UIPlugin):
     priority = 5
 
     def create_widget(self, context: RenderContext):
-        return TasksPaneWidget(workflow=context.workflow)
+        return TasksPaneWidget(context)

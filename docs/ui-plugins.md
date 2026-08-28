@@ -15,14 +15,25 @@ A plugin declares a slot and a label, and builds one widget:
 --8<-- "examples/winslow-sample-tui-plugin/winslow_sample_tui_plugin/dashboard.py"
 ```
 
-`create_widget` returns any Textual widget. The `context` argument carries the state of the screen:
+`create_widget` returns any Textual widget. The `context` argument carries the state of the screen: the
+session port client and value shapes (see [the payload rule](#the-payload-rule)):
 
 | The screen | The context | The useful attributes |
 | --- | --- | --- |
-| Dashboard | `DashboardRenderContext` | `orchestrator`, `orchestrator_config` |
-| Workflow | `WorkflowRenderContext` | `workflow`, `workflow_config`, `orchestrator_config` |
-| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs` |
-| Confirmation modal | `WorkflowConfirmationRenderContext` | `workflow_kls`, `form_values` |
+| Dashboard | `DashboardRenderContext` | `client` (the `AppClient`), `descriptors` |
+| Workflow | `WorkflowRenderContext` | `client` (the `SessionClient`), `session`, `snapshot`, `roster`, `task_statuses` |
+| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs`, `client`, `task_key` |
+| Confirmation modal | `WorkflowConfirmationRenderContext` | `workflow` (the workflow name), `form_values` |
+
+The workflow context attributes:
+
+- `client`: the `SessionClient` of the session. It serves every read (`roster()`, `history()`,
+  `caches()`, `task_detail(key)`, ...) and accepts every action through `submit(action)`.
+- `session`: the `SessionRow` value: display name, instance name, status, the task status summary.
+- `snapshot`: the `SessionSnapshot` at compose time: task statuses by identity key, batch rows, the
+  session log backlog, the cache names.
+- `roster`: one stub `TaskInfo` per task, in launch-filter order.
+- `task_statuses`: the `{key: TaskStatus}` mapping that the screen maintains.
 
 A slot with one plugin shows the widget directly. A slot with two or more plugins becomes a tab bar, and
 `label` names each tab. When one slot of a row becomes tabbed, the other slots of that row become tabbed
@@ -30,18 +41,19 @@ too, so the row keeps one visual line.
 
 ## The payload rule
 
-A Textual message and a session bus event carry values: the identity key of the task
-(`Task.identity_key`, a stable string) and `TaskInfo` captures. The task info modal set the precedent
-with `TaskDetailRenderContext.info` (see the context table above). A pane rendered from these payloads
-works the same on a remote client, because every payload can cross a process boundary.
+A render context, a Textual message and a session bus event carry values: the identity key of the task
+(`Task.identity_key`, a stable string), `TaskInfo` captures, and the model dataclasses of
+`winslow.model`. A pane reads through the context `client` and never holds a live core object. A pane
+built this way works the same on a remote client, because every payload can cross a process boundary.
 
 The task events of the workflow screen:
 
 | The event | The payload |
 | --- | --- |
 | `TaskStatusChanged` | `key`, `status` |
-| `ExecutionStatusChanged` | `batch`, `task_key`, `status` |
-| `TaskLogUpdated` | `batch`, `task_key`, `line` |
+| `ExecutionStatusChanged` | `batch_uuid`, `task_key`, `status` |
+| `TaskLogUpdated` | `batch_uuid`, `task_key`, `line` |
+| `BatchCreated`, `BatchCompleted` | `info` (a `BatchInfo` value) |
 
 A pane keys its rows by the identity key, and it reads the current statuses from
 `WorkflowRenderContext.task_statuses`, the `{key: TaskStatus}` mapping that the screen maintains:
@@ -61,8 +73,13 @@ class StatusBoard(Widget):
         self.rows[event.key].status = event.status
 ```
 
-An in-process pane can still read the live workflow through `WorkflowRenderContext.workflow`, for
-example to resolve a key back to a task with `workflow.task_index.resolve(key)`.
+A pane that needs more than its messages carry reads through the client, for example
+`context.client.task_detail(key)` for the full capture of one task, or
+`context.client.submit(RunTasks(keys=(key,)))` for an action. Every client method takes values and
+returns values, so the same pane renders a local session and a remote one.
+
+Two panes are local by nature and stay outside the port: the system resources pane describes the
+machine the widget runs on, and the dashboard log pane shows the log of the process the TUI runs in.
 
 ## The slots
 

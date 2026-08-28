@@ -429,8 +429,8 @@ class SessionPersistenceAdapter:
         )
 
     def attach(self, workflow):
-        """Wire each handler onto its session event (see TuiStoreAdapter for
-        the same pattern on the UI side)."""
+        """Wire each handler onto its session event (see WorkflowScreen.connect
+        for the same pattern on the UI side)."""
         for event, handler in self._subscriptions():
             workflow.subscribe(event, handler)
 

@@ -20,5 +20,5 @@ class DashboardWorkflowsPlugin(UIPlugin):
     label = "Workflows"
 
     def create_widget(self, context: RenderContext):
-        names = [kls.get_name() for kls in context.workflow_context]
+        names = [d.workflow for d in context.descriptors.workflows]
         return WorkflowSelectorWidget(names)

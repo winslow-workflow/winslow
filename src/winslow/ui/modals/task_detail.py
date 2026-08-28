@@ -11,7 +11,8 @@ class TaskDetail(BaseModal):
         info,
         registry,
         logs=None,
-        log_key=None,
+        client=None,
+        task_key=None,
         transient_snapshots=None,
         cache_snapshots=None,
         *args,
@@ -20,7 +21,8 @@ class TaskDetail(BaseModal):
         self.w_info = info
         self.registry = registry
         self._logs = logs
-        self._log_key = log_key
+        self._client = client
+        self._task_key = task_key
         self._transient_snapshots = transient_snapshots
         self._cache_snapshots = cache_snapshots
         super().__init__(*args, **kwargs)
@@ -33,7 +35,8 @@ class TaskDetail(BaseModal):
         context = TaskDetailRenderContext(
             info=self.w_info,
             logs=self._logs,
-            log_key=self._log_key,
+            client=self._client,
+            task_key=self._task_key,
             transient_snapshots=self._transient_snapshots,
             cache_snapshots=self._cache_snapshots,
         )

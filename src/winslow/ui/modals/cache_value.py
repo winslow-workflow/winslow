@@ -10,8 +10,8 @@ from textual import on
 from textual.containers import VerticalScroll
 from textual.widgets import Static, Tree
 
-from winslow.cache import MISSING, DisplayStyle, EntryState, declared_entries
 from winslow.logger import LOGGER
+from winslow.model import EntryState, SnapshotEncoding
 from winslow.ui.modals.common import BaseModal
 from winslow.ui.widgets.common.logs import HIGHLIGHTER
 from winslow.util import safe_repr
@@ -64,33 +64,36 @@ class CacheValue(BaseModal):
         super().__init__(*args, **kwargs)
 
     @classmethod
-    def for_entry(cls, cache, entry_name, logger=None):
-        """The live view: peek the entry and render per its display_style. An
-        ERRORED entry shows its error context above the value, or alone when
-        no record exists (see CacheEntryError)."""
+    def for_entry(cls, client, cache_name, entry_name, logger=None):
+        """The live view: read the CacheValueView through the port. The value
+        arrives rendered per its display_style, so the modal shows the same
+        text a wire client receives. An ERRORED entry shows its error context
+        above the value, or alone when no record exists (see CacheEntryError)."""
 
         def produce():
-            record = cache.peek(entry_name)
-            info = next(i for i in cache.inspect() if i.entry_name == entry_name)
-            note = None
-            if info.error is not None:
-                tier = f" on {info.error.tier}" if info.error.tier else ""
-                note = f"ERRORED - the {info.error.origin} failed{tier}: {info.error.message}"
-            if record is MISSING:
+            view = client.cache_value(cache_name, entry_name)
+            notes = []
+            if view.error is not None:
+                tier = f" on {view.error.tier}" if view.error.tier else ""
+                notes.append(
+                    f"ERRORED - the {view.error.origin} failed{tier}: "
+                    f"{view.error.message}"
+                )
+            if view.summary is not None:
+                notes.append(f"bounded rendering - {view.summary}")
+            note = "\n".join(notes) or None
+            if view.rendered is None:
                 # No value to show: the stored traceback is the whole view.
-                if info.error is not None and info.error.traceback:
-                    return _View.TRACEBACK, info.error.traceback, note
+                if view.error is not None and view.error.traceback:
+                    return _View.TRACEBACK, view.error.traceback, note
+                if view.state == EntryState.COMPUTING:
+                    return _View.NOTE, "<computing - the loader runs right now>", None
                 return _View.NOTE, note or "<cold - no value>", None
-            if record is EntryState.COMPUTING:
-                return _View.NOTE, "<computing - the loader runs right now>", None
-            style = declared_entries(type(cache))[entry_name].display_style
-            if callable(style):
-                return _View.TEXT, str(style(record.value)), note
-            if style is DisplayStyle.TREE:
-                return _View.TREE, (entry_name, record.value), note
-            return _View.PRETTY, record.value, note
+            if view.encoding == SnapshotEncoding.JSON:
+                return _View.TREE, (entry_name, json.loads(view.rendered)), note
+            return _View.TEXT, view.rendered, note
 
-        return cls(f"{cache.get_name()}.{entry_name}", produce, logger)
+        return cls(f"{cache_name}.{entry_name}", produce, logger)
 
     @classmethod
     def for_snapshot(cls, snapshot, logger=None):

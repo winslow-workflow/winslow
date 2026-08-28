@@ -7,12 +7,8 @@ from winslow.ui.builtin_plugins.workflow.caches import CachesPanePlugin
 from winslow.ui.builtin_plugins.workflow.cache_overview import CacheOverviewPlugin
 
 
-def _context(workflow_caches, global_caches):
-    workflow = SimpleNamespace(
-        workflow_cache=SimpleNamespace(caches=lambda: workflow_caches),
-        global_cache=SimpleNamespace(caches=lambda: global_caches),
-    )
-    return SimpleNamespace(workflow=workflow)
+def _context(cache_names):
+    return SimpleNamespace(snapshot=SimpleNamespace(cache_names=cache_names))
 
 
 def test_should_render_defaults_to_true():
@@ -20,14 +16,14 @@ def test_should_render_defaults_to_true():
 
 
 def test_cache_plugins_hide_without_registered_caches():
-    context = _context((), ())
+    context = _context(())
     assert CachesPanePlugin.should_render(context) is False
     assert CacheOverviewPlugin.should_render(context) is False
 
 
-def test_cache_plugins_render_with_a_cache_in_either_scope():
-    assert CachesPanePlugin.should_render(_context((), ("global",))) is True
-    assert CacheOverviewPlugin.should_render(_context(("session",), ())) is True
+def test_cache_plugins_render_with_a_cache_name_in_the_snapshot():
+    assert CachesPanePlugin.should_render(_context(("global",))) is True
+    assert CacheOverviewPlugin.should_render(_context(("session",))) is True
 
 
 def test_companion_resolves_masters_to_their_detail(make_registry):
@@ -63,7 +59,7 @@ def test_any_tabbed_respects_should_render(make_registry):
     registry = make_registry()
     registry.discover(builtin)
 
-    with_caches = _context(("session",), ())
-    without_caches = _context((), ())
+    with_caches = _context(("session",))
+    without_caches = _context(())
     assert registry.any_tabbed(with_caches, Slots.TASK_OVERVIEW) is True
     assert registry.any_tabbed(without_caches, Slots.TASK_OVERVIEW) is False

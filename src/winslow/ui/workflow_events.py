@@ -1,3 +1,7 @@
+"""The Textual messages of the workflow screen. Every payload is a value
+from the session port: an identity key, a status, a model dataclass (see
+docs/ui-plugins.md). A pane never receives a live core object."""
+
 from textual.message import Message
 
 
@@ -13,26 +17,30 @@ class TaskStatusChanged(Message):
 
 
 class BatchCreated(Message):
+    """Carries the BatchInfo value of the created batch."""
+
     BUBBLE = False
 
-    def __init__(self, batch):
-        self.batch = batch
+    def __init__(self, info):
+        self.info = info
         super().__init__()
 
 
 class BatchCompleted(Message):
+    """Carries the BatchInfo value of the completed batch."""
+
     BUBBLE = False
 
-    def __init__(self, batch):
-        self.batch = batch
+    def __init__(self, info):
+        self.info = info
         super().__init__()
 
 
 class ExecutionStatusChanged(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task_key, status):
-        self.batch = batch
+    def __init__(self, batch_uuid, task_key, status):
+        self.batch_uuid = batch_uuid
         self.task_key = task_key
         self.status = status
         super().__init__()
@@ -41,8 +49,8 @@ class ExecutionStatusChanged(Message):
 class TaskLogUpdated(Message):
     BUBBLE = False
 
-    def __init__(self, batch, task_key, line):
-        self.batch = batch
+    def __init__(self, batch_uuid, task_key, line):
+        self.batch_uuid = batch_uuid
         self.task_key = task_key
         self.line = line
         super().__init__()
@@ -64,15 +72,27 @@ class SessionEnded(Message):
 
 
 class CacheUpdated(Message):
-    """Any cache event. The pane repaints from a fresh peek of the cache
-    itself, so the message carries nothing."""
+    """Any cache event. The pane repaints from a fresh caches read, so the
+    message carries nothing."""
 
     BUBBLE = False
 
 
 class CacheSelected(Message):
+    """Carries the CacheCard value of the selected cache."""
+
     BUBBLE = False
 
-    def __init__(self, cache):
-        self.cache = cache
+    def __init__(self, card):
+        self.card = card
+        super().__init__()
+
+
+class BatchOptionsChanged(Message):
+    """The live batch option values after a SetBatchOptions lands."""
+
+    BUBBLE = False
+
+    def __init__(self, options):
+        self.options = options
         super().__init__()

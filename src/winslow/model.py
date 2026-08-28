@@ -524,10 +524,16 @@ class HistoryRow:
     task_count: int
     created_at: float
     completed_at: float | None
+    # The batch option snapshot, without the uuid (see BatchInfo.options).
+    options: dict | None
     tasks: dict  # {identity key: TaskOutcome}
 
     @classmethod
     def from_batch(cls, batch, store):
+        context = batch.execution_context
+        options = asdict(context) if context is not None else None
+        if options is not None:
+            options.pop("batch_uuid")
         return cls(
             uuid=batch.uuid,
             action=batch.action.name,
@@ -537,6 +543,7 @@ class HistoryRow:
             completed_at=(
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
+            options=options,
             tasks=(
                 {
                     key: TaskOutcome.from_record(status, store.get_record(key))
@@ -618,6 +625,9 @@ class SessionSnapshot:
     tasks: dict  # {identity key: TaskStatus name}
     session_log_backlog: tuple
     batches: tuple  # tuple[BatchRow, ...]
+    # The cache names of the session, so a client can decide whether to show
+    # a caches pane before the first caches read.
+    cache_names: tuple = ()
 
     @classmethod
     def from_session(cls, session):
@@ -634,6 +644,11 @@ class SessionSnapshot:
             ),
             batches=tuple(
                 BatchRow.from_batch(batch) for batch in workflow.runner.batches
+            ),
+            cache_names=(
+                tuple(cache.get_name() for cache in workflow.caches())
+                if not session.has_ended
+                else ()
             ),
         )
 
@@ -721,7 +736,9 @@ class CacheEntryCard:
 @dataclass(frozen=True)
 class CacheCard:
     """One cache: identity, storage, the declared entries with their
-    display style, and the current value preview of each written entry."""
+    display style, and the current value preview of each written entry.
+    A cache whose storage cannot be observed answers a card with the error
+    message set and no entry info (see CachesPayload.from_workflow)."""
 
     name: str
     scope: str
@@ -730,25 +747,29 @@ class CacheCard:
     entries: tuple  # tuple[CacheEntryCard, ...]
     info: tuple  # tuple[CacheEntryInfo, ...]
     values: dict
+    error: str | None = None
+
+    @classmethod
+    def _entry_cards(cls, cache):
+        from winslow.cache import declared_entries
+
+        return tuple(
+            CacheEntryCard(
+                name=name,
+                display_style=_display_style_label(entry.display_style),
+            )
+            for name, entry in declared_entries(type(cache)).items()
+        )
 
     @classmethod
     def from_cache(cls, cache):
-        from winslow.cache import declared_entries
-
-        entries = declared_entries(type(cache))
         infos = tuple(cache.inspect())
         return cls(
             name=cache.get_name(),
             scope=cache.scope,
             docstring=type(cache).__doc__,
             storage=cache.describe_storage(),
-            entries=tuple(
-                CacheEntryCard(
-                    name=name,
-                    display_style=_display_style_label(entry.display_style),
-                )
-                for name, entry in entries.items()
-            ),
+            entries=cls._entry_cards(cache),
             info=infos,
             values={
                 info.entry_name: _entry_value_preview(cache, info.entry_name)
@@ -757,12 +778,44 @@ class CacheCard:
             },
         )
 
+    @classmethod
+    def unobservable(cls, cache, error):
+        """The card of a cache whose inspect or peek raised: the declarations
+        stand, the states and the values stay empty."""
+        return cls(
+            name=cache.get_name(),
+            scope=cache.scope,
+            docstring=type(cache).__doc__,
+            storage=cache.describe_storage(),
+            entries=cls._entry_cards(cache),
+            info=(),
+            values={},
+            error=error,
+        )
+
 
 @dataclass(frozen=True)
 class CachesPayload:
     """Every cache of one session, in name order."""
 
     caches: tuple
+
+    @classmethod
+    def from_workflow(cls, workflow):
+        """One card per cache. A cache whose storage raises answers an
+        unobservable card, so one broken storage cannot hide the others."""
+
+        def card(cache):
+            try:
+                return CacheCard.from_cache(cache)
+            except Exception as exc:
+                workflow.logger.debug(
+                    f"The caches read cannot observe '{cache.get_name()}'.",
+                    exc_info=True,
+                )
+                return CacheCard.unobservable(cache, str(exc))
+
+        return cls(caches=tuple(card(cache) for cache in workflow.caches()))
 
 
 @dataclass(frozen=True)
@@ -895,6 +948,10 @@ class OptionRow:
     depends_on: tuple
     action: str | None
     const: object
+    # The initial value of a multiselect option, one string per selected
+    # choice. The joined `initial` string cannot split a choice that holds a
+    # comma, so a form preselects from this field.
+    initial_selection: tuple | None = None
 
     @classmethod
     def from_option(cls, name, option, current=None):
@@ -904,6 +961,11 @@ class OptionRow:
             help=option.help_text,
             default=option.format_value(option.default),
             initial=option.format_value(initial),
+            initial_selection=(
+                tuple(str(value) for value in initial)
+                if option.multiselect and initial is not None
+                else None
+            ),
             required=option.required,
             choices=(
                 tuple(str(choice) for choice in option.choices)
@@ -921,10 +983,13 @@ class OptionRow:
 
 @dataclass(frozen=True)
 class WorkflowDescriptor:
-    """One collected workflow and the options its start form shows."""
+    """One collected workflow and the options its start form shows.
+    auto_init marks a workflow the dashboard starts without a form (see
+    Workflow.auto_init)."""
 
     workflow: str
     options: tuple  # tuple[OptionRow, ...]
+    auto_init: bool = False
 
 
 @dataclass(frozen=True)
@@ -953,6 +1018,7 @@ class Descriptors:
             workflows.append(
                 WorkflowDescriptor(
                     workflow=name,
+                    auto_init=workflow_kls.auto_init,
                     options=tuple(
                         OptionRow.from_option(
                             option_name,

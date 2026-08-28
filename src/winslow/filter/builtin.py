@@ -25,6 +25,32 @@ class GroupFilter(TaskFilter):
 BUILTIN_FILTERS = (NameFilter, GroupFilter)
 
 
+class _BuiltinResolver:
+    """A registry stand-in that resolves only the builtin filter commands.
+    FilterParser reads `default` and `resolve` (see FilterRegistry)."""
+
+    default = NameFilter
+
+    @classmethod
+    def resolve(cls, cmd):
+        for filter_cls in BUILTIN_FILTERS:
+            if cmd in (filter_cls.short_command, filter_cls.long_command):
+                return filter_cls
+        raise ValueError(
+            f"'!{cmd}' is not a builtin filter - this search supports only "
+            f"name and group."
+        )
+
+
+def parse_builtin(query_string):
+    """Parse a query with the builtin filters alone. A client-side search
+    over stored rows uses this: it needs no live session and no project
+    filter code. Raises ValueError with the parse error."""
+    from .parser import FilterParser
+
+    return FilterParser(_BuiltinResolver).parse(query_string)
+
+
 def enforce_builtin_only(query):
     """Raise ValueError when the parsed query uses a filter outside
     BUILTIN_FILTERS. The serve edge and the session port apply the same rule

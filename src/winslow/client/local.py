@@ -11,7 +11,7 @@ from winslow.exceptions import MisconfigurationError
 from winslow.filter.builtin import enforce_builtin_only
 from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
 from winslow.model import (
-    CacheCard,
+    CachesPayload,
     CacheUpdatedEvent,
     CacheValueView,
     Descriptors,
@@ -189,9 +189,7 @@ class LocalSessionClient(SessionClient):
 
     def roster(self):
         workflow = self._workflow
-        return tuple(
-            workflow.task_info(task) for task in workflow.get_filtered_tasks()
-        )
+        return tuple(workflow.task_info(task) for task in workflow.roster_tasks())
 
     def task_detail(self, key):
         task = self._workflow.task_index.resolve(key)
@@ -226,9 +224,7 @@ class LocalSessionClient(SessionClient):
             ) from None
 
     def caches(self):
-        return tuple(
-            CacheCard.from_cache(cache) for cache in self._workflow.caches()
-        )
+        return CachesPayload.from_workflow(self._workflow).caches
 
     def cache_value(self, cache_name, entry_name):
         cache = self._workflow.get_cache(cache_name)

@@ -63,9 +63,11 @@ def session_client(e2e_repo, name="my-workflow"):
     return workflow, session, LocalSessionClient(session)
 
 
-def local_orchestrator(e2e_repo):
+def local_orchestrator(e2e_repo, *workflow_argv):
+    """workflow_argv passes workflow options the way the CLI does, so the
+    parsed base of collect_workflow_args carries them."""
     config, unknown = Orchestrator.get_base_parser().parse_known_args(
-        ["serve"], namespace=OrchestratorConfig()
+        ["serve", *workflow_argv], namespace=OrchestratorConfig()
     )
     orchestrator = Orchestrator(config, directory=e2e_repo, unknown_args=unknown)
     orchestrator.workflow_registry.collect_classes(e2e_repo)
@@ -558,3 +560,130 @@ def test_end_session_publishes_session_ended_and_refuses_later_actions(e2e_repo)
     refused = client.submit(RunTasks(keys=(alpha.identity_key,)))
     assert refused.accepted is False
     assert "has ended" in refused.reason
+
+
+# --- the slice-three adapter guarantees ------------------------------------------
+
+
+def test_roster_falls_back_past_a_bad_launch_filter(e2e_repo):
+    workflow = build_workflow(
+        e2e_repo, "my-workflow", Mode.TUI, "--filter", "((broken"
+    )
+    session = Session(workflow)
+    workflow.check_pipeline_eligibility()
+    client = LocalSessionClient(session)
+    with pytest.raises(MisconfigurationError):
+        workflow.get_filtered_tasks()
+    roster = client.roster()
+    assert [info.key for info in roster] == [
+        task.identity_key for task in workflow.tasks
+    ]
+
+
+def test_caches_isolate_an_unobservable_storage(e2e_repo):
+    workflow, session, client = session_client(e2e_repo, "my-cache")
+    broken = workflow.get_cache("weather")
+
+    def raising_inspect():
+        raise RuntimeError("disk gone")
+
+    broken.inspect = raising_inspect
+    cards = client.caches()
+    (weather,) = [card for card in cards if card.name == "weather"]
+    assert weather.error == "disk gone"
+    assert weather.info == ()
+    assert weather.values == {}
+    # The declarations still stand, so a pane keeps its rows.
+    assert {entry.name for entry in weather.entries} == {
+        "cities",
+        "city_index",
+        "forecast",
+    }
+    # The other cards keep their observations.
+    assert all(card.error is None for card in cards if card.name != "weather")
+
+
+def test_snapshot_names_the_caches_until_the_session_ends(e2e_repo):
+    workflow, session, client = session_client(e2e_repo, "my-cache")
+    assert "weather" in client.snapshot().cache_names
+    client.submit(EndSession())
+    assert client.snapshot().cache_names == ()
+
+
+def test_history_rows_carry_the_batch_options(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    client.submit(SetBatchOptions(force_run=True))
+    alpha = by_name(workflow)["Alpha"]
+    run_to_completion(workflow, client, alpha)
+    (row,) = client.history()
+    assert row.options["force_run"] is True
+    assert "batch_uuid" not in row.options
+
+
+def test_descriptors_carry_auto_init_and_the_multiselect_selection(e2e_repo):
+    from winslow.descriptors import ConfigOption
+    from winslow.model import OptionRow
+
+    app = LocalAppClient(SessionRegistry(), orchestrator=local_orchestrator(e2e_repo))
+    descriptor = next(
+        d for d in app.descriptors().workflows if d.workflow == "my-workflow"
+    )
+    assert descriptor.auto_init is False
+
+    option = ConfigOption(type=int, multiselect=True, choices=[1, 2, 3])
+    row = OptionRow.from_option("picks", option, current=[1, 3])
+    assert row.initial == "1, 3"
+    assert row.initial_selection == ("1", "3")
+
+
+def test_validate_values_parses_strings_with_the_option_types():
+    from types import SimpleNamespace
+
+    from winslow.descriptors import ConfigOption
+    from winslow.session import validate_values
+
+    workflow_kls = SimpleNamespace(
+        config_meta={
+            "count": ConfigOption(type=int),
+            "name": ConfigOption(),
+            "picks": ConfigOption(type=int, multiselect=True, choices=[1, 2, 3]),
+        }
+    )
+    orchestrator = SimpleNamespace(config_meta={"port": ConfigOption(type=int)})
+
+    values, overrides = validate_values(
+        "wf",
+        workflow_kls,
+        orchestrator,
+        {"count": "7", "name": "x", "picks": ["1", "2"]},
+        {"port": "9"},
+    )
+    assert values == {"count": 7, "name": "x", "picks": [1, 2]}
+    assert overrides == {"port": 9}
+
+    # A value that already has a type passes through unconverted.
+    values, _ = validate_values("wf", workflow_kls, orchestrator, {"count": 7}, {})
+    assert values == {"count": 7}
+
+    with pytest.raises(ValueError, match="not a valid count"):
+        validate_values("wf", workflow_kls, orchestrator, {"count": "seven"}, {})
+
+
+def test_create_session_fills_unsent_options_from_the_cli_base(
+    e2e_repo, state_store
+):
+    registry = SessionRegistry()
+    app = LocalAppClient(
+        registry,
+        orchestrator=local_orchestrator(e2e_repo, "--client", "acme"),
+        state_store=state_store,
+    )
+    # client is required; the parsed CLI base satisfies it without a value.
+    row = app.create_session("my-identified")
+    session = registry.get(row.session_id)
+    assert session.workflow.workflow_config.client == "acme"
+
+    # A sent value still wins over the base.
+    row = app.create_session("my-identified", values={"client": "beta"})
+    session = registry.get(row.session_id)
+    assert session.workflow.workflow_config.client == "beta"

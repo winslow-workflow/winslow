@@ -1,27 +1,30 @@
 import asyncio
-import logging
+import inspect
 import traceback
+from functools import partial
 
 from textual import on
 from textual.app import App, ScreenStackError
 from textual.widgets import Footer, Header, Button
 
 from winslow.ui import screens
-from winslow.ui.store_adapter import (
-    SessionLifecycleAdapter,
-    SessionLifecycleEvent,
-    TuiCacheAdapter,
-    TuiStoreAdapter,
-)
+from winslow.ui.store_adapter import SessionLifecycleEvent
 from winslow.actions import EndSession
-from winslow.session import Session, SessionRegistry
+from winslow.client import LocalAppClient
+from winslow.events import BatchCompletedEvent, SessionEndedEvent
+from winslow.session import SessionRegistry
 from winslow.state import create_state_store
-from winslow.util import generate_id
-from winslow.task.context import LogContext, scoped_log_context
-from winslow.logger import run_logger_name
+
+
+def session_screen_name(session_id):
+    return f"session-{session_id}"
 
 
 class Winslow(App):
+    """The local TUI app: the composition root. It owns the session registry
+    and the state store, builds the LocalAppClient over them, and hands every
+    screen the port surface alone (see winslow.client)."""
+
     BINDINGS = [
         ("ctrl+d", "switch_mode('dashboard')", "Dashboard"),
     ]
@@ -39,19 +42,20 @@ class Winslow(App):
         "styles/modals.tcss",
     ]
 
-    def __init__(self, orchestrator, orchestrator_config, workflow_context):
+    def __init__(self, orchestrator, orchestrator_config):
         # A private name, to prevent a clash if Textual adds a config object.
         self._winslow_config = orchestrator_config
-        self.workflow_context = workflow_context
-        self.orchestrator = orchestrator  # necessary to generate the workflows
+        self.orchestrator = orchestrator
 
         self.sessions = SessionRegistry()
-        # The cache adapter per session id: the end of the session must detach
-        # it from the global container, which outlives every session.
-        self._cache_adapters = {}
         # One durable store for every session of the app: manifests, task
         # snapshots and batch records live here (see winslow.state).
         self.state_store = create_state_store(orchestrator_config)
+        # The session port of this process. Every screen reads, subscribes
+        # and acts through it (see winslow.client).
+        self.client = LocalAppClient(
+            self.sessions, orchestrator=orchestrator, state_store=self.state_store
+        )
 
         super().__init__()
 
@@ -71,195 +75,117 @@ class Winslow(App):
         yield Footer()
 
     @property
-    def workflow_name_map(self):
-        # key: workflow name, value: workflow kls
-        return {kls.get_name(): kls for kls in self.workflow_context.keys()}
-
-    @property
     def dashboard(self):
         # The dashboard is a MODE. Its base screen is not in the registry of the
         # named screens that get_screen reads, so this property reads the stack
         # of the mode directly.
         return self._screen_stacks["dashboard"][0]
 
-    async def _create_workflow(self, workflow_kls, form_values):
+    async def _create_workflow(self, workflow_name, form_values):
         await self._start_session(
-            workflow_kls,
-            orchestrator_overrides=form_values.orchestrator,
-            workflow_values=form_values.workflow,
+            workflow_name,
+            partial(
+                self.client.create_session,
+                workflow_name,
+                form_values.orchestrator,
+                form_values.workflow,
+            ),
         )
 
     async def _restore_session(self, manifest):
-        """Rebuild one session from its manifest and seed it from its snapshots.
-        The dashboard offers this for every open manifest at app start."""
-        workflow_kls = self.workflow_name_map.get(manifest.workflow_class)
-        if workflow_kls is None:
-            await self.dashboard.add_failed_session(
-                manifest.workflow_class,
-                f"The manifest of {manifest.session_id} names the workflow "
-                f"{manifest.workflow_class!r}, which this repository does not "
-                f"declare. Restore needs the workflow class.",
+        """Rebuild one session from its manifest and seed it from its
+        snapshots. The dashboard offers this for every open manifest."""
+        await self._start_session(
+            manifest.workflow_class,
+            partial(self.client.restore_session, manifest.session_id),
+        )
+
+    async def _start_session(self, workflow_name, create):
+        """One session through the port: `create` is the AppClient call that
+        answers a SessionRow. A failure lands in the history as a failed row
+        with the traceback."""
+        row_widget = await self.dashboard.add_pending_session(workflow_name)
+        self.logger.info(f"Initializing workflow: {workflow_name}")
+        try:
+            session_row = await asyncio.to_thread(create)
+        except Exception as e:
+            # The session log carries the traceback through the create flow;
+            # the failed row shows it for the ErrorDetail modal.
+            tb = traceback.format_exc()
+            self.logger.error(
+                f"Failed to initialize workflow '{workflow_name}': {e}"
             )
+            await row_widget.remove()
+            await self.dashboard.add_failed_session(workflow_name, tb)
             self.notify(
-                f"Unknown workflow '{manifest.workflow_class}'",
-                title="Restore failed",
+                f"Could not start '{workflow_name}': {e}",
+                title="Workflow init failed",
                 severity="error",
             )
             return
-        await self._start_session(
-            workflow_kls,
-            orchestrator_overrides=manifest.orchestrator_overrides or {},
-            workflow_values=manifest.workflow_values or {},
-            session_id=manifest.session_id,
-            seed=True,
-        )
 
-    async def _start_session(
-        self,
-        workflow_kls,
-        orchestrator_overrides,
-        workflow_values,
-        session_id=None,
-        seed=False,
-    ):
-        workflow_name = workflow_kls.get_name()
-        self.logger.debug(
-            f"Workflow start message: {workflow_name} - params: {workflow_values}"
-        )
+        self.logger.info(f"Workflow '{workflow_name}' ready.")
+        row_widget.complete(session_row)
+        self._connect_session(session_row)
 
-        # Generate the session id first, so the same id names the workflow
-        # logger, identifies the Session and stamps each log line. session_id
-        # needs only the workflow name, which is available before the workflow
-        # exists. A restore passes the id of the manifest instead.
-        session_id = session_id or generate_id(workflow_name)
+    def _connect_session(self, session_row):
+        """Install the workflow screen over one SessionClient and wire the
+        app-level lifecycle lanes of the session."""
+        session_id = session_row.session_id
+        client = self.client.session(session_id)
+        screen = screens.WorkflowScreen(client, session_row)
+        self.install_screen(screen, name=session_screen_name(session_id))
+        screen.connect()
 
-        row = await self.dashboard.add_pending_session(workflow_name)
+        # The drain rule needs the UI thread: the finalization clears the
+        # store, so it must serialize with the widgets that read it. The end
+        # event moves the dashboard row to the history. The bus close at
+        # session end disconnects both lanes.
+        def on_batch_completed(event):
+            self.post_message(
+                SessionLifecycleEvent(partial(self._finalize_session, session_id))
+            )
 
-        self.logger.info(f"Initializing workflow: {workflow_name}")
-
-        # The logger is under winslow.runs.*, so the init logs and the workflow
-        # logs reach the run sink. session_id makes it unique per session, so the
-        # handler of the workflow log pane receives only its own records.
-        # propagate is True, because winslow.runs is the stop boundary.
-        workflow_logger = logging.getLogger(run_logger_name(session_id))
-        workflow_logger.propagate = True
-
-        # The log context at run level: it stamps the logs of the init, the
-        # task generation and the eligibility, which run outside a task_scope.
-        # The workflow instance is not built yet, so the name stands in for it.
-        init_log_ctx = LogContext(
-            session_id=session_id,
-            workflow_name=workflow_name,
-            workflow_instance=workflow_name,
-            task_name=None,
-            task_instance=None,
-            batch_uuid=None,
-        )
-        with scoped_log_context(init_log_ctx):
-            try:
-                workflow = await asyncio.to_thread(
-                    self.orchestrator.initialize_workflow,
-                    workflow_kls=workflow_kls,
-                    orchestrator_overrides=orchestrator_overrides,
-                    workflow_values=workflow_values,
-                    workflow_base=self.workflow_context.get(workflow_kls),
-                    logger=workflow_logger,
+        def on_session_ended(event):
+            self.post_message(
+                SessionLifecycleEvent(
+                    partial(self.dashboard.move_session_to_history, session_id)
                 )
+            )
 
-                self.logger.info(f"Workflow '{workflow_name}' initialized.")
-                session = Session(workflow, session_id=session_id)
-                self.sessions.register(session)
+        client.subscribe(BatchCompletedEvent, on_batch_completed)
+        client.subscribe(SessionEndedEvent, on_session_ended)
 
-                self.logger.info(f"Initializing tasks: {workflow_name}")
-
-                await asyncio.to_thread(
-                    workflow.initialize_tasks,
-                    logger=workflow.logger,
-                )
-
-                await asyncio.to_thread(
-                    workflow.check_pipeline_eligibility,
-                    logger=workflow.logger,
-                )
-
-                # Persistence starts only once the pipeline is runnable: a kill
-                # during the initialization above leaves no restore candidate.
-                workflow.init_state(
-                    self.state_store,
-                    origin="tui",
-                    orchestrator_overrides=orchestrator_overrides,
-                    workflow_values=workflow_values,
-                )
-
-                if seed:
-                    # After the eligibility pass (see Workflow.seed_from_state).
-                    await asyncio.to_thread(workflow.seed_from_state)
-
-                self.logger.info(f"Workflow '{workflow_name}' ready.")
-            except Exception as e:
-                tb = traceback.format_exc()
-                # The full traceback goes to the session log, which is the
-                # winslow.runs sink. A short message goes to the app log,
-                # because the winslow logger does not reach that sink.
-                workflow_logger.error(
-                    f"Failed to initialize workflow '{workflow_name}': {e}",
-                    exc_info=True,
-                )
-                self.logger.error(
-                    f"Failed to initialize workflow '{workflow_name}' - see session log"
-                )
-                session = self.sessions.remove(session_id)
-                if session is not None:
-                    session.mark_error(e)
-                await row.remove()
-                await self.dashboard.add_failed_session(workflow_name, tb)
-                self.notify(
-                    f"Could not start '{workflow_name}': {e}",
-                    title="Workflow init failed",
-                    severity="error",
-                )
-                return
-
-        row.complete(session)
-
-        self.install_screen(
-            screens.WorkflowScreen(session),
-            name=session.screen_name,
-        )
-
-        # The bus close at session end disconnects both bus adapters, so no
-        # explicit unsubscribe is necessary (see Workflow.archive_state).
-        TuiStoreAdapter(self, session.screen_name).attach(workflow)
-        SessionLifecycleAdapter(self, session).attach(workflow)
-
-        cache_adapter = TuiCacheAdapter(self, session.screen_name)
-        workflow.add_cache_listener(cache_adapter)
-        self._cache_adapters[session.session_id] = cache_adapter
+    def _finalize_session(self, session_id):
+        session = self.sessions.get(session_id)
+        if session is not None:
+            session.finalize_if_drained()
 
     @on(SessionLifecycleEvent)
-    def handle_session_lifecycle_event(self, event):
-        event.apply()
+    async def handle_session_lifecycle_event(self, event):
+        result = event.apply()
+        if inspect.isawaitable(result):
+            await result
 
     async def on_workflow_confirmation_submitted(self, message):
         await self._create_workflow(
-            workflow_kls=message.workflow_kls, form_values=message.form_values
+            workflow_name=message.workflow, form_values=message.form_values
         )
 
     async def view_session(self, session_id):
-        session = self.sessions.resolve(session_id)
-        self.push_screen(session.screen_name)
+        self.push_screen(session_screen_name(session_id))
 
     async def end_session(self, session_id):
-        session = self.sessions.resolve(session_id)
+        self.logger.debug(f"Ending session: {session_id}")
 
-        self.logger.debug(f"Ending session: {session_id} ({session.workflow})")
-
-        # Detach before the end: a quiet end releases the workflow cache at once.
-        if adapter := self._cache_adapters.pop(session_id, None):
-            session.workflow.remove_cache_listener(adapter)
-
-        # The screen and the session stay installed for the History View button.
-        session.actions.submit(EndSession())
+        # The screen and the session stay installed for the History View
+        # button. The screen detaches its cache lane first, so a quiet end
+        # releases the workflow cache at once.
+        screen = self.get_screen(session_screen_name(session_id))
+        screen.prepare_session_end()
+        ack = screen.client.submit(EndSession())
+        if not ack.accepted:
+            self.notify(ack.reason, severity="warning")
 
     @on(Button.Pressed, ".view-dashboard")
     async def view_dashboard(self):

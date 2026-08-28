@@ -563,6 +563,19 @@ class Workflow(_ConfigBase):
             # error message names the exact part that is wrong.
             raise MisconfigurationError(f"Invalid filter: {e}") from e
 
+    def roster_tasks(self):
+        """The tasks a roster read serves, in launch-filter order. A bad
+        launch filter logs and answers every task, so an interactive client
+        still renders the list (see get_filtered_tasks)."""
+        try:
+            return self.get_filtered_tasks()
+        except MisconfigurationError:
+            self.logger.error(
+                "The launch filter does not parse - the roster lists every task.",
+                exc_info=True,
+            )
+            return self.tasks
+
     def headless_run(self):
         # This looks unused, but the construction of the Session attaches it as
         # _session, and the runner needs it as its logging identity. The

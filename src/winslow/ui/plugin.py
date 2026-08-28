@@ -22,28 +22,29 @@ class RenderContext:
 
 @dataclass
 class WorkflowRenderContext(RenderContext):
-    workflow: object
+    """The workflow screen context: the SessionClient and the value shapes
+    of the session (see docs/ui-plugins.md). Everything here crosses the
+    session port, so a pane built from it works over a wire transport."""
+
+    # The SessionClient of the session (see winslow.client).
+    client: object
+    # The SessionRow value of the session.
+    session: object
+    # The SessionSnapshot at compose time.
+    snapshot: object
+    # The stub TaskInfo per task, in launch-filter order.
+    roster: tuple = ()
     # {identity key: TaskStatus}, maintained by the screen. A DTO-driven pane
     # reads its statuses here (see docs/ui-plugins.md).
     task_statuses: dict = None
 
-    @property
-    def workflow_config(self):
-        return self.workflow.workflow_config
-
-    @property
-    def orchestrator_config(self):
-        return self.workflow.orchestrator_config
-
 
 @dataclass
 class DashboardRenderContext(RenderContext):
-    orchestrator: object
-    workflow_context: dict
+    """The dashboard context: the AppClient and the Descriptors value."""
 
-    @property
-    def orchestrator_config(self):
-        return self.orchestrator.orchestrator_config
+    client: object
+    descriptors: object
 
 
 @dataclass
@@ -52,24 +53,26 @@ class TaskDetailRenderContext(RenderContext):
     # plugin loudly on the missing attribute.
     info: object
     logs: list | None = None
-    # The process-local log routing key (see Task.log_key). The live Logs tab
-    # subscribes with it; a history view carries `logs` instead and leaves it
-    # None. It stays out of TaskInfo, which is wire-portable.
-    log_key: str | None = None
+    # The SessionClient and the identity key of the task. The live Logs tab
+    # subscribes to the task log stream through them; a history view carries
+    # `logs` instead and leaves them None.
+    client: object = None
+    task_key: str | None = None
     # The transient_property snapshots of this task, per phase, in one batch:
-    # {ExecutionPhase: {name: value}}. It is set only for a detail view at row
+    # {phase name: {name: value}}. It is set only for a detail view at row
     # level, which comes from the execution history. It is None for the plain
     # task-list view.
     transient_snapshots: dict | None = None
     # The cache reads of this task, per phase, in one batch:
-    # {ExecutionPhase: tuple[CacheReadSnapshot]}. Same scoping rules as
+    # {phase name: tuple[CacheReadSnapshot]}. Same scoping rules as
     # transient_snapshots.
     cache_snapshots: dict | None = None
 
 
 @dataclass
 class WorkflowConfirmationRenderContext(RenderContext):
-    workflow_kls: object
+    # The workflow name and the FormValues about to start it.
+    workflow: str
     form_values: object
 
 

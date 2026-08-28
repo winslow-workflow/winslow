@@ -12,15 +12,12 @@ from textual.widgets import (
     Tree,
 )
 
-from winslow.cache import SnapshotEncoding
+from textual.message import Message
+
 from winslow.decorators import NOT_MATERIALIZED
+from winslow.model import SnapshotEncoding
 from winslow.runner.execution import ExecutionPhase
 from winslow.ui.modals.cache_value import CacheValue
-from winslow.logger import (
-    InteractiveLogHandler,
-    INTERACTIVE_FORMATTER,
-    get_task_dispatcher,
-)
 from winslow.task.info import _ambiguous_names, _location, _origin_label
 from winslow.util import safe_repr
 from winslow.ui.css import package_css
@@ -31,30 +28,49 @@ _CSS = package_css(__package__, "task_detail.tcss")
 
 
 class TaskLogView(LogView):
-    """The Logs tab. History passes the stored lines; without them the view is
-    live and reads the backlog and the stream by the log key alone."""
+    """The Logs tab. History passes the stored lines; without them the view
+    is live: it subscribes to the task log stream of the port and starts from
+    the served backlog (see SessionClient.subscribe_task_log)."""
 
-    def __init__(self, log_key, logs=None, *args, **kwargs):
-        self._log_key = log_key
+    class Line(Message):
+        def __init__(self, line):
+            self.line = line
+            super().__init__()
+
+    def __init__(self, client=None, task_key=None, logs=None, *args, **kwargs):
+        self._client = client
+        self._task_key = task_key
         self._logs = logs
         super().__init__(*args, **kwargs)
-        self._log_handler = InteractiveLogHandler(self.write)
+
+    @property
+    def _live(self):
+        return self._logs is None and self._client is not None
+
+    def _on_task_log(self, event):
+        # The port publishes on an arbitrary thread; the message hops to the
+        # UI thread.
+        self.post_message(self.Line(event.line))
+
+    @on(Line)
+    def _write_line(self, message):
+        self.write(message.line)
 
     def on_mount(self):
         if self._logs is not None:
             for line in self._logs:
                 self.write(line)
-        else:
-            # A record between the backlog read and the subscribe is lost. The
-            # gap costs one display line at most, so the view accepts it.
-            dispatcher = get_task_dispatcher()
-            for record in dispatcher.buffered(self._log_key):
-                self.write(INTERACTIVE_FORMATTER.format(record))
-            dispatcher.add_listener(self._log_key, self._log_handler)
+        elif self._live:
+            # A line between the backlog read and the subscribe duplicates
+            # rather than disappears (see LocalSessionClient.subscribe_task_log).
+            for line in self._client.subscribe_task_log(
+                self._task_key, self._on_task_log
+            ):
+                self.write(line)
 
     def on_unmount(self):
-        if self._logs is None:
-            get_task_dispatcher().remove_listener(self._log_key, self._log_handler)
+        if self._live:
+            self._client.unsubscribe_task_log(self._task_key, self._on_task_log)
 
 
 class AttributeTable(DataTable):
@@ -178,7 +194,8 @@ class SourceView(Horizontal):
 class TaskDetailWidget(Widget):
     """Every tab renders from the TaskInfo value and the record payload. A
     stub info, from a batch that still runs, has no attributes, docs or
-    source; those tabs stay empty until the completion sweep replaces it."""
+    source; those tabs stay empty until the completion sweep replaces it.
+    The snapshot dicts key by the phase name (see RecordDetail)."""
 
     DEFAULT_CSS = _CSS
 
@@ -186,7 +203,8 @@ class TaskDetailWidget(Widget):
         self,
         info,
         logs=None,
-        log_key=None,
+        client=None,
+        task_key=None,
         transient_snapshots=None,
         cache_snapshots=None,
         *args,
@@ -194,17 +212,27 @@ class TaskDetailWidget(Widget):
     ):
         self.w_info = info
         self._logs = logs
-        self._log_key = log_key
+        self._client = client
+        self._task_key = task_key
         self._transient_snapshots = transient_snapshots
         self._cache_snapshots = cache_snapshots
         super().__init__(*args, **kwargs)
 
+    @property
+    def _root_dir(self):
+        # A display nicety of the local app: the root dir shortens the source
+        # paths. A client process without an orchestrator shows full paths.
+        orchestrator = getattr(self.app, "orchestrator", None)
+        return orchestrator.directory if orchestrator is not None else None
+
     def compose(self):
-        root_dir = self.app.orchestrator.directory
+        root_dir = self._root_dir
         info = self.w_info
         with TabbedContent(classes="main"):
             with TabPane("Logs"):
-                yield TaskLogView(self._log_key, logs=self._logs)
+                yield TaskLogView(
+                    client=self._client, task_key=self._task_key, logs=self._logs
+                )
             with TabPane("Attributes"):
                 with VerticalScroll(classes="attributes"):
                     for title, columns, rows in info.attributes or ():
@@ -226,11 +254,15 @@ class TaskDetailWidget(Widget):
                         # hide the real values, so only a pair with a value gets
                         # a row.
                         rows = [
-                            (name, str(phase).replace("_", " "), snapshots[phase][name])
+                            (
+                                name,
+                                phase.value.replace("_", " "),
+                                snapshots[phase.value][name],
+                            )
                             for name in transients
                             for phase in ExecutionPhase
-                            if phase in snapshots
-                            and snapshots[phase].get(name, NOT_MATERIALIZED)
+                            if phase.value in snapshots
+                            and snapshots[phase.value].get(name, NOT_MATERIALIZED)
                             != NOT_MATERIALIZED
                         ]
                         if rows:
@@ -270,13 +302,13 @@ class TaskDetailWidget(Widget):
                 (
                     f"{snap.cache_name}.{snap.entry_name}",
                     snap.scope,
-                    str(phase).replace("_", " "),
+                    phase.value.replace("_", " "),
                     self._cache_read_value(snap),
                 ),
             )
             for phase in ExecutionPhase
-            if phase in snapshots
-            for snap in snapshots[phase]
+            if phase.value in snapshots
+            for snap in snapshots[phase.value]
         ]
 
     @classmethod
@@ -300,7 +332,8 @@ class TaskDetailPlugin(UIPlugin):
         return TaskDetailWidget(
             context.info,
             logs=context.logs,
-            log_key=context.log_key,
+            client=context.client,
+            task_key=context.task_key,
             transient_snapshots=context.transient_snapshots,
             cache_snapshots=context.cache_snapshots,
         )

@@ -6,17 +6,24 @@ from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
 
 
 class TaskBar(Widget):
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    """The header controls of the Tasks pane. The checkboxes start from the
+    live batch option values of the port (see SessionClient.batch_options)."""
+
+    def __init__(self, client, options, *args, **kwargs):
+        self._client = client
+        self._options = options
         super().__init__(*args, **kwargs)
 
     def compose(self):
+        options = self._options
         with Horizontal():
             yield Button("<", classes="mini view-dashboard").with_tooltip(
                 "view dashboard"
             )
             yield PaneSearch(
-                self.workflow, placeholder="filter tasks...", input_id="filter-input"
+                self._client.apply_filter,
+                placeholder="filter tasks...",
+                input_id="filter-input",
             )
 
             with Horizontal(classes="checkboxes"):
@@ -25,18 +32,18 @@ class TaskBar(Widget):
                     yield Checkbox("hide skipped", id="hide-skipped")
                 with Vertical(classes="column"):
                     yield Checkbox(
-                        "force run", value=self.workflow.force_run, id="force-run"
+                        "force run", value=options["force_run"], id="force-run"
                     )
                     yield Checkbox(
                         "force success",
-                        value=self.workflow.force_success,
+                        value=options["force_success"],
                         id="force-success",
                     )
                 with Vertical(classes="column"):
-                    yield Checkbox("dry run", value=self.workflow.dry_run, id="dry-run")
+                    yield Checkbox("dry run", value=options["dry_run"], id="dry-run")
                     yield Checkbox(
                         "no concurrency",
-                        value=self.workflow.disable_concurrency,
+                        value=options["disable_concurrency"],
                         id="disable-concurrency",
                     )
             with Horizontal(classes="actions"):

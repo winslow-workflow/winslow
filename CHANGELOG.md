@@ -93,6 +93,32 @@ versions may include breaking changes).
 
 ### Changed
 
+- Breaking for plugin authors: the TUI renders from the session port alone (see `docs/ui-plugins.md`).
+  `WorkflowRenderContext` carries `client` (the `SessionClient`), `session` (a `SessionRow` value),
+  `snapshot` (a `SessionSnapshot` value), `roster` (stub `TaskInfo` rows) and `task_statuses`; the
+  `workflow`, `workflow_config` and `orchestrator_config` attributes are gone. `DashboardRenderContext`
+  carries `client` (the `AppClient`) and `descriptors`; `orchestrator` and `workflow_context` are gone.
+  `WorkflowConfirmationRenderContext.workflow` is the workflow name; it carried the class as
+  `workflow_kls`. `TaskDetailRenderContext` carries `client` and `task_key` for the live log stream
+  (`log_key` is gone), and its `transient_snapshots` and `cache_snapshots` key by phase name strings.
+- Breaking for plugin authors: the task overview widget is `TaskInfoPane`; it was `TaskInfo`, which
+  shadowed the `TaskInfo` value class.
+- Breaking for plugin authors: the workflow screen messages carry values only. `ExecutionStatusChanged`
+  and `TaskLogUpdated` carry `batch_uuid`; they carried the live batch as `batch`. `BatchCreated` and
+  `BatchCompleted` carry `info` (a `BatchInfo` value). `CacheSelected` carries `card` (a `CacheCard`
+  value); it carried the live cache. A new `BatchOptionsChanged` message carries the live option
+  values after a `SetBatchOptions` lands.
+- The Caches pane renders from the `caches()` read of the port and submits `LoadCacheEntries` and
+  `ClearCacheEntries` through the action handler; it held live `BaseCache` objects and called them
+  directly. The cache value modal shows the server-rendered `CacheValueView`, the same text a wire
+  client receives. "Clear all" clears the visible entries; it cleared whole caches.
+- `create_session` parses string values through the declared option types, checks each element of a
+  multiselect value against the choices, and fills unsent options from the parsed CLI base, so the
+  serve door and the TUI form start a workflow from the same value context.
+- `HistoryRow` carries the batch option snapshot as `options`; `SessionSnapshot` carries `cache_names`;
+  `CacheCard` carries `error` and the caches read isolates a cache whose storage raises;
+  `WorkflowDescriptor` carries `auto_init`; `OptionRow` carries `initial_selection` for a multiselect
+  prefill.
 - Breaking for plugin authors: `TaskStatusChanged` carries `(key, status)`; it carried the live task.
   `ExecutionStatusChanged` and `TaskLogUpdated` name the task with `task_key`; the attribute was
   `task_uuid`.
@@ -110,8 +136,6 @@ versions may include breaking changes).
   log routing key (`Task.log_key`, a per-run nonce plus the identity key).
 - Execution history keys by the identity key: `ExecutionRecordStore`, `ExecutionBatch.errored` and the
   status history of the store all hold identity keys.
-- The Caches pane is unchanged: its rows keep the live `BaseCache` objects, which are process-local UI
-  state.
 - `Graph` takes `logger` at construction and the workflow hands its session logger in, so the task
   initialization messages reach the session log pane. A project `graph_class` subclass that overrides
   `__init__` must accept the keyword.

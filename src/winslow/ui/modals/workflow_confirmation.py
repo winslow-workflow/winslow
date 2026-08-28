@@ -13,24 +13,24 @@ class WorkflowConfirmation(BaseModal):
     CONTENT_CLASSES = "workflow-confirmation-modal"
 
     class Submitted(Message):
-        def __init__(self, workflow_kls, form_values):
-            self.workflow_kls = workflow_kls
+        def __init__(self, workflow, form_values):
+            self.workflow = workflow
             self.form_values = form_values
             super().__init__()
 
-    def __init__(self, workflow_kls, form_values, registry, *args, **kwargs):
-        self.workflow_kls = workflow_kls
+    def __init__(self, workflow, form_values, registry, *args, **kwargs):
+        self.workflow = workflow
         self.form_values = form_values
         self.registry = registry
         super().__init__(*args, **kwargs)
 
     @property
     def modal_title(self):
-        return f"Start workflow: {self.workflow_kls.get_name()}"
+        return f"Start workflow: {self.workflow}"
 
     def compose_content(self):
         context = WorkflowConfirmationRenderContext(
-            workflow_kls=self.workflow_kls,
+            workflow=self.workflow,
             form_values=self.form_values,
         )
         yield from self.registry.compose_slot(SLOT, context)
@@ -42,7 +42,7 @@ class WorkflowConfirmation(BaseModal):
         if event.button.name == "workflow-start":
             self.post_message(
                 self.Submitted(
-                    workflow_kls=self.workflow_kls,
+                    workflow=self.workflow,
                     form_values=self.form_values,
                 )
             )
