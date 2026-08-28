@@ -16,8 +16,9 @@ Everything durable about one session lives in one directory, written through one
 store. The directory holds three record kinds:
 
 - **The manifest** — the workflow name, the configuration values the session started with, and the
-  origin of the run: the inputs that rebuild the session. When you change a batch option toggle in
-  the workflow screen, the manifest updates, so a restore reproduces the toggles you set.
+  origin of the run: the inputs that rebuild the session. The batch option toggles are view state
+  of one client: each submit carries its own flags, and the batch record below stores the flags
+  the batch ran with.
 - **Status snapshots** — one file per task, named by the task identity key, holding the latest terminal
   status (`COMPLETED`, `COMPLETED_WITH_ERROR`, `COMPLETED_PREVIOUSLY`, `FORCE_SUCCESS`, `FAILED`,
   `ERROR`) and the time of the check. Each terminal transition replaces the file atomically. The

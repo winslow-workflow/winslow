@@ -110,7 +110,7 @@ class Workflow(_ConfigBase):
         # references. initialize fills the list, release_tasks clears it.
         self.tasks = None
 
-        # The session baseline of the batch flags, from the CLI. A submit can
+        # The session baseline of the batch options, from the CLI. A submit can
         # carry its own values; this never changes (see BatchOptions).
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
@@ -570,21 +570,18 @@ class Workflow(_ConfigBase):
         )
 
     def filter_keys(self, query, scope="tasks", builtin_only=False):
-        """The identity keys the parsed query matches. scope names the
-        corpus: 'tasks' applies the full registry over the live tasks, and
-        'history' applies the builtin filters over the record infos. The
-        server owns the one parser, so a client never parses the query
-        language itself. Raises ValueError with direction on a bad query,
-        an unknown scope, or a tasks search after the session end."""
-        parsed = self.filter_registry.parse(query)
-        if scope == "history":
-            enforce_builtin_only(parsed)
-            return tuple(info.key for info in parsed.apply(self.record_infos()))
-        if scope != "tasks":
+        """The identity keys the query matches over the named corpus: 'tasks'
+        applies the full registry over the live tasks, 'history' the builtin
+        filters over the record infos. Raises ValueError with direction."""
+        if scope not in ("tasks", "history"):
             raise ValueError(
                 f"{scope!r} names no filter scope - the scopes are "
                 f"'tasks' and 'history'."
             )
+        parsed = self.filter_registry.parse(query)
+        if scope == "history":
+            enforce_builtin_only(parsed)
+            return tuple(info.key for info in parsed.apply(self.record_infos()))
         if builtin_only:
             enforce_builtin_only(parsed)
         if self.tasks is None:

@@ -31,8 +31,8 @@ class BatchAck(Ack):
 
 @dataclass(frozen=True)
 class RunTasks:
-    """options carries the batch flags of this submit: {name: bool}, over
-    the session baseline. The flags are client view state, so each client
+    """options carries the batch options of this submit: {name: bool},
+    over the session baseline. They are client view state, so each client
     sends its own with every batch (see BatchOptions)."""
 
     keys: tuple
@@ -139,7 +139,7 @@ class ActionHandler:
 
     def _batch_options_for(self, action):
         """The BatchOptions of one submit: the session baseline with the
-        action's flags on top, or (None, reason) on an unknown flag."""
+        action's values on top, or (None, reason) on an unknown option."""
         overrides = action.options or {}
         known = {field.name for field in fields(BatchOptions)}
         unknown = sorted(set(overrides) - known)

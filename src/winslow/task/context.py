@@ -6,8 +6,8 @@ from typing import Optional
 
 @dataclass(frozen=True)
 class BatchOptions:
-    """The four batch flags. The workflow holds the session baseline, seeded
-    from the CLI; a client sends its own values with each submit (see
+    """The four batch options. The workflow holds the session baseline,
+    seeded from the CLI; a client sends its own values with each submit (see
     RunTasks.options). Each batch snapshots the options it runs with, so
     history shows them per batch."""
 

@@ -126,9 +126,11 @@ class McpEndpoint:
         self, session_id: str, keys: list[str], options: dict | None = None
     ) -> dict:
         """Submit a run batch for the given task identity keys. options
-        carries the batch flags of this submit, for example
+        carries the batch options of this submit, for example
         {"force_run": true} (see batch_options for the baseline)."""
-        return await self._submit(session_id, RunTasks(keys=tuple(keys), options=options))
+        return await self._submit(
+            session_id, RunTasks(keys=tuple(keys), options=options)
+        )
 
     @tool
     async def check_tasks(

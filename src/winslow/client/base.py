@@ -77,17 +77,15 @@ class SessionClient:
         raise NotImplementedError
 
     def apply_filter(self, query, builtin_only=False, scope="tasks"):
-        """Return the identity keys the parsed query matches. scope names
-        the corpus: 'tasks' or 'history' (see Workflow.filter_keys). A bad
-        query raises ValueError with the parse error. builtin_only also
-        refuses a project filter (see enforce_builtin_only)."""
+        """Return the identity keys the query matches over the named corpus,
+        'tasks' or 'history' (see Workflow.filter_keys). A bad query raises
+        ValueError with the parse error."""
         raise NotImplementedError
 
     def batch_options(self):
-        """Return the baseline batch option values of the session as a dict:
-        the CLI-seeded defaults a fresh client prefills its toggles from.
-        The toggles themselves are client view state; a submit carries them
-        (see RunTasks.options)."""
+        """Return the baseline batch option values of the session as a dict.
+        A fresh client prefills its toggles from it; each submit then carries
+        the client's own values (see RunTasks.options)."""
         raise NotImplementedError
 
     def session_params(self):

@@ -71,10 +71,8 @@ class SearchFlowMixin:
 
 class QuerySearchMixin(SearchFlowMixin):
     """A pane whose search input is a filter query. The host implements
-    match_keys(query): the identity keys the query matches, ValueError on a
-    bad query. search_input_id names the input the syntax marks paint. The
-    mixin owns the search contract: an unparseable preview clears, and a
-    refused submit keeps the previous filter and toasts the reason."""
+    match_keys(query), the identity keys the query matches, and names its
+    input with search_input_id; the mixin owns the search contract."""
 
     search_input_id = None
 
