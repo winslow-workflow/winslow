@@ -41,7 +41,9 @@ class AppClient:
         raise NotImplementedError
 
     def session(self, session_id):
-        """Return the SessionClient of one live session."""
+        """Return the SessionClient of one live session. The local transport
+        builds a fresh client per call; the wire transport returns the one
+        shared lane of the session (see SessionClient.close)."""
         raise NotImplementedError
 
     def subscribe_connection(self, handler):
@@ -140,7 +142,9 @@ class SessionClient:
         raise NotImplementedError
 
     def close(self):
-        """Disconnect every subscription of this client."""
+        """Disconnect every subscription of this client. A local client
+        tears down only its own subscriptions; the shared wire lane tears
+        down every handler of the session."""
         raise NotImplementedError
 
     # --- actions ----------------------------------------------------------------

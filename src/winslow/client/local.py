@@ -192,11 +192,22 @@ class LocalSessionClient(SessionClient):
     def snapshot(self):
         return SessionSnapshot.from_session(self.session)
 
+    def _require_live(self):
+        """The live task reads refuse once the session has ended, with the
+        reason the serve edge serves (see requires_live_session)."""
+        if self.session.has_ended:
+            raise RequestError(
+                f"{self.session_id} has ended - its live task and cache "
+                f"state is released."
+            )
+
     def roster(self):
+        self._require_live()
         workflow = self._workflow
         return tuple(workflow.task_info(task) for task in workflow.roster_tasks())
 
     def task_detail(self, key):
+        self._require_live()
         task = self._resolve_task(key)
         return self._workflow.task_info(
             task, full=True, evaluate=True, root_dir=self._workflow.root_dir
