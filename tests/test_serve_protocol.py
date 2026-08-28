@@ -7,6 +7,8 @@ create_session error detail, the task_detail parity fix, the two cache
 actions, and the inbound envelope validation that replaces a trusted
 frame.get(...) read."""
 
+import time
+
 from winslow.constants import Mode
 from winslow.serve import Credentials, create_app
 from winslow.serve.app import PROTOCOL_VERSION
@@ -46,6 +48,24 @@ def action(ws, request_id, session_id, name, **fields):
         }
     )
     return frames_until(ws, "ack")
+
+
+def wait_for_cache_value(ws, session_id, cache_name, entry_name, state, timeout=5.0):
+    """Poll cache_value until state matches: the two cache actions ack as
+    soon as they start (see ActionHandler._cache_entries_action), so a
+    caller cannot assume the entry is done the moment the ack arrives."""
+    deadline = time.monotonic() + timeout
+    poll = 0
+    while time.monotonic() < deadline:
+        poll += 1
+        result = request(
+            ws, f"poll-{poll}", Requests.CACHE_VALUE, session_id=session_id,
+            cache_name=cache_name, entry_name=entry_name,
+        )
+        if result["state"] == state:
+            return result
+        time.sleep(0.01)
+    raise AssertionError(f"{cache_name}.{entry_name} never reached {state!r}")
 
 
 # --- roster ------------------------------------------------------------------
@@ -130,11 +150,9 @@ def test_load_cache_entries_action_computes_the_entry(e2e_repo):
         entries=[["weather", "forecast"]],
     )
     assert ack["accepted"] is True
-    result = request(
-        ws, "r-7", Requests.CACHE_VALUE, session_id=session.session_id,
-        cache_name="weather", entry_name="forecast",
+    result = wait_for_cache_value(
+        ws, session.session_id, "weather", "forecast", "warm"
     )
-    assert result["state"] == "warm"
     assert "ATHENS" in result["rendered"]
     ws.close()
 
@@ -147,6 +165,7 @@ def test_clear_cache_entries_action_drops_the_entry_and_its_dependents(e2e_repo)
         entries=[["weather", "cities"]],
     )
     assert ack["accepted"] is True
+    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
     result = request(ws, "r-9", Requests.CACHES, session_id=session.session_id)
     (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
     assert "cities" not in weather["values"]
@@ -199,6 +218,7 @@ def test_clear_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
         entries=[["weather", "cities"], ["weather", "city_index"]],
     )
     assert ack["accepted"] is True
+    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
     result = request(ws, "r-45", Requests.CACHES, session_id=session.session_id)
     (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
     assert "cities" not in weather["values"]
@@ -216,11 +236,16 @@ def test_load_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
         ws, "r-46", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
         entries=[["weather", "cities"], ["weather", "forecast"]],
     )
+    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
+    wait_for_cache_value(ws, session.session_id, "weather", "forecast", "cold")
+
     ack = action(
         ws, "r-47", session.session_id, Actions.LOAD_CACHE_ENTRIES,
         entries=[["weather", "cities"], ["weather", "forecast"]],
     )
     assert ack["accepted"] is True
+    wait_for_cache_value(ws, session.session_id, "weather", "cities", "warm")
+    wait_for_cache_value(ws, session.session_id, "weather", "forecast", "warm")
     result = request(ws, "r-48", Requests.CACHES, session_id=session.session_id)
     (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
     assert "cities" in weather["values"]

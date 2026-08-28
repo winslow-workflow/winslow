@@ -3,6 +3,7 @@ user input into one action dataclass and submits it to the ActionHandler of
 the session. Action fields are values only: identity keys, scalars (the
 payload rule, see winslow.events)."""
 
+import threading
 from dataclasses import asdict, dataclass, fields
 
 from winslow.cache import declared_entries
@@ -232,7 +233,12 @@ class ActionHandler:
         resolved, reason = self._resolve_cache_entries(action)
         if reason is not None:
             return self._refuse(action, reason)
-        execute_in_threads(work, resolved)
+        # The ack means "started", like RunTasks: execute_in_threads blocks
+        # until every entry finishes, so a background thread runs it and
+        # the caller does not wait. cache_updated events report progress.
+        threading.Thread(
+            target=execute_in_threads, args=(work, resolved), daemon=True
+        ).start()
         return Ack(accepted=True)
 
     def load_cache_entries(self, action):
