@@ -119,7 +119,7 @@ class Winslow(App):
         except Exception as e:
             # The session log carries the traceback through the create flow;
             # the failed row shows it for the ErrorDetail modal. A wire
-            # refusal ships the server traceback (see RequestError.detail).
+            # refusal carries the server traceback (see RequestError.detail).
             tb = getattr(e, "detail", None) or traceback.format_exc()
             self.logger.error(
                 f"Failed to initialize workflow '{workflow_name}': {e}"

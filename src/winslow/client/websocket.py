@@ -71,8 +71,8 @@ CONNECTION_DOWN = (
     "in the background; retry once it is back."
 )
 
-# The frame type _fail_pending resolves a dropped exchange with: the request
-# never reached a server, so the caller reads ConnectionError, never a
+# The answer frame of a dropped exchange (see _fail_pending). The request
+# reached no server, so the caller reads ConnectionError instead of a
 # served refusal (see Wire.request).
 DROPPED = "connection_dropped"
 
@@ -178,10 +178,10 @@ class Wire:
             self._lanes.pop(session_id, None)
 
     def subscribe_session(self, lane):
-        """Send one subscribe frame for a lane, stamped with a request id.
-        The snapshot answer clears the id (see clear_subscribe_pending); an
-        error answer reaches the lane as a refusal. A send into an outage
-        is dropped: the reconnect resubscribes every lane."""
+        """Send one subscribe frame, stamped with a request id: an error
+        answer must reach the lane (see on_subscribe_refused), a snapshot
+        settles the id. A send into an outage is dropped; the reconnect
+        resubscribes every lane."""
         request_id = self.next_id()
         self._subscribe_pending[request_id] = lane
         try:
@@ -341,8 +341,8 @@ class Wire:
                 self._route(frame)
 
     def _reconnect(self):
-        """Reopen the socket with backoff, then resubscribe every lane. The
-        callers of the outage read a refusal and retry; the resubscription
+        """Reopen the socket with backoff, then resubscribe every lane. A
+        read during the outage raises ConnectionError; the resubscription
         snapshots heal the subscribers (see RemoteSessionClient.resubscribe)."""
         self._fail_pending(CONNECTION_DOWN)
         delay = RECONNECT_DELAY
@@ -405,9 +405,8 @@ class Wire:
 
 class RemoteAppClient(AppClient):
     """The dashboard scope over one serve process. connect() opens the
-    socket and must run before the first read. Reads the process cannot
-    serve (no orchestrator, no state store) answer the served refusal as
-    ValueError, mirroring the local MisconfigurationError direction."""
+    socket and must run before the first read. A read the server refuses
+    raises RequestError (see winslow.client.base)."""
 
     def __init__(self, url, token=None, ticket=None, open_timeout=OPEN_TIMEOUT):
         self.wire = Wire(url, token=token, ticket=ticket, open_timeout=open_timeout)
@@ -470,10 +469,9 @@ class RemoteSessionClient(SessionClient):
         # {topic: [handler, ...]} and {task key: [handler, ...]}.
         self._handlers = {}
         self._task_log_handlers = {}
-        # The server-side subscription state of this lane. last_seq stamps
-        # the last dispatched frame; awaiting_snapshot drops event frames a
-        # requested snapshot supersedes; healing marks a recovery, whose
-        # snapshot re-emits the task statuses (see _on_snapshot).
+        # Lane state: last_seq stamps the last dispatched frame,
+        # awaiting_snapshot drops frames a requested snapshot supersedes,
+        # healing marks a recovery snapshot re-emit (see _on_snapshot).
         self._subscribed = False
         self._last_seq = None
         self._awaiting_snapshot = False
@@ -485,7 +483,8 @@ class RemoteSessionClient(SessionClient):
         return self.wire.request(kind, session_id=self.session_id, **fields)
 
     def snapshot(self):
-        return CODEC.decode(SessionSnapshot, _payload(self._request(Requests.SNAPSHOT)))
+        frame = self._request(Requests.SNAPSHOT)
+        return CODEC.decode(SessionSnapshot, _payload(frame))
 
     def roster(self):
         frame = self._request(Requests.ROSTER)
@@ -632,8 +631,8 @@ class RemoteSessionClient(SessionClient):
 
     def resubscribe(self):
         """Replay the subscriptions after a reconnect. The fresh snapshot
-        heals the subscribers; the backlog replies find no pending exchange
-        and are dropped, so no line duplicates into a live view."""
+        heals the subscribers; the wire drops the backlog replies (no
+        pending exchange), so no line duplicates into a live view."""
         if not self._subscribed and not self._task_log_handlers:
             return
         self._awaiting_snapshot = True
@@ -678,8 +677,8 @@ class RemoteSessionClient(SessionClient):
 
     def on_subscribe_refused(self, reason):
         """The server refused the lane's subscribe: the session does not
-        resolve there any more, and no snapshot will come. The end event
-        tells the panes; without it the lane waits silently forever."""
+        resolve there any more, so no snapshot answers. The end event tells
+        the panes; a silent lane would wait for that snapshot forever."""
         LOGGER.warning(f"the subscribe of {self.session_id} was refused - {reason}")
         self._subscribed = False
         self._awaiting_snapshot = False

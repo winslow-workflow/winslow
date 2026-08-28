@@ -91,8 +91,8 @@ class QuerySearchMixin(SearchFlowMixin):
             self.query_one(f"#{self.search_input_id}", Input).validate(query)
 
     def search_matches(self, query):
-        # None marks a query with no answer - unparseable, or the wire is
-        # down: the preview clears, nothing dims.
+        # None marks a query with no answer, unparseable or the wire down:
+        # the preview clears instead of dimming every row.
         self._validate_search_input(query)
         try:
             return self.match_keys(query)

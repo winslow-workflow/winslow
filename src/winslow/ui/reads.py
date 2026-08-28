@@ -1,9 +1,8 @@
-"""The one read boundary of the UI: a port read that fails answers the
-default and a toast, never the crash screen. ConnectionError and
-TimeoutError mark a wire outage - the transport reconnects on its own (see
-winslow.client.websocket) - and RequestError is a served refusal (see
-winslow.client.base). A repaint then skips one pass and the next event or
-tick repaints from live state."""
+"""The one read boundary of the UI: a failed port read answers a default
+and a toast. ConnectionError and TimeoutError mark a wire outage, and the
+transport reconnects on its own (see winslow.client.websocket);
+RequestError is a served refusal (see winslow.client.base). The caller
+skips one repaint, and the next event or tick repaints from live state."""
 
 from winslow.exceptions import RequestError
 

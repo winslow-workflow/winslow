@@ -369,8 +369,8 @@ class Orchestrator(_ConfigBase):
             action=Action.CONNECT,
             help_text="Run the TUI against a serve process.",
         )
-        # The one positional of the CLI: the ConfigOption machinery declares
-        # only --flags, and the URL is the whole point of the subcommand.
+        # The ConfigOption machinery declares only --flag options, so the
+        # URL is added here as the one positional argument of the CLI.
         connect_parser.add_argument(
             "url",
             help="The websocket URL of the serve process, e.g. ws://host:8866. "
@@ -697,8 +697,7 @@ class Orchestrator(_ConfigBase):
 
     def _handle_connect(self):
         """The remote TUI: the same app over the wire transport of the
-        session port. The process collects no workflows and keeps no state;
-        the serve process owns both."""
+        session port. The serve process owns the workflows and the state."""
         try:
             from winslow.client.websocket import RemoteAppClient
             from winslow.ui import Winslow
@@ -809,8 +808,8 @@ class Orchestrator(_ConfigBase):
         )
 
         if self.orchestrator_config.action is Action.CONNECT:
-            # A remote TUI reads everything over the wire: no local workflow
-            # collection, no local caches.
+            # A remote TUI reads everything over the wire, so the local
+            # workflow and cache collection is skipped.
             return self._handle_connect()
 
         self.workflow_registry.collect_classes(self.directory)

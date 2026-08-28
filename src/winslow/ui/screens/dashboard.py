@@ -121,7 +121,7 @@ class DashboardScreen(SlottedScreen):
             return
         if self._session_status(session_id) == "ENDING":
             # The modal reads the snapshot at construction, so an outage in
-            # that window lands here, not on the crash screen.
+            # that window answers a toast (see winslow.ui.reads).
             try:
                 modal = ForceEndModal(self.client.session(session_id))
             except READ_FAILURES as exc:
