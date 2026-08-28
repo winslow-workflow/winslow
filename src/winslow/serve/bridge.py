@@ -23,8 +23,17 @@ from winslow.events import (
     TaskStatusEvent,
 )
 from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
+from winslow.serve.wire import FrameTypes
 
 FLUSH_TICK = 0.05
+
+# The inbox item tags of the three lanes _drain coalesces before a frame
+# reaches the wire: a log line, a session_log line, a task_log line. Not on
+# the wire themselves - see FrameTypes.LOG_BATCH/SESSION_LOG_BATCH/
+# TASK_LOG_BATCH for the frame type each lane fans out as.
+_LOG = "log"
+_SESSION_LOG = "session_log"
+_TASK_LOG = "task_log"
 
 
 @dataclass(eq=False)
@@ -145,22 +154,24 @@ class EventBridge:
     # name, so no explicit base class is necessary).
 
     def on_entry_computed(self, info, previous_state):
-        self._inbox.put({"type": "cache_updated", "cache_name": info.cache_name})
+        self._inbox.put(
+            {"type": FrameTypes.CACHE_UPDATED, "cache_name": info.cache_name}
+        )
 
     def on_entries_invalidated(self, scope, dropped, trigger):
         for name in dropped:
-            self._inbox.put({"type": "cache_updated", "cache_name": name})
+            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
 
     def on_eager_population_started(self, scope, entries):
         for name in entries:
-            self._inbox.put({"type": "cache_updated", "cache_name": name})
+            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
 
     def on_eager_population_finished(self, scope, entries):
         for name in entries:
-            self._inbox.put({"type": "cache_updated", "cache_name": name})
+            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
 
     def on_entry_error(self, scope, cache_name, entry_name, error):
-        self._inbox.put({"type": "cache_updated", "cache_name": cache_name})
+        self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": cache_name})
 
     def _retire(self):
         """The session ended and the frame is fanned out: release the bus
@@ -175,7 +186,7 @@ class EventBridge:
     def _on_task_status(self, event):
         self._inbox.put(
             {
-                "type": "task_status",
+                "type": FrameTypes.TASK_STATUS,
                 "key": event.key,
                 "status": event.status.name,
                 "origin": event.origin.value,
@@ -185,7 +196,7 @@ class EventBridge:
     def _on_execution_status(self, event):
         self._inbox.put(
             {
-                "type": "execution_status",
+                "type": FrameTypes.EXECUTION_STATUS,
                 "task_key": event.task_key,
                 "status": event.status.name,
                 "batch_uuid": event.batch_uuid,
@@ -194,15 +205,19 @@ class EventBridge:
         )
 
     def _on_batch_created(self, event):
-        self._inbox.put({"type": "batch_created", "batch": asdict(event.info)})
+        self._inbox.put(
+            {"type": FrameTypes.BATCH_CREATED, "batch": asdict(event.info)}
+        )
 
     def _on_batch_completed(self, event):
-        self._inbox.put({"type": "batch_completed", "batch": asdict(event.info)})
+        self._inbox.put(
+            {"type": FrameTypes.BATCH_COMPLETED, "batch": asdict(event.info)}
+        )
 
     def _on_log_line(self, event):
         self._inbox.put(
             {
-                "type": "log",
+                "type": _LOG,
                 "task_key": event.task_key,
                 "batch_uuid": event.batch_uuid,
                 "line": event.line,
@@ -210,16 +225,18 @@ class EventBridge:
         )
 
     def _on_session_ended(self, event):
-        self._inbox.put({"type": "session_ended"})
+        self._inbox.put({"type": FrameTypes.SESSION_ENDED})
 
     def _on_batch_options_changed(self, event):
-        self._inbox.put({"type": "batch_options_changed", "options": event.options})
+        self._inbox.put(
+            {"type": FrameTypes.BATCH_OPTIONS_CHANGED, "options": event.options}
+        )
 
     def _on_session_log_line(self, line):
-        self._inbox.put({"type": "session_log", "line": line})
+        self._inbox.put({"type": _SESSION_LOG, "line": line})
 
     def _on_task_log_line(self, task_key, line):
-        self._inbox.put({"type": "task_log", "task_key": task_key, "line": line})
+        self._inbox.put({"type": _TASK_LOG, "task_key": task_key, "line": line})
 
     # --- the loop side ---------------------------------------------------------
 
@@ -237,7 +254,7 @@ class EventBridge:
         stamp and the state cannot separate."""
         workflow = self.session.workflow
         return {
-            "type": "snapshot",
+            "type": FrameTypes.SNAPSHOT,
             "session_id": self.session_id,
             "seq": self.seq,
             "workflow": str(workflow),
@@ -282,40 +299,48 @@ class EventBridge:
             cache_names = {}
             others = []
             for item in batch:
-                if item["type"] == "log":
+                if item["type"] == _LOG:
                     logs.setdefault((item["task_key"], item["batch_uuid"]), []).append(
                         item["line"]
                     )
-                elif item["type"] == "session_log":
+                elif item["type"] == _SESSION_LOG:
                     session_log_lines.append(item["line"])
-                elif item["type"] == "task_log":
+                elif item["type"] == _TASK_LOG:
                     task_logs.setdefault(item["task_key"], []).append(item["line"])
-                elif item["type"] == "cache_updated":
+                elif item["type"] == FrameTypes.CACHE_UPDATED:
                     cache_names[item["cache_name"]] = None
                 else:
                     others.append(item)
             for (task_key, batch_uuid), lines in logs.items():
                 self._fan_out(
                     {
-                        "type": "log_batch",
+                        "type": FrameTypes.LOG_BATCH,
                         "task_key": task_key,
                         "batch_uuid": batch_uuid,
                         "lines": lines,
                     }
                 )
             if session_log_lines:
-                self._fan_out({"type": "session_log_batch", "lines": session_log_lines})
+                self._fan_out(
+                    {"type": FrameTypes.SESSION_LOG_BATCH, "lines": session_log_lines}
+                )
             for task_key, lines in task_logs.items():
                 self._fan_out(
-                    {"type": "task_log_batch", "task_key": task_key, "lines": lines}
+                    {
+                        "type": FrameTypes.TASK_LOG_BATCH,
+                        "task_key": task_key,
+                        "lines": lines,
+                    }
                 )
             for cache_name in cache_names:
-                self._fan_out({"type": "cache_updated", "cache_name": cache_name})
+                self._fan_out(
+                    {"type": FrameTypes.CACHE_UPDATED, "cache_name": cache_name}
+                )
             # After the logs of the same pass: a control event must not
             # overtake the lines that precede it.
             for item in others:
                 self._fan_out(item)
-            if any(item["type"] == "session_ended" for item in others):
+            if any(item["type"] == FrameTypes.SESSION_ENDED for item in others):
                 self._retire()
                 return
             await asyncio.sleep(FLUSH_TICK)

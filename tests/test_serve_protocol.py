@@ -56,7 +56,8 @@ def test_roster_serves_stub_task_info_in_launch_filter_order(e2e_repo):
     ws = connect(registry)
     result = request(ws, "r-1", Requests.ROSTER, session_id=session.session_id)
     keys = [row["key"] for row in result["tasks"]]
-    assert set(keys) == {t.identity_key for t in workflow.get_filtered_tasks()}
+    # Order, not just membership: the roster promises get_filtered_tasks order.
+    assert keys == [t.identity_key for t in workflow.get_filtered_tasks()]
     # A stub: no full-capture fields.
     assert all(row["attributes"] is None for row in result["tasks"])
     ws.close()
@@ -165,6 +166,68 @@ def test_cache_entries_action_refuses_an_unknown_cache(e2e_repo):
     ws.close()
 
 
+def test_cache_entries_action_refuses_an_unknown_entry(e2e_repo):
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    ack = action(
+        ws, "r-42", session.session_id, Actions.LOAD_CACHE_ENTRIES,
+        entries=[["weather", "nope"]],
+    )
+    assert ack["accepted"] is False
+    assert "has no entry 'nope'" in ack["reason"]
+    ws.close()
+
+
+def test_cache_entries_action_refuses_an_empty_entries_list(e2e_repo):
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    ack = action(
+        ws, "r-43", session.session_id, Actions.LOAD_CACHE_ENTRIES, entries=[]
+    )
+    assert ack["accepted"] is False
+    assert "entries list is empty" in ack["reason"]
+    ws.close()
+
+
+def test_clear_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
+    """The "clear all" case the spec singles out: one action, every visible
+    pair, not one action per entry."""
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    ack = action(
+        ws, "r-44", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
+        entries=[["weather", "cities"], ["weather", "city_index"]],
+    )
+    assert ack["accepted"] is True
+    result = request(ws, "r-45", Requests.CACHES, session_id=session.session_id)
+    (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
+    assert "cities" not in weather["values"]
+    assert "city_index" not in weather["values"]
+    ws.close()
+
+
+def test_load_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
+    """The "load all" case: cities and forecast load together in one frame,
+    independently of each other (forecast does not depend on the load of
+    cities in this action, only on cities' own stored value)."""
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    action(
+        ws, "r-46", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
+        entries=[["weather", "cities"], ["weather", "forecast"]],
+    )
+    ack = action(
+        ws, "r-47", session.session_id, Actions.LOAD_CACHE_ENTRIES,
+        entries=[["weather", "cities"], ["weather", "forecast"]],
+    )
+    assert ack["accepted"] is True
+    result = request(ws, "r-48", Requests.CACHES, session_id=session.session_id)
+    (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
+    assert "cities" in weather["values"]
+    assert "forecast" in weather["values"]
+    ws.close()
+
+
 def test_cache_updated_fires_on_a_live_invalidation(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
     refresh = by_name(workflow)["RefreshForecast"]
@@ -173,6 +236,24 @@ def test_cache_updated_fires_on_a_live_invalidation(e2e_repo):
     assert ws.receive_json()["type"] == "snapshot"
 
     action(ws, "r-11", session.session_id, Actions.RUN_TASKS, keys=[refresh.identity_key])
+    frame = frames_until(ws, "cache_updated")
+    assert frame["cache_name"] == "weather"
+    ws.close()
+
+
+def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
+    """cache_updated must fire from the action directly, not only as a side
+    effect of a task run (see test_cache_updated_fires_on_a_live_invalidation,
+    which drives invalidation through RUN_TASKS instead)."""
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    assert ws.receive_json()["type"] == "snapshot"
+
+    action(
+        ws, "r-49", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
+        entries=[["weather", "cities"]],
+    )
     frame = frames_until(ws, "cache_updated")
     assert frame["cache_name"] == "weather"
     ws.close()

@@ -1571,6 +1571,7 @@ sentry = [
     { name = "sentry-sdk" },
 ]
 serve = [
+    { name = "pydantic" },
     { name = "starlette" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1588,6 +1589,7 @@ dev = [
     { name = "mkdocstrings", extra = ["python"] },
     { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-sdk" },
+    { name = "pydantic" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "sentry-sdk" },
@@ -1604,6 +1606,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "psutil", marker = "extra == 'tui'", specifier = ">=6.1.0" },
+    { name = "pydantic", marker = "extra == 'serve'", specifier = ">=2.0" },
     { name = "python-decouple", specifier = ">=3.8" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.0" },
@@ -1624,6 +1627,7 @@ dev = [
     { name = "mkdocstrings", extras = ["python"], specifier = ">=1.0.6" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", specifier = ">=1.20" },
+    { name = "pydantic", specifier = ">=2.0" },
     { name = "pytest", specifier = ">=8.3.3" },
     { name = "ruff", specifier = ">=0.9.0" },
     { name = "sentry-sdk", specifier = ">=2.0" },

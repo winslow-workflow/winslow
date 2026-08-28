@@ -28,6 +28,7 @@ from winslow.model import (
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
 from winslow.serve.wire import (
+    INBOUND_FRAME_TYPES,
     FrameTypes,
     Requests,
     apply_filter_keys,
@@ -264,7 +265,7 @@ class Connection:
         )
         await self.websocket.send_json(
             {
-                "type": "snapshot",
+                "type": FrameTypes.SNAPSHOT,
                 "seq": 0,
                 "sessions": [session_row(s) for s in self.app.registry.sessions()],
             }
@@ -277,12 +278,14 @@ class Connection:
                 except (WebSocketDisconnect, RuntimeError):
                     return
                 except ValueError:
-                    self.reply({"type": "error", "reason": "the message is not JSON"})
+                    self.reply(
+                        {"type": FrameTypes.ERROR, "reason": "the message is not JSON"}
+                    )
                     continue
                 if not isinstance(frame, dict):
                     self.reply(
                         {
-                            "type": "error",
+                            "type": FrameTypes.ERROR,
                             "reason": f"a frame must be a JSON object, not "
                             f"{type(frame).__name__}.",
                         }
@@ -308,12 +311,14 @@ class Connection:
         self.control.push(json.dumps(payload))
 
     def request_error(self, request_id, reason):
-        self.reply({"type": "error", "request_id": request_id, "reason": reason})
+        self.reply(
+            {"type": FrameTypes.ERROR, "request_id": request_id, "reason": reason}
+        )
 
     def result(self, envelope, **payload):
         self.reply(
             {
-                "type": "result",
+                "type": FrameTypes.RESULT,
                 "request_id": envelope.request_id,
                 "kind": envelope.kind,
                 **payload,
@@ -359,11 +364,9 @@ class Connection:
             case _:
                 self.reply(
                     {
-                        "type": "error",
+                        "type": FrameTypes.ERROR,
                         "reason": f"unknown message type {kind!r} - this "
-                        f"server speaks subscribe, unsubscribe, "
-                        f"subscribe_task_log, unsubscribe_task_log, action, "
-                        f"and request.",
+                        f"server speaks {', '.join(INBOUND_FRAME_TYPES)}.",
                     }
                 )
 
@@ -454,7 +457,7 @@ class Connection:
         bridge = self.app.bridges.get(session_id)
         if subscription is not None and bridge is not None:
             bridge.unsubscribe(subscription)
-        self.reply({"type": "unsubscribed", "session_id": session_id})
+        self.reply({"type": FrameTypes.UNSUBSCRIBED, "session_id": session_id})
 
     def handle_subscribe_task_log(self, envelope):
         """The backlog and the live stream of one task's log, outside any
@@ -485,7 +488,7 @@ class Connection:
         backlog = get_task_dispatcher().buffered(task.log_key)
         self.reply(
             {
-                "type": "task_log_backlog",
+                "type": FrameTypes.TASK_LOG_BACKLOG,
                 "session_id": session.session_id,
                 "task_key": task_key,
                 "lines": [INLINE_FORMATTER.format(record) for record in backlog],
@@ -503,7 +506,7 @@ class Connection:
                 bridge.unsubscribe_task_log(task_key)
         self.reply(
             {
-                "type": "unsubscribed_task_log",
+                "type": FrameTypes.UNSUBSCRIBED_TASK_LOG,
                 "session_id": session_id,
                 "task_key": task_key,
             }
@@ -521,7 +524,7 @@ class Connection:
         # The admission gate can block: the submit runs on a worker thread.
         ack = await asyncio.to_thread(session.actions.submit_guarded, action)
         self.reply(
-            {"type": "ack", "request_id": envelope.request_id, **asdict(ack)}
+            {"type": FrameTypes.ACK, "request_id": envelope.request_id, **asdict(ack)}
         )
 
     async def run_request(self, envelope):
@@ -567,7 +570,7 @@ class Connection:
         except Exception as exc:
             self.reply(
                 {
-                    "type": "error",
+                    "type": FrameTypes.ERROR,
                     "request_id": envelope.request_id,
                     "reason": str(exc.args[0] if exc.args else exc),
                     "detail": traceback.format_exc(),
@@ -787,7 +790,7 @@ class Connection:
         except Exception as exc:
             self.reply(
                 {
-                    "type": "error",
+                    "type": FrameTypes.ERROR,
                     "request_id": envelope.request_id,
                     "reason": str(exc.args[0] if exc.args else exc),
                     "detail": traceback.format_exc(),

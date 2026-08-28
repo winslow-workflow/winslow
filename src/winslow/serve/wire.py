@@ -38,18 +38,55 @@ from winslow.util import safe_repr
 
 
 class FrameTypes:
-    """The top-level "type" values of a frame (see Connection.handle_frame).
-    hello and hello_ok belong to the handshake, before a Connection exists."""
+    """The top-level "type" values of a frame: the six a client sends (see
+    Connection.handle_frame), and every one the server sends back, over the
+    control channel (see Connection.reply) or a session subscription (see
+    EventBridge._fan_out). hello and hello_ok belong to the handshake,
+    before a Connection exists."""
 
+    # Client to server.
     HELLO = "hello"
-    HELLO_OK = "hello_ok"
-    HELLO_ERROR = "hello_error"
     SUBSCRIBE = "subscribe"
     UNSUBSCRIBE = "unsubscribe"
     SUBSCRIBE_TASK_LOG = "subscribe_task_log"
     UNSUBSCRIBE_TASK_LOG = "unsubscribe_task_log"
     ACTION = "action"
     REQUEST = "request"
+
+    # Server to client: control replies.
+    HELLO_OK = "hello_ok"
+    HELLO_ERROR = "hello_error"
+    ERROR = "error"
+    RESULT = "result"
+    ACK = "ack"
+    UNSUBSCRIBED = "unsubscribed"
+    UNSUBSCRIBED_TASK_LOG = "unsubscribed_task_log"
+    TASK_LOG_BACKLOG = "task_log_backlog"
+
+    # Server to client: the session subscription (snapshot, then events).
+    SNAPSHOT = "snapshot"
+    TASK_STATUS = "task_status"
+    EXECUTION_STATUS = "execution_status"
+    BATCH_CREATED = "batch_created"
+    BATCH_COMPLETED = "batch_completed"
+    SESSION_ENDED = "session_ended"
+    BATCH_OPTIONS_CHANGED = "batch_options_changed"
+    CACHE_UPDATED = "cache_updated"
+    LOG_BATCH = "log_batch"
+    SESSION_LOG_BATCH = "session_log_batch"
+    TASK_LOG_BATCH = "task_log_batch"
+
+
+# The frame types a client may send. The unknown-type error message lists
+# these, so the two cannot drift apart (see Connection.handle_frame).
+INBOUND_FRAME_TYPES = (
+    FrameTypes.SUBSCRIBE,
+    FrameTypes.UNSUBSCRIBE,
+    FrameTypes.SUBSCRIBE_TASK_LOG,
+    FrameTypes.UNSUBSCRIBE_TASK_LOG,
+    FrameTypes.ACTION,
+    FrameTypes.REQUEST,
+)
 
 
 class Actions:
