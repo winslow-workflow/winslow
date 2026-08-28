@@ -9,6 +9,7 @@ that stays behind a full window (see serve-spec, slice two)."""
 import asyncio
 import collections
 import json
+import logging
 import queue
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -34,6 +35,22 @@ FLUSH_TICK = 0.05
 _LOG = "log"
 _SESSION_LOG = "session_log"
 _TASK_LOG = "task_log"
+
+
+class SessionLogBuffer(logging.Handler):
+    """A bounded backlog of one session's log lines. Attach at session
+    creation, not at first subscribe: init and eligibility lines happen
+    before any client can know the session id to subscribe with, and this
+    handler catches them anyway. TaskLogDispatcher.buffered() is the same
+    idea for one task."""
+
+    def __init__(self, maxlen=200):
+        super().__init__()
+        self.setFormatter(INLINE_FORMATTER)
+        self.lines = collections.deque(maxlen=maxlen)
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
 
 
 @dataclass(eq=False)
@@ -260,6 +277,11 @@ class EventBridge:
             "workflow": str(workflow),
             "status": self.session.status.name,
             "tasks": {key: status.name for key, status in workflow.store.items()},
+            "session_log_backlog": (
+                list(self.session.log_buffer.lines)
+                if self.session.log_buffer is not None
+                else []
+            ),
             "batches": [
                 {
                     "uuid": batch.uuid,

@@ -43,6 +43,9 @@ class Session:
         # The inbound half of the session boundary: every presentation layer
         # submits its actions here (see ActionHandler).
         self.actions = ActionHandler(self)
+        # A log backlog a caller attached before any subscriber existed (see
+        # serve.bridge.SessionLogBuffer). None unless something sets it.
+        self.log_buffer = None
         # The workflow exists before its session, so the session connects itself
         # here. The runner reads the logging identity of this run through this
         # link (see runner.task_scope and ContextStampFilter). Persistence also

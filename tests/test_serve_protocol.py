@@ -423,6 +423,30 @@ def test_session_log_subscription_streams_the_workflow_logger(e2e_repo):
     ws.close()
 
 
+def test_session_log_backlog_serves_lines_logged_before_any_subscribe(
+    e2e_repo, state_store
+):
+    """The buffer attaches at create_session time, not at first subscribe:
+    a line logged in between must still reach a client that subscribes
+    later (see SessionLogBuffer)."""
+    orchestrator = serve_orchestrator(e2e_repo)
+    registry = SessionRegistry()
+    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
+
+    created = request(ws, "r-51", Requests.CREATE_SESSION, workflow="my-workflow")
+    session = registry.get(created["session_id"])
+    session.workflow.logger.warning("logged before anyone subscribed")
+
+    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    snapshot = ws.receive_json()
+    assert snapshot["type"] == "snapshot"
+    assert any(
+        "logged before anyone subscribed" in line
+        for line in snapshot["session_log_backlog"]
+    )
+    ws.close()
+
+
 def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypatch):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]

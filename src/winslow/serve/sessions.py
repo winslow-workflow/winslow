@@ -5,6 +5,7 @@ function is a recorded follow-up). Returns the live session, registered."""
 import logging
 
 from winslow.logger import run_logger_name
+from winslow.serve.bridge import SessionLogBuffer
 from winslow.session import Session
 from winslow.task.context import LogContext, scoped_log_context
 from winslow.util import generate_id
@@ -87,6 +88,10 @@ def create_session(
     session_id = session_id or generate_id(workflow_name)
     workflow_logger = logging.getLogger(run_logger_name(session_id))
     workflow_logger.propagate = True
+    # Attached before any initialization work runs, so init and eligibility
+    # lines survive until a client subscribes (see SessionLogBuffer).
+    log_buffer = SessionLogBuffer()
+    workflow_logger.addHandler(log_buffer)
 
     init_log_ctx = LogContext(
         session_id=session_id,
@@ -104,6 +109,7 @@ def create_session(
             logger=workflow_logger,
         )
         session = Session(workflow, session_id=session_id)
+        session.log_buffer = log_buffer
         registry.register(session)
         try:
             workflow.initialize_tasks(logger=workflow.logger)
