@@ -24,25 +24,130 @@ class ActionFrame:
 
 
 @dataclass(frozen=True)
-class RequestFrame:
-    """One inbound request frame, decoded at the serve edge. Every request
-    kind shares this envelope; a handler reads only the fields its kind
-    needs - the rest stay None."""
+class DescriptorsRequest:
+    """A descriptors request (see winslow.serve.wire.Requests.DESCRIPTORS)."""
 
     type: str
     kind: str
     request_id: str | None = None
-    session_id: str | None = None
-    workflow: str | None = None
+
+
+@dataclass(frozen=True)
+class CreateSessionRequest:
+    """A create_session request. overrides and values default to {} at the
+    handler, so None and an absent field behave the same."""
+
+    type: str
+    kind: str
+    workflow: str
+    request_id: str | None = None
     overrides: dict | None = None
     values: dict | None = None
-    batch_uuid: str | None = None
-    task_key: str | None = None
+
+
+@dataclass(frozen=True)
+class HistoryRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class LogTailRequest:
+    type: str
+    kind: str
+    session_id: str
+    batch_uuid: str
+    task_key: str
+    request_id: str | None = None
     limit: int | None = None
-    query: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskDetailRequest:
+    type: str
+    kind: str
+    session_id: str
+    task_key: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RosterRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CachesRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class CacheValueRequest:
+    type: str
+    kind: str
+    session_id: str
+    cache_name: str
+    entry_name: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RecordDetailRequest:
+    type: str
+    kind: str
+    session_id: str
+    batch_uuid: str
+    task_key: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class BatchOptionsRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SessionParamsRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApplyFilterRequest:
+    type: str
+    kind: str
+    session_id: str
+    query: str
+    request_id: str | None = None
     builtin_only: bool = False
-    cache_name: str | None = None
-    entry_name: str | None = None
+
+
+@dataclass(frozen=True)
+class ManifestsRequest:
+    type: str
+    kind: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class RestoreSessionRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
 
 
 @dataclass(frozen=True)

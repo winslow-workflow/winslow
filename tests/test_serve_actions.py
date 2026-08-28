@@ -339,7 +339,14 @@ def test_requests_without_an_orchestrator_answer_an_error(e2e_repo):
     ws = connect(SessionRegistry())
     ws.send_json({"type": "request", "request_id": "r-15", "kind": "descriptors"})
     assert "serves no workflows" in frames_until(ws, "error")["reason"]
-    ws.send_json({"type": "request", "request_id": "r-16", "kind": "create_session"})
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-16",
+            "kind": "create_session",
+            "workflow": "whatever",
+        }
+    )
     assert "creates no sessions" in frames_until(ws, "error")["reason"]
     ws.close()
 

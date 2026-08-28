@@ -674,12 +674,22 @@ def test_a_malformed_action_frame_answers_an_error_and_the_connection_survives(
     ws.close()
 
 
-def test_a_malformed_request_frame_answers_an_error(e2e_repo):
+def test_a_request_frame_naming_no_kind_answers_names_no_request(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     ws = connect(registry)
     ws.send_json({"type": "request", "request_id": "r-33"})
     error = frames_until(ws, "error")
     assert error["request_id"] == "r-33"
+    assert "names no request" in error["reason"]
+    ws.close()
+
+
+def test_a_request_frame_missing_a_required_field_answers_malformed(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    ws.send_json({"type": "request", "kind": Requests.LOG_TAIL, "request_id": "r-34"})
+    error = frames_until(ws, "error")
+    assert error["request_id"] == "r-34"
     assert "malformed" in error["reason"]
     ws.close()
 

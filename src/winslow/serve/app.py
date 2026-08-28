@@ -19,16 +19,12 @@ from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
 from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.logger import INLINE_FORMATTER, LOGGER, get_task_dispatcher
-from winslow.model import (
-    ActionFrame,
-    RequestFrame,
-    SubscribeFrame,
-    TaskLogSubscribeFrame,
-)
+from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
 from winslow.serve.wire import (
     INBOUND_FRAME_TYPES,
+    REQUEST_CLASSES,
     FrameTypes,
     Requests,
     apply_filter_keys,
@@ -360,7 +356,7 @@ class Connection:
             case FrameTypes.ACTION:
                 self.dispatch(frame, ActionFrame, self.run_action)
             case FrameTypes.REQUEST:
-                self.dispatch(frame, RequestFrame, self.run_request)
+                self.dispatch_request(frame)
             case _:
                 self.reply(
                     {
@@ -391,6 +387,22 @@ class Connection:
         envelope = self.decode(frame, envelope_class)
         if envelope is not None:
             self.spawn(envelope, run(envelope))
+
+    def dispatch_request(self, frame):
+        """A request frame's envelope class depends on its kind (see
+        REQUEST_CLASSES), so the kind is checked before the frame decodes -
+        an unknown kind answers the same "names no request" reply the old
+        flat envelope gave, instead of a validation error naming a missing
+        "kind" field."""
+        envelope_class = REQUEST_CLASSES.get(frame.get("kind"))
+        if envelope_class is None:
+            self.request_error(
+                frame.get("request_id"),
+                f"{frame.get('kind')!r} names no request. The requests are "
+                f"{', '.join(sorted(REQUEST_CLASSES))}.",
+            )
+            return
+        self.dispatch(frame, envelope_class, self.run_request)
 
     def spawn(self, envelope, coroutine):
         job = asyncio.get_running_loop().create_task(
@@ -536,14 +548,9 @@ class Connection:
         )
 
     async def run_request(self, envelope):
-        handler = self._request_handlers.get(envelope.kind)
-        if handler is None:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.kind!r} names no request. The requests are "
-                f"{', '.join(sorted(self._request_handlers))}.",
-            )
-            return
+        # dispatch_request already resolved the kind to this envelope's
+        # class, and every request class maps to a handler below.
+        handler = self._request_handlers[envelope.kind]
         await handler(self, envelope)
 
     def _root_dir(self):

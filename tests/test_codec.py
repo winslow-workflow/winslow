@@ -4,7 +4,7 @@ decoding the model dataclasses of winslow.model."""
 import pytest
 
 from winslow.codec import CODEC, Codec, ValidationError
-from winslow.model import ActionFrame, RequestFrame
+from winslow.model import ActionFrame, ApplyFilterRequest
 
 
 def test_decode_builds_the_dataclass_from_a_dict():
@@ -28,8 +28,11 @@ def test_decode_builds_the_dataclass_from_a_dict():
 
 
 def test_decode_fills_declared_defaults():
-    envelope = CODEC.decode(RequestFrame, {"type": "request", "kind": "descriptors"})
-    assert envelope.session_id is None
+    envelope = CODEC.decode(
+        ApplyFilterRequest,
+        {"type": "request", "kind": "apply_filter", "session_id": "s-1", "query": "a"},
+    )
+    assert envelope.request_id is None
     assert envelope.builtin_only is False
 
 

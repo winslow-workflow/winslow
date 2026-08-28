@@ -24,15 +24,29 @@ from winslow.cache import (
     resolve_snapshot_cap,
 )
 from winslow.model import (
+    ApplyFilterRequest,
+    BatchOptionsRequest,
     CacheCard,
     CacheEntryCard,
     CachesPayload,
+    CachesRequest,
+    CacheValueRequest,
     CacheValueView,
+    CreateSessionRequest,
+    DescriptorsRequest,
+    HistoryRequest,
+    LogTailRequest,
     ManifestRow,
+    ManifestsRequest,
     PhaseRow,
     RecordDetail,
+    RecordDetailRequest,
+    RestoreSessionRequest,
+    RosterRequest,
     SessionParams,
+    SessionParamsRequest,
     SessionRow,
+    TaskDetailRequest,
     TaskStatusSummary,
 )
 from winslow.util import safe_repr
@@ -133,6 +147,26 @@ ACTION_CLASSES = {
     Actions.SET_BATCH_OPTIONS: SetBatchOptions,
     Actions.LOAD_CACHE_ENTRIES: LoadCacheEntries,
     Actions.CLEAR_CACHE_ENTRIES: ClearCacheEntries,
+}
+
+
+# The frame names the request kind, the class validates the fields that kind
+# needs (see Connection.dispatch_request).
+REQUEST_CLASSES = {
+    Requests.CREATE_SESSION: CreateSessionRequest,
+    Requests.DESCRIPTORS: DescriptorsRequest,
+    Requests.HISTORY: HistoryRequest,
+    Requests.LOG_TAIL: LogTailRequest,
+    Requests.TASK_DETAIL: TaskDetailRequest,
+    Requests.ROSTER: RosterRequest,
+    Requests.CACHES: CachesRequest,
+    Requests.CACHE_VALUE: CacheValueRequest,
+    Requests.RECORD_DETAIL: RecordDetailRequest,
+    Requests.BATCH_OPTIONS: BatchOptionsRequest,
+    Requests.SESSION_PARAMS: SessionParamsRequest,
+    Requests.APPLY_FILTER: ApplyFilterRequest,
+    Requests.MANIFESTS: ManifestsRequest,
+    Requests.RESTORE_SESSION: RestoreSessionRequest,
 }
 
 
