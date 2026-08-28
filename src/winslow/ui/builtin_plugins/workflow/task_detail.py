@@ -1,3 +1,5 @@
+import asyncio
+
 from rich.syntax import Syntax
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -57,15 +59,19 @@ class TaskLogView(LogView):
     def _write_line(self, message):
         self.write(message.line)
 
-    def on_mount(self):
+    async def on_mount(self):
         if self._logs is not None:
             for line in self._logs:
                 self.write(line)
         elif self._live:
             # A line between the backlog read and the subscribe duplicates
             # rather than disappears (see LocalSessionClient.subscribe_task_log).
-            backlog = port_read(
-                self, self._client.subscribe_task_log, self._task_key, self._on_task_log
+            backlog = await asyncio.to_thread(
+                port_read,
+                self,
+                self._client.subscribe_task_log,
+                self._task_key,
+                self._on_task_log,
             )
             for line in backlog or ():
                 self.write(line)

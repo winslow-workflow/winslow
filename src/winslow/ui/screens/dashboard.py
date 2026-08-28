@@ -11,7 +11,7 @@ from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
-from winslow.ui.reads import READ_FAILURES, port_read
+from winslow.ui.reads import port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
 
 
@@ -113,27 +113,31 @@ class DashboardScreen(SlottedScreen):
             None,
         )
 
+    async def _push_force_end(self, session_id):
+        """Gather the modal's DTOs off the UI thread, then push it. An
+        outage skips the modal with a toast (see winslow.ui.reads)."""
+        client = self.client.session(session_id)
+        snapshot = await asyncio.to_thread(port_read, self, client.snapshot)
+        if snapshot is None:
+            return
+        roster = await asyncio.to_thread(port_read, self, client.roster)
+        history = await asyncio.to_thread(port_read, self, client.history)
+        self.app.push_screen(ForceEndModal(client, snapshot, roster, history))
+
     @on(Button.Pressed, ".workflow-end")
     async def end_session(self, event):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
         session_id = row.session_id
         if session_id is None:
             return
-        if self._session_status(session_id) == "ENDING":
-            # The modal reads the snapshot at construction, so an outage in
-            # that window answers a toast (see winslow.ui.reads).
-            try:
-                modal = ForceEndModal(self.client.session(session_id))
-            except READ_FAILURES as exc:
-                self.notify(str(exc), severity="warning")
-                return
-            self.app.push_screen(modal)
+        if await asyncio.to_thread(self._session_status, session_id) == "ENDING":
+            await self._push_force_end(session_id)
             return
         await self.app.end_session(session_id)
         # A session with active batches drains first; the session_ended event
         # moves the row to the history when the drain completes.
-        if self._session_status(session_id) == "ENDING":
-            row.begin_ending()
+        if await asyncio.to_thread(self._session_status, session_id) == "ENDING":
+            await row.begin_ending()
 
     async def move_session_to_history(self, session_id):
         """The session_ended reaction: replace the live row with a history
@@ -150,7 +154,7 @@ class DashboardScreen(SlottedScreen):
         # The end paths can race; the second call finds no row.
         if row is None or not row.is_mounted:
             return
-        final = row.fetch_row()
+        final = await asyncio.to_thread(row.fetch_row)
         await row.remove()
         await self.add_history_session(final)
 

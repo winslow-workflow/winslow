@@ -1,3 +1,5 @@
+import asyncio
+
 from textual import on
 from textual.message import Message
 
@@ -30,9 +32,9 @@ class SessionLogView(LogView):
     def _write_line(self, message):
         self.write(message.line)
 
-    def on_mount(self):
+    async def on_mount(self):
         self._client.subscribe(SessionLogEvent, self._on_session_log)
-        snapshot = port_read(self, self._client.snapshot)
+        snapshot = await asyncio.to_thread(port_read, self, self._client.snapshot)
         if snapshot is not None:
             for line in snapshot.session_log_backlog:
                 self.write(line)

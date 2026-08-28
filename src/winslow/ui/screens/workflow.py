@@ -201,11 +201,11 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
     # --- lifecycle --------------------------------------------------------------
 
-    def _refresh_from_snapshot(self):
+    async def _refresh_from_snapshot(self):
         """Overlay the current snapshot: a port event that arrived before the
         screen ran is healed here. The mirror only updates, because the store
         of an ended session is empty."""
-        snapshot = port_read(self, self.client.snapshot)
+        snapshot = await asyncio.to_thread(port_read, self, self.client.snapshot)
         if snapshot is None:
             return
         self.session_status = snapshot.status
@@ -213,10 +213,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             self.propagate_task_status(key, TaskStatus[name])
 
     async def on_mount(self):
-        self._refresh_from_snapshot()
+        await self._refresh_from_snapshot()
 
     async def on_screen_resume(self):
-        self._refresh_from_snapshot()
+        await self._refresh_from_snapshot()
         # A session that ended is read-only history. Remove the live Tasks and
         # Caches tabs, so only the execution History stays. This is idempotent:
         # the tabs are gone after the first view of a workflow that ended.
@@ -380,8 +380,8 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.app.push_screen(FilterHelp())
 
     @on(Button.Pressed, ".workflow-params")
-    def handle_workflow_params(self, event):
-        params = port_read(self, self.client.session_params)
+    async def handle_workflow_params(self, event):
+        params = await asyncio.to_thread(port_read, self, self.client.session_params)
         if params is None:
             return
         self.app.push_screen(

@@ -1,3 +1,5 @@
+import asyncio
+
 from textual.containers import Horizontal
 from textual.reactive import reactive
 from textual.widget import Widget
@@ -119,35 +121,37 @@ class SessionRow(Widget):
 
     def _active_batches(self):
         """The active batch rows, or None when the read fails (an outage
-        skips one refresh; the tick reads again)."""
+        skips one refresh; the tick reads again). Runs off the UI thread
+        (see _tick)."""
         client = self.app.client.session(self.session_id)
         snapshot = port_read(self, client.snapshot, quiet=True)
         if snapshot is None:
             return None
         return [b for b in snapshot.batches if b.status in ACTIVE_BATCH_STATUSES]
 
-    def begin_ending(self):
+    async def begin_ending(self):
         label = self.query_one(".waiting", Label)
         label.display = True
-        batches = self._active_batches()
+        batches = await asyncio.to_thread(self._active_batches)
         if batches is not None:
             label.update(self._waiting_text(batches))
 
     def fetch_row(self):
         """The current SessionRow value of this session, or the last known
-        one when the read fails or finds no match."""
+        one when the read fails or finds no match. Runs off the UI thread
+        (see _tick)."""
         rows = port_read(self, self.app.client.sessions, quiet=True)
         if rows is None:
             return self.row
         return next((r for r in rows if r.session_id == self.session_id), self.row)
 
-    def _tick(self):
+    async def _tick(self):
         if self.row is None:
             return
-        self.row = self.fetch_row()
+        self.row = await asyncio.to_thread(self.fetch_row)
         self._refresh_summary()
         if self.row.status == "ENDING":
-            batches = self._active_batches()
+            batches = await asyncio.to_thread(self._active_batches)
             if batches is not None:
                 self.query_one(".waiting", Label).update(self._waiting_text(batches))
 

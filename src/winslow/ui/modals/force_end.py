@@ -1,3 +1,5 @@
+import asyncio
+
 from textual import on
 from textual.widgets import Button, Label
 from textual.containers import Horizontal, VerticalScroll
@@ -17,11 +19,14 @@ def _active_batches(snapshot):
 
 class ForceEndModal(BaseModal):
     """The confirmation before a force end: the active batches and their
-    rosters, from the snapshot and the history reads of the port."""
+    rosters. The caller passes the snapshot, roster and history DTOs, so
+    the wire round-trips run off the UI thread (see DashboardScreen)."""
 
-    def __init__(self, client, *args, **kwargs):
+    def __init__(self, client, snapshot, roster, history, *args, **kwargs):
         self.client = client
-        self._snapshot = client.snapshot()
+        self._snapshot = snapshot
+        self._roster = roster
+        self._history = history
         super().__init__(*args, **kwargs)
 
     @property
@@ -35,8 +40,10 @@ class ForceEndModal(BaseModal):
         # that already completed.
         self.set_interval(1, self._dismiss_if_drained)
 
-    def _dismiss_if_drained(self):
-        snapshot = port_read(self, self.client.snapshot, quiet=True)
+    async def _dismiss_if_drained(self):
+        snapshot = await asyncio.to_thread(
+            port_read, self, self.client.snapshot, quiet=True
+        )
         if snapshot is None:
             return
         if snapshot.status == "ENDED" or not _active_batches(snapshot):
@@ -45,10 +52,8 @@ class ForceEndModal(BaseModal):
     def compose_content(self):
         # The roster labels come from the roster read; the per-batch keys
         # from the history rows. An outage renders the batches without them.
-        roster = port_read(self, self.client.roster)
-        history = port_read(self, self.client.history)
-        labels = {info.key: str(info) for info in roster or ()}
-        rosters = {row.uuid: tuple(row.tasks) for row in history or ()}
+        labels = {info.key: str(info) for info in self._roster or ()}
+        rosters = {row.uuid: tuple(row.tasks) for row in self._history or ()}
         with VerticalScroll():
             for batch in _active_batches(self._snapshot):
                 yield Label(
