@@ -462,10 +462,18 @@ class Connection:
     def handle_subscribe_task_log(self, envelope):
         """The backlog and the live stream of one task's log, outside any
         batch. The backlog answers at once. The live lines ride the session
-        subscription as task_log_batch frames, so the client must also
-        subscribe to the session."""
+        subscription as task_log_batch frames, so the client must already
+        be subscribed to the session; this method never subscribes it."""
         session = self.resolve_for(envelope)
         if session is None:
+            return
+        if session.session_id not in self.subscriptions:
+            self.request_error(
+                envelope.request_id,
+                f"subscribe to {session.session_id!r} before subscribing "
+                f"to one of its task logs - task_log_batch frames ride the "
+                f"session subscription.",
+            )
             return
         if session.has_ended:
             self.request_error(

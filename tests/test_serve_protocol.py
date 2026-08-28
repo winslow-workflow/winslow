@@ -447,6 +447,28 @@ def test_session_log_backlog_serves_lines_logged_before_any_subscribe(
     ws.close()
 
 
+def test_subscribe_task_log_refuses_without_a_prior_session_subscribe(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ws = connect(registry)
+    ws.send_json(
+        {
+            "type": "subscribe_task_log",
+            "request_id": "r-52",
+            "session_id": session.session_id,
+            "task_key": alpha.identity_key,
+        }
+    )
+    error = frames_until(ws, "error")
+    assert error["request_id"] == "r-52"
+    assert "subscribe" in error["reason"]
+
+    # The connection is still healthy: subscribing properly now works.
+    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    assert ws.receive_json()["type"] == "snapshot"
+    ws.close()
+
+
 def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypatch):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
@@ -744,6 +766,8 @@ def test_subscribe_task_log_answers_a_directional_error_once_ended(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
     ws = connect(registry)
+    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    assert ws.receive_json()["type"] == "snapshot"
     session.end()
     ws.send_json(
         {
