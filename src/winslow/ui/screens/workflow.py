@@ -143,18 +143,14 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             (SessionEndedEvent, self._on_session_ended),
             (CacheUpdatedEvent, self._on_cache_updated),
         ):
-            handler = self._relay(method)
+            handler = partial(self._relay, method)
             self._port_handlers[topic] = handler
             self.client.subscribe(topic, handler)
 
-    def _relay(self, method):
-        """A port handler that moves the event to the UI thread. The publish
+    def _relay(self, method, event):
+        """A port handler body: move the event to the UI thread. The publish
         thread returns immediately (see StoreEvent)."""
-
-        def handler(event):
-            self.post_message(StoreEvent(partial(method, event)))
-
-        return handler
+        self.post_message(StoreEvent(partial(method, event)))
 
     def _disconnect_topic(self, topic):
         handler = self._port_handlers.pop(topic, None)

@@ -93,6 +93,10 @@ versions may include breaking changes).
 
 ### Changed
 
+- A cache read of an ended session refuses with direction: "has ended and released its caches",
+  pointing at the recorded reads in the execution history. Before, it raised the pre-init message
+  "caches read before initialize_tasks built them". `SessionSnapshot.cache_names` is `None` for an
+  ended session; an empty tuple means no registered caches.
 - The drain rule moved into the runner: after each batch completion the batch worker calls
   `Session.finalize_if_drained`, so an ending session reaches ENDED the same way for the TUI, the
   websocket and headless. Before, only the TUI app drove the transition, and a session ended over

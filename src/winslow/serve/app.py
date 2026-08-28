@@ -648,13 +648,24 @@ class Connection:
     @request_handler(Requests.CACHES)
     @requires_live_session
     async def _request_caches(self, envelope, session):
-        payload = await asyncio.to_thread(caches_payload, session.workflow)
+        # A session end can land between the live guard and this read; the
+        # refusal then answers a frame (see Workflow.caches).
+        try:
+            payload = await asyncio.to_thread(caches_payload, session.workflow)
+        except ValueError as exc:
+            self.request_error(envelope.request_id, str(exc))
+            return
         self.result(envelope, **payload)
 
     @request_handler(Requests.CACHE_VALUE)
     @requires_live_session
     async def _request_cache_value(self, envelope, session):
-        cache = session.workflow.get_cache(envelope.cache_name)
+        # The same end race as the caches request (see Workflow.caches).
+        try:
+            cache = session.workflow.get_cache(envelope.cache_name)
+        except ValueError as exc:
+            self.request_error(envelope.request_id, str(exc))
+            return
         if cache is None:
             self.request_error(
                 envelope.request_id,

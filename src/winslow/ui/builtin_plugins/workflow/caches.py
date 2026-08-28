@@ -174,6 +174,9 @@ class CachesPane(SearchFlowMixin, Widget):
         self._search = ""
         self._init_search()
         self._scope = _SCOPE_ALL
+        # The caches whose last snapshot carried an error: the transition
+        # into the error state logs once, a recovery clears the mark.
+        self._unobservable = set()
         # True while a snapshot thread runs: exclusive workers cancel only the
         # awaiting coroutine, so the flag stops the threads from stacking.
         self._collecting = False
@@ -246,11 +249,18 @@ class CachesPane(SearchFlowMixin, Widget):
                 await self._mount_card(card)
                 widget = self._cards[card.name]
             if card.error is not None:
+                if card.name not in self._unobservable:
+                    self._unobservable.add(card.name)
+                    self.app.logger.error(
+                        f"The cache pane cannot observe '{card.name}': "
+                        f"{card.error}"
+                    )
                 widget.border_subtitle = " storage error "
                 for row in widget.query(CacheEntryRow).results():
                     row.tooltip = card.error
                     row.show_unobservable()
                 continue
+            self._unobservable.discard(card.name)
             widget.border_subtitle = ""
             widget.refresh_summary(card.info)
             for info in card.info:

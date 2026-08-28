@@ -3,6 +3,7 @@ import json
 import traceback
 
 from enum import StrEnum
+from functools import partial
 
 from rich.pretty import Pretty
 
@@ -68,43 +69,47 @@ class CacheValue(BaseModal):
         """The live view: read the CacheValueView through the port. The value
         arrives rendered, so the modal shows the same text a wire client
         receives. An ERRORED entry shows its context (see CacheEntryError)."""
+        return cls(
+            f"{cache_name}.{entry_name}",
+            partial(cls._produce_entry, client, cache_name, entry_name),
+            logger,
+        )
 
-        def produce():
-            view = client.cache_value(cache_name, entry_name)
-            notes = []
-            if view.error is not None:
-                tier = f" on {view.error.tier}" if view.error.tier else ""
-                notes.append(
-                    f"ERRORED - the {view.error.origin} failed{tier}: "
-                    f"{view.error.message}"
-                )
-            if view.summary is not None:
-                notes.append(f"bounded rendering - {view.summary}")
-            note = "\n".join(notes) or None
-            if view.rendered is None:
-                # No value to show: the stored traceback is the whole view.
-                if view.error is not None and view.error.traceback:
-                    return _View.TRACEBACK, view.error.traceback, note
-                if view.state == EntryState.COMPUTING:
-                    return _View.NOTE, "<computing - the loader runs right now>", None
-                return _View.NOTE, note or "<cold - no value>", None
-            if view.encoding == SnapshotEncoding.JSON:
-                return _View.TREE, (entry_name, json.loads(view.rendered)), note
-            return _View.TEXT, view.rendered, note
-
-        return cls(f"{cache_name}.{entry_name}", produce, logger)
+    @classmethod
+    def _produce_entry(cls, client, cache_name, entry_name):
+        view = client.cache_value(cache_name, entry_name)
+        notes = []
+        if view.error is not None:
+            tier = f" on {view.error.tier}" if view.error.tier else ""
+            notes.append(
+                f"ERRORED - the {view.error.origin} failed{tier}: "
+                f"{view.error.message}"
+            )
+        if view.summary is not None:
+            notes.append(f"bounded rendering - {view.summary}")
+        note = "\n".join(notes) or None
+        if view.rendered is None:
+            # No value to show: the stored traceback is the whole view.
+            if view.error is not None and view.error.traceback:
+                return _View.TRACEBACK, view.error.traceback, note
+            if view.state == EntryState.COMPUTING:
+                return _View.NOTE, "<computing - the loader runs right now>", None
+            return _View.NOTE, note or "<cold - no value>", None
+        if view.encoding == SnapshotEncoding.JSON:
+            return _View.TREE, (entry_name, json.loads(view.rendered)), note
+        return _View.TEXT, view.rendered, note
 
     @classmethod
     def for_snapshot(cls, snapshot, logger=None):
         """The history view: a JSON snapshot deserializes back into a value
         for the tree (see SnapshotEncoding)."""
-
-        def produce():
-            value = json.loads(snapshot.rendered)
-            return _View.TREE, (snapshot.entry_name, value), None
-
         title = f"{snapshot.cache_name}.{snapshot.entry_name} (snapshot)"
-        return cls(title, produce, logger)
+        return cls(title, partial(cls._produce_snapshot, snapshot), logger)
+
+    @classmethod
+    def _produce_snapshot(cls, snapshot):
+        value = json.loads(snapshot.rendered)
+        return _View.TREE, (snapshot.entry_name, value), None
 
     @property
     def modal_title(self):

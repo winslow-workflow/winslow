@@ -644,10 +644,37 @@ def test_caches_isolate_an_unobservable_storage(e2e_repo):
 
 
 def test_snapshot_names_the_caches_until_the_session_ends(e2e_repo):
+    """None separates "ended" from "no registered caches", which answers an
+    empty tuple (see SessionSnapshot.cache_names)."""
     workflow, session, client = session_client(e2e_repo, "my-cache")
     assert "weather" in client.snapshot().cache_names
     client.submit(EndSession())
-    assert client.snapshot().cache_names == ()
+    assert client.snapshot().cache_names is None
+
+    workflow, session, cacheless = session_client(e2e_repo)
+    assert cacheless.snapshot().cache_names == ()
+
+
+def test_cache_reads_refuse_an_ended_session_with_direction(e2e_repo):
+    """The release guard names the true state: the session ended, and the
+    recorded reads live in the history (see Workflow.caches)."""
+    workflow, session, client = session_client(e2e_repo, "my-cache")
+    client.submit(EndSession())
+    assert session.has_ended
+    with pytest.raises(ValueError, match="has ended and released its caches"):
+        client.caches()
+    with pytest.raises(ValueError, match="has ended and released its caches"):
+        client.cache_value("weather", "cities")
+
+
+def test_caches_before_initialize_tasks_keep_the_init_message(e2e_repo):
+    from winslow.exceptions import InitializationError
+
+    orchestrator = local_orchestrator(e2e_repo)
+    workflow_kls = orchestrator.workflow_registry["my-cache"]
+    workflow = workflow_kls(orchestrator.orchestrator_config)
+    with pytest.raises(InitializationError, match="before initialize_tasks"):
+        workflow.caches()
 
 
 def test_history_rows_carry_the_batch_options(e2e_repo):

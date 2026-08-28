@@ -384,8 +384,21 @@ class Workflow(_ConfigBase):
         self.global_cache.remove_listener(listener)
 
     def caches(self):
-        """The caches this workflow can see, workflow scope first."""
-        return (*self.workflow_cache.caches(), *self.global_cache.caches())
+        """The caches this workflow can see, workflow scope first. After the
+        session end the read refuses with direction: the caches are released.
+        One read of the container, so the message matches the state."""
+        container = self._workflow_cache
+        if container is None:
+            if self.session is not None and self.session.has_ended:
+                raise ValueError(
+                    f"{self} has ended and released its caches - the recorded "
+                    f"cache reads live in the execution history (see "
+                    f"record_detail)."
+                )
+            raise InitializationError(
+                f"{self} caches read before initialize_tasks built them."
+            )
+        return (*container.caches(), *self.global_cache.caches())
 
     def get_cache(self, name):
         """The live cache named `name`, or None."""

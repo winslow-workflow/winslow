@@ -33,7 +33,7 @@ class WorkflowRenderContext(RenderContext):
     # The SessionSnapshot at compose time.
     snapshot: object
     # The stub TaskInfo per task, in launch-filter order.
-    roster: tuple = ()
+    roster: tuple = None
     # {identity key: TaskStatus}, maintained by the screen. A DTO-driven pane
     # reads its statuses here (see docs/ui-plugins.md).
     task_statuses: dict = None

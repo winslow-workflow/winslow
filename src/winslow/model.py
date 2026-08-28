@@ -638,8 +638,17 @@ class SessionSnapshot:
     session_log_backlog: tuple
     batches: tuple  # tuple[BatchRow, ...]
     # The cache names of the session, so a client can decide whether to show
-    # a caches pane before the first caches read.
-    cache_names: tuple = ()
+    # a caches pane before the first caches read. None once the session has
+    # ended and released its caches; an empty tuple means no registered caches.
+    cache_names: tuple | None = None
+
+    @classmethod
+    def _cache_names(cls, workflow):
+        try:
+            return tuple(cache.get_name() for cache in workflow.caches())
+        except ValueError:
+            # The session ended between the status read and this read.
+            return None
 
     @classmethod
     def from_session(cls, session):
@@ -657,11 +666,7 @@ class SessionSnapshot:
             batches=tuple(
                 BatchRow.from_batch(batch) for batch in workflow.runner.batches
             ),
-            cache_names=(
-                tuple(cache.get_name() for cache in workflow.caches())
-                if not session.has_ended
-                else ()
-            ),
+            cache_names=cls._cache_names(workflow),
         )
 
 

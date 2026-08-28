@@ -139,14 +139,16 @@ class Winslow(App):
 
         # The end event moves the dashboard row to the history. The bus
         # close at session end disconnects the lane.
-        def on_session_ended(event):
-            self.post_message(
-                SessionLifecycleEvent(
-                    partial(self.dashboard.move_session_to_history, session_id)
-                )
-            )
+        client.subscribe(
+            SessionEndedEvent, partial(self._relay_session_ended, session_id)
+        )
 
-        client.subscribe(SessionEndedEvent, on_session_ended)
+    def _relay_session_ended(self, session_id, event):
+        self.post_message(
+            SessionLifecycleEvent(
+                partial(self.dashboard.move_session_to_history, session_id)
+            )
+        )
 
     @on(SessionLifecycleEvent)
     async def handle_session_lifecycle_event(self, event):
