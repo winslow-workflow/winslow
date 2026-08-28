@@ -31,6 +31,7 @@ from winslow.ui.modals import TaskDetail
 from winslow.ui.modals.common import BaseModal
 from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.icons import get_task_icon
+from winslow.ui.reads import port_read
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.widgets.common.params_table import ParamsTable
@@ -363,7 +364,8 @@ class HistoryPane(QuerySearchMixin, Widget):
                     # checkbox column of the task bar has the same two rows.
                     yield Checkbox("placeholder", classes="placeholder", disabled=True)
         with VerticalScroll(id="cards-section"):
-            for row in reversed(self.client.history()):
+            rows = port_read(self, self.client.history)
+            for row in reversed(rows or ()):
                 yield BatchCard(BatchView.from_history_row(row), self._infos_by_key)
 
     async def on_mount(self):
@@ -373,12 +375,8 @@ class HistoryPane(QuerySearchMixin, Widget):
 
     def _open_detail(self, row):
         """The RecordDetail of one row, or None with a toast when the record
-        is gone."""
-        try:
-            return self.client.record_detail(row.batch_uuid, row.key)
-        except KeyError as exc:
-            self.notify(str(exc), severity="warning")
-            return None
+        is gone or the wire is down."""
+        return port_read(self, self.client.record_detail, row.batch_uuid, row.key)
 
     @on(RecordRow.Selected)
     def on_record_selected(self, event):
@@ -399,7 +397,7 @@ class HistoryPane(QuerySearchMixin, Widget):
             TaskDetail(
                 detail.info,
                 registry=self.screen.plugin_registry,
-                logs=self.client.log_tail(row.batch_uuid, row.key),
+                logs=port_read(self, self.client.log_tail, row.batch_uuid, row.key),
                 transient_snapshots=detail.transient_snapshots,
                 cache_snapshots=detail.cache_snapshots,
                 root_dir=self._root_dir,
@@ -428,7 +426,9 @@ class HistoryPane(QuerySearchMixin, Widget):
         )
 
     async def _refresh_outcomes(self, batch_uuid):
-        rows = await asyncio.to_thread(self.client.history)
+        rows = await asyncio.to_thread(port_read, self, self.client.history)
+        if rows is None:
+            return
         row = next((r for r in rows if r.uuid == batch_uuid), None)
         if row is None:
             return

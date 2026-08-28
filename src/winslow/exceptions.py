@@ -36,6 +36,18 @@ class SessionEndingError(WinslowError):
     released."""
 
 
+class RequestError(WinslowError):
+    """A session port read the server or the session refused: an unknown key,
+    an ended session, a bad query. Both transports raise it, so one catch site
+    serves the local and the wire mode (see winslow.client.base). Actions never
+    raise; a refused action answers an ack (see ActionHandler). `detail` can
+    carry a server traceback for the error modal."""
+
+    def __init__(self, reason, detail=None):
+        super().__init__(reason)
+        self.detail = detail
+
+
 class ParameterizationError(WinslowError):
     def __init__(self, msg, task_kls=None):
         if task_kls:

@@ -11,6 +11,8 @@ from functools import partial
 
 from textual.widgets import Input
 
+from winslow.ui.reads import READ_FAILURES
+
 FILTER_MATCH_CLASS = "filter-match"
 FILTER_DIM_CLASS = "filter-dim"
 
@@ -89,11 +91,12 @@ class QuerySearchMixin(SearchFlowMixin):
             self.query_one(f"#{self.search_input_id}", Input).validate(query)
 
     def search_matches(self, query):
-        # None marks an unparseable query: the preview clears, nothing dims.
+        # None marks a query with no answer - unparseable, or the wire is
+        # down: the preview clears, nothing dims.
         self._validate_search_input(query)
         try:
             return self.match_keys(query)
-        except ValueError:
+        except READ_FAILURES:
             return None
 
     def apply_search(self, query):
@@ -102,7 +105,7 @@ class QuerySearchMixin(SearchFlowMixin):
         else:
             try:
                 matching = self.match_keys(query)
-            except ValueError as exc:
+            except READ_FAILURES as exc:
                 self.notify(str(exc), severity="warning")
                 return
             self._filter_matching = matching

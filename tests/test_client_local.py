@@ -27,7 +27,7 @@ from winslow.events import (
     SessionEndedEvent,
     TaskStatusEvent,
 )
-from winslow.exceptions import MisconfigurationError
+from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
     BatchInfo,
     CacheCard,
@@ -157,7 +157,7 @@ def test_create_session_refuses_an_unknown_workflow(e2e_repo, state_store):
         orchestrator=local_orchestrator(e2e_repo),
         state_store=state_store,
     )
-    with pytest.raises(KeyError, match="names no collected workflow"):
+    with pytest.raises(RequestError, match="names no collected workflow"):
         app.create_session("no-such-workflow")
 
 
@@ -171,7 +171,7 @@ def test_manifests_and_restore_round_trip(e2e_repo, state_store):
 
     # A live session is no restore candidate, and restoring it is refused.
     assert session_id not in {m.session_id for m in app.manifests()}
-    with pytest.raises(ValueError, match="already a live session"):
+    with pytest.raises(RequestError, match="already a live session"):
         app.restore_session(session_id)
 
     # Simulate a dead process: the session drops out of the registry, but
@@ -192,7 +192,7 @@ def test_restore_refuses_an_unknown_manifest(e2e_repo, state_store):
         orchestrator=local_orchestrator(e2e_repo),
         state_store=state_store,
     )
-    with pytest.raises(ValueError, match="names no open manifest"):
+    with pytest.raises(RequestError, match="names no open manifest"):
         app.restore_session("gone")
 
 
@@ -250,7 +250,7 @@ def test_task_detail_serves_the_evaluated_full_capture(e2e_repo):
     assert info.attributes is not None
     assert info.source is not None
     assert info.effective_ttl == workflow.effective_check_ttl(alpha)
-    with pytest.raises(KeyError):
+    with pytest.raises(RequestError):
         client.task_detail("no-such-key")
 
 
@@ -282,9 +282,9 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
     assert client.log_tail(ack.batch_uuid, alpha.identity_key) == record.log_tail(
         200
     )
-    with pytest.raises(KeyError, match="keeps no records"):
+    with pytest.raises(RequestError, match="keeps no records"):
         client.record_detail("no-such-batch", alpha.identity_key)
-    with pytest.raises(KeyError, match="not in the roster"):
+    with pytest.raises(RequestError, match="not in the roster"):
         client.log_tail(ack.batch_uuid, "no-such-key")
 
 
@@ -316,9 +316,9 @@ def test_cache_value_renders_warm_and_reports_cold(e2e_repo):
     assert cold.state == "cold"
     assert cold.rendered is None
 
-    with pytest.raises(KeyError, match="names no cache"):
+    with pytest.raises(RequestError, match="names no cache"):
         client.cache_value("no-such-cache", "cities")
-    with pytest.raises(KeyError, match="has no entry"):
+    with pytest.raises(RequestError, match="has no entry"):
         client.cache_value("weather", "no-such-entry")
 
 
@@ -327,7 +327,7 @@ def test_apply_filter_answers_keys_or_raises_the_parse_error(e2e_repo):
     alpha = by_name(workflow)["Alpha"]
     keys = client.apply_filter("alpha")
     assert alpha.identity_key in keys
-    with pytest.raises(ValueError):
+    with pytest.raises(RequestError):
         client.apply_filter("((unclosed")
 
 
@@ -336,7 +336,7 @@ def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatc
 
     monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
     workflow, session, client = session_client(e2e_repo)
-    with pytest.raises(ValueError, match="supports only the builtin filters"):
+    with pytest.raises(RequestError, match="supports only the builtin filters"):
         client.apply_filter("alpha", builtin_only=True)
 
 
@@ -661,9 +661,9 @@ def test_cache_reads_refuse_an_ended_session_with_direction(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
     client.submit(EndSession())
     assert session.has_ended
-    with pytest.raises(ValueError, match="has ended and released its caches"):
+    with pytest.raises(RequestError, match="has ended and released its caches"):
         client.caches()
-    with pytest.raises(ValueError, match="has ended and released its caches"):
+    with pytest.raises(RequestError, match="has ended and released its caches"):
         client.cache_value("weather", "cities")
 
 
@@ -769,7 +769,7 @@ def test_apply_filter_history_scope_matches_the_record_infos(e2e_repo):
     assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)
     # A task with no execution record is not in the corpus.
     assert client.apply_filter("no-such-task", scope="history") == ()
-    with pytest.raises(ValueError, match="names no filter scope"):
+    with pytest.raises(RequestError, match="names no filter scope"):
         client.apply_filter("alpha", scope="records")
 
 
@@ -782,7 +782,7 @@ def test_apply_filter_history_scope_survives_the_session_end(e2e_repo):
     wait_for(lambda: session.has_ended, "the session never ended")
 
     assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)
-    with pytest.raises(ValueError, match="scope='history'"):
+    with pytest.raises(RequestError, match="scope='history'"):
         client.apply_filter("alpha")
 
 
@@ -791,7 +791,7 @@ def test_apply_filter_history_scope_refuses_a_project_filter(e2e_repo, monkeypat
 
     monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
     workflow, session, client = session_client(e2e_repo)
-    with pytest.raises(ValueError, match="supports only the builtin filters"):
+    with pytest.raises(RequestError, match="supports only the builtin filters"):
         client.apply_filter("alpha", scope="history")
 
 

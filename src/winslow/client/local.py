@@ -7,7 +7,7 @@ from functools import partial
 
 from winslow.cache import declared_entries
 from winslow.client.base import AppClient, SessionClient
-from winslow.exceptions import MisconfigurationError
+from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.logger import (
     INTERACTIVE_FORMATTER,
     InteractiveLogHandler,
@@ -107,22 +107,27 @@ class LocalAppClient(AppClient):
     def create_session(self, workflow, overrides=None, values=None):
         self._require_orchestrator()
         self._require_state_store()
-        session = create_session(
-            self.orchestrator,
-            self.state_store,
-            self.registry,
-            workflow,
-            overrides,
-            values,
-            origin="local",
-        )
+        try:
+            session = create_session(
+                self.orchestrator,
+                self.state_store,
+                self.registry,
+                workflow,
+                overrides,
+                values,
+                origin="local",
+            )
+        except (KeyError, ValueError) as exc:
+            # A refusal: an unknown workflow, a bad option value. An init
+            # bug propagates raw, so an in-process caller keeps its traceback.
+            raise RequestError(exc.args[0] if exc.args else str(exc)) from None
         return SessionRow.from_session(session)
 
     def restore_session(self, session_id):
         self._require_orchestrator()
         self._require_state_store()
         if session_id in self.registry:
-            raise ValueError(f"{session_id!r} is already a live session.")
+            raise RequestError(f"{session_id!r} is already a live session.")
         manifest = next(
             (
                 m
@@ -132,11 +137,11 @@ class LocalAppClient(AppClient):
             None,
         )
         if manifest is None:
-            raise ValueError(
+            raise RequestError(
                 f"{session_id!r} names no open manifest to restore."
             )
         if manifest.workflow_class not in self.orchestrator.workflow_registry.names:
-            raise ValueError(
+            raise RequestError(
                 f"the manifest names workflow {manifest.workflow_class!r}, "
                 f"which this client does not collect."
             )
@@ -185,10 +190,16 @@ class LocalSessionClient(SessionClient):
         return tuple(workflow.task_info(task) for task in workflow.roster_tasks())
 
     def task_detail(self, key):
-        task = self._workflow.task_index.resolve(key)
+        task = self._resolve_task(key)
         return self._workflow.task_info(
             task, full=True, evaluate=True, root_dir=self._workflow.root_dir
         )
+
+    def _resolve_task(self, key):
+        try:
+            return self._workflow.task_index.resolve(key)
+        except KeyError as exc:
+            raise RequestError(exc.args[0]) from None
 
     def record_detail(self, batch_uuid, key):
         return RecordDetail.from_record(self._record(batch_uuid, key))
@@ -206,31 +217,42 @@ class LocalSessionClient(SessionClient):
     def _record(self, batch_uuid, key):
         store = self._workflow.runner.record_store(batch_uuid)
         if store is None:
-            raise KeyError(
+            raise RequestError(
                 f"batch {batch_uuid!r} keeps no records in this session."
             )
         try:
             return store.get_record(key)
         except KeyError:
-            raise KeyError(
+            raise RequestError(
                 f"task {key!r} is not in the roster of batch {batch_uuid!r}."
             ) from None
 
     def caches(self):
-        return CachesPayload.from_workflow(self._workflow).caches
+        # The caches read of an ended session refuses with direction (see
+        # Workflow.caches).
+        try:
+            return CachesPayload.from_workflow(self._workflow).caches
+        except ValueError as exc:
+            raise RequestError(str(exc)) from None
 
     def cache_value(self, cache_name, entry_name):
-        cache = self._workflow.get_cache(cache_name)
+        try:
+            cache = self._workflow.get_cache(cache_name)
+        except ValueError as exc:
+            raise RequestError(str(exc)) from None
         if cache is None:
-            raise KeyError(f"{cache_name!r} names no cache of this session.")
+            raise RequestError(f"{cache_name!r} names no cache of this session.")
         if entry_name not in declared_entries(type(cache)):
-            raise KeyError(f"{cache} has no entry {entry_name!r}.")
+            raise RequestError(f"{cache} has no entry {entry_name!r}.")
         return CacheValueView.from_entry(cache, entry_name)
 
     def apply_filter(self, query, builtin_only=False, scope="tasks"):
-        return self._workflow.filter_keys(
-            query, scope=scope, builtin_only=builtin_only
-        )
+        try:
+            return self._workflow.filter_keys(
+                query, scope=scope, builtin_only=builtin_only
+            )
+        except ValueError as exc:
+            raise RequestError(str(exc)) from None
 
     def batch_options(self):
         return asdict(self._workflow.batch_options)
@@ -269,7 +291,7 @@ class LocalSessionClient(SessionClient):
         key = (TaskLogEvent, task_key, handler)
         if key in self._teardowns:
             return self._backlog(task_key)
-        task = self._workflow.task_index.resolve(task_key)
+        task = self._resolve_task(task_key)
         log_handler = InteractiveLogHandler(partial(_emit_task_log, handler, task_key))
         dispatcher = get_task_dispatcher()
         # The listener attaches before the backlog read, so a line in that
@@ -281,7 +303,7 @@ class LocalSessionClient(SessionClient):
         return self._backlog(task_key)
 
     def _backlog(self, task_key):
-        task = self._workflow.task_index.resolve(task_key)
+        task = self._resolve_task(task_key)
         backlog = get_task_dispatcher().buffered(task.log_key)
         return tuple(INTERACTIVE_FORMATTER.format(record) for record in backlog)
 

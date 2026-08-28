@@ -36,7 +36,7 @@ from winslow.events import (
     SessionEndedEvent,
     TaskStatusEvent,
 )
-from winslow.exceptions import MisconfigurationError
+from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.logger import LOGGER
 from winslow.model import (
     BatchInfo,
@@ -70,6 +70,11 @@ CONNECTION_DOWN = (
     "the connection to the serve process is down - the client reconnects "
     "in the background; retry once it is back."
 )
+
+# The frame type _fail_pending resolves a dropped exchange with: the request
+# never reached a server, so the caller reads ConnectionError, never a
+# served refusal (see Wire.request).
+DROPPED = "connection_dropped"
 
 
 def normalize_url(url):
@@ -126,6 +131,10 @@ class Wire:
         # backlogs by (session id, task key) - that reply carries no id.
         self._pending = {}
         self._backlog_pending = {}
+        # The outstanding subscribe frames, request id -> lane: a refusal
+        # must reach the lane, or it waits for a snapshot forever (see
+        # subscribe_session).
+        self._subscribe_pending = {}
         # One shared lane per session id (see session_lane): the server
         # keeps one subscription per session per socket, so a second client
         # of the same session must not reset the first one's stream.
@@ -168,6 +177,31 @@ class Wire:
         with self._lock:
             self._lanes.pop(session_id, None)
 
+    def subscribe_session(self, lane):
+        """Send one subscribe frame for a lane, stamped with a request id.
+        The snapshot answer clears the id (see clear_subscribe_pending); an
+        error answer reaches the lane as a refusal. A send into an outage
+        is dropped: the reconnect resubscribes every lane."""
+        request_id = self.next_id()
+        self._subscribe_pending[request_id] = lane
+        try:
+            self.send(
+                {
+                    "type": FrameTypes.SUBSCRIBE,
+                    "session_id": lane.session_id,
+                    "request_id": request_id,
+                }
+            )
+        except ConnectionError:
+            self._subscribe_pending.pop(request_id, None)
+
+    def clear_subscribe_pending(self, lane):
+        """A snapshot answered the lane's subscribe: the outstanding ids of
+        that lane are settled."""
+        for request_id, pending_lane in tuple(self._subscribe_pending.items()):
+            if pending_lane is lane:
+                self._subscribe_pending.pop(request_id, None)
+
     # --- the outgoing side -----------------------------------------------------
 
     def send(self, payload):
@@ -178,7 +212,7 @@ class Wire:
 
     def request(self, kind, timeout=REQUEST_TIMEOUT, **fields):
         """One request frame, blocking until its result. A server refusal
-        raises ValueError with the served reason."""
+        raises RequestError with the served reason (see winslow.client.base)."""
         request_id = self.next_id()
         pending = Pending()
         self._pending[request_id] = pending
@@ -194,17 +228,19 @@ class Wire:
             frame = pending.wait(timeout)
         finally:
             self._pending.pop(request_id, None)
+        if frame["type"] == DROPPED:
+            raise ConnectionError(frame["reason"])
         if frame["type"] == FrameTypes.ERROR:
-            raise ValueError(self._error_text(frame))
+            raise self._refusal(frame)
         return frame
 
     @classmethod
-    def _error_text(cls, frame):
-        """The served reason, with the detail (a server traceback) behind
-        it, so the create and restore error modal shows the real cause."""
-        reason = frame.get("reason", CONNECTION_DOWN)
-        detail = frame.get("detail")
-        return f"{reason}\n\n{detail}" if detail else reason
+    def _refusal(cls, frame):
+        """The RequestError of one error frame. detail carries a server
+        traceback for the create and restore error modal."""
+        return RequestError(
+            frame.get("reason", CONNECTION_DOWN), detail=frame.get("detail")
+        )
 
     def action(self, session_id, action):
         """One action frame, blocking until its ack. A transport failure
@@ -235,8 +271,8 @@ class Wire:
             return self._refused(action, str(exc))
         finally:
             self._pending.pop(request_id, None)
-        if frame["type"] == FrameTypes.ERROR:
-            return self._refused(action, self._error_text(frame))
+        if frame["type"] in (FrameTypes.ERROR, DROPPED):
+            return self._refused(action, frame.get("reason", CONNECTION_DOWN))
         if "batch_uuid" in frame:
             return BatchAck(
                 accepted=frame["accepted"],
@@ -329,16 +365,26 @@ class Wire:
 
     def _fail_pending(self, reason):
         for pending in (*self._pending.values(), *self._backlog_pending.values()):
-            pending.resolve({"type": FrameTypes.ERROR, "reason": reason})
+            pending.resolve({"type": DROPPED, "reason": reason})
         self._pending.clear()
         self._backlog_pending.clear()
+        self._subscribe_pending.clear()
 
     def _route(self, frame):
         kind = frame.get("type")
         if kind in (FrameTypes.RESULT, FrameTypes.ACK, FrameTypes.ERROR):
-            pending = self._pending.get(frame.get("request_id"))
+            request_id = frame.get("request_id")
+            pending = self._pending.get(request_id)
             if pending is not None:
                 pending.resolve(frame)
+                return
+            lane = (
+                self._subscribe_pending.pop(request_id, None)
+                if request_id is not None
+                else None
+            )
+            if lane is not None:
+                lane.on_subscribe_refused(frame.get("reason", ""))
             return
         if kind == FrameTypes.TASK_LOG_BACKLOG:
             key = (frame.get("session_id"), frame.get("task_key"))
@@ -525,8 +571,10 @@ class RemoteSessionClient(SessionClient):
             frame = pending.wait(REQUEST_TIMEOUT)
         finally:
             self.wire.drop_backlog_exchange(self.session_id, task_key, request_id)
+        if frame["type"] == DROPPED:
+            raise ConnectionError(frame["reason"])
         if frame["type"] == FrameTypes.ERROR:
-            raise ValueError(frame.get("reason", CONNECTION_DOWN))
+            raise RequestError(frame.get("reason", CONNECTION_DOWN))
         return tuple(frame["lines"])
 
     def unsubscribe_task_log(self, task_key, handler):
@@ -558,9 +606,6 @@ class RemoteSessionClient(SessionClient):
             )
         self.wire.drop_lane(self.session_id)
 
-    def _subscribe_frame(self):
-        return {"type": FrameTypes.SUBSCRIBE, "session_id": self.session_id}
-
     def _task_log_frame(self, frame_type, task_key, request_id=None):
         frame = {
             "type": frame_type,
@@ -577,8 +622,7 @@ class RemoteSessionClient(SessionClient):
                 return
             self._subscribed = True
             self._awaiting_snapshot = True
-        # A send into an outage is fine: the reconnect resubscribes the lane.
-        self._send_quietly(self._subscribe_frame())
+        self.wire.subscribe_session(self)
 
     def _send_quietly(self, frame):
         try:
@@ -595,7 +639,7 @@ class RemoteSessionClient(SessionClient):
         self._awaiting_snapshot = True
         self._healing = True
         self._subscribed = True
-        self._send_quietly(self._subscribe_frame())
+        self.wire.subscribe_session(self)
         with self._lock:
             task_keys = tuple(self._task_log_handlers)
         for task_key in task_keys:
@@ -630,9 +674,20 @@ class RemoteSessionClient(SessionClient):
         the queue and resend the snapshot (see Connection.handle_subscribe)."""
         self._awaiting_snapshot = True
         self._healing = True
-        self._send_quietly(self._subscribe_frame())
+        self.wire.subscribe_session(self)
+
+    def on_subscribe_refused(self, reason):
+        """The server refused the lane's subscribe: the session does not
+        resolve there any more, and no snapshot will come. The end event
+        tells the panes; without it the lane waits silently forever."""
+        LOGGER.warning(f"the subscribe of {self.session_id} was refused - {reason}")
+        self._subscribed = False
+        self._awaiting_snapshot = False
+        self._healing = False
+        self._dispatch(SessionEndedEvent(session_id=self.session_id))
 
     def _on_snapshot(self, frame):
+        self.wire.clear_subscribe_pending(self)
         self._last_seq = frame["seq"]
         self._awaiting_snapshot = False
         if not self._healing:

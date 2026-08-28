@@ -3,6 +3,7 @@ from textual.message import Message
 
 from winslow.model import SessionLogEvent
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
+from winslow.ui.reads import port_read
 from winslow.ui.widgets.common import LogView
 
 
@@ -31,8 +32,10 @@ class SessionLogView(LogView):
 
     def on_mount(self):
         self._client.subscribe(SessionLogEvent, self._on_session_log)
-        for line in self._client.snapshot().session_log_backlog:
-            self.write(line)
+        snapshot = port_read(self, self._client.snapshot)
+        if snapshot is not None:
+            for line in snapshot.session_log_backlog:
+                self.write(line)
 
     def on_unmount(self):
         self._client.unsubscribe(SessionLogEvent, self._on_session_log)

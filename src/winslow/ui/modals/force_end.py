@@ -4,6 +4,7 @@ from textual.containers import Horizontal, VerticalScroll
 
 from winslow.actions import EndSession
 from winslow.ui.actions import ACTIVE_BATCH_STATUSES
+from winslow.ui.reads import port_read
 
 from .common import BaseModal
 
@@ -35,15 +36,19 @@ class ForceEndModal(BaseModal):
         self.set_interval(1, self._dismiss_if_drained)
 
     def _dismiss_if_drained(self):
-        snapshot = self.client.snapshot()
+        snapshot = port_read(self, self.client.snapshot, quiet=True)
+        if snapshot is None:
+            return
         if snapshot.status == "ENDED" or not _active_batches(snapshot):
             self.dismiss()
 
     def compose_content(self):
         # The roster labels come from the roster read; the per-batch keys
-        # from the history rows.
-        labels = {info.key: str(info) for info in self.client.roster()}
-        rosters = {row.uuid: tuple(row.tasks) for row in self.client.history()}
+        # from the history rows. An outage renders the batches without them.
+        roster = port_read(self, self.client.roster)
+        history = port_read(self, self.client.history)
+        labels = {info.key: str(info) for info in roster or ()}
+        rosters = {row.uuid: tuple(row.tasks) for row in history or ()}
         with VerticalScroll():
             for batch in _active_batches(self._snapshot):
                 yield Label(

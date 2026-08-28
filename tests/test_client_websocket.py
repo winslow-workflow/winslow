@@ -21,7 +21,7 @@ from winslow.events import (
     SessionEndedEvent,
     TaskStatusEvent,
 )
-from winslow.exceptions import MisconfigurationError
+from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
     BatchInfo,
     CacheCard,
@@ -180,7 +180,7 @@ def test_history_rows_carry_task_outcome_instances(served):
 def test_apply_filter_raises_value_error_on_a_bad_query(served):
     workflow, session, client = served
     remote = client.session(session.session_id)
-    with pytest.raises(ValueError, match="!bogus"):
+    with pytest.raises(RequestError, match="!bogus"):
         remote.apply_filter("!bogus alpha")
 
 
@@ -268,7 +268,7 @@ def test_task_log_backlog_then_live_lines(served, monkeypatch):
 def test_subscribe_task_log_refuses_an_unknown_task(served):
     workflow, session, client = served
     remote = client.session(session.session_id)
-    with pytest.raises(ValueError):
+    with pytest.raises(RequestError):
         remote.subscribe_task_log("no-such-task", lambda e: None)
 
 
@@ -338,7 +338,7 @@ def test_end_session_emits_the_event_and_keeps_the_ended_reads(served):
     assert ended.wait(10), "no session_ended event over the wire"
     wait_for(lambda: remote.snapshot().status == "ENDED", "the session never ENDED")
     # A live-guarded read refuses with direction once the session ended.
-    with pytest.raises(ValueError, match="has ended"):
+    with pytest.raises(RequestError, match="has ended"):
         remote.roster()
 
 
@@ -386,9 +386,9 @@ def test_create_session_error_carries_the_server_traceback(e2e_repo, state_store
     ).start()
     client = RemoteAppClient(process.url, token=TOKEN).connect()
     try:
-        with pytest.raises(ValueError) as excinfo:
+        with pytest.raises(RequestError) as excinfo:
             client.create_session("no-such-workflow")
-        assert "Traceback" in str(excinfo.value)
+        assert "Traceback" in excinfo.value.detail
     finally:
         client.close()
         process.stop()
@@ -485,6 +485,18 @@ class RecordingWire:
     def next_id(self):
         return "c-test"
 
+    def subscribe_session(self, lane):
+        self.send(
+            {
+                "type": "subscribe",
+                "session_id": lane.session_id,
+                "request_id": self.next_id(),
+            }
+        )
+
+    def clear_subscribe_pending(self, lane):
+        pass
+
 
 def _snapshot_frame(seq, tasks, status="ACTIVE"):
     return {
@@ -525,7 +537,8 @@ def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
     # The gap: seq 7 and 8 are lost. The lane resubscribes and drops the
     # stale frames until the recovery snapshot arrives.
     lane.on_frame(_status_frame(9, "k", "RUN_FINISHED"))
-    assert wire.sent[-1] == {"type": "subscribe", "session_id": "s-1"}
+    assert wire.sent[-1]["type"] == "subscribe"
+    assert wire.sent[-1]["session_id"] == "s-1"
     lane.on_frame(_status_frame(10, "k", "CHECKING_COMPLETION"))
     assert [e.status for e in events] == [TaskStatus.RUNNING]
 
@@ -546,3 +559,38 @@ def test_a_recovery_snapshot_of_an_ended_session_emits_the_end():
     lane.on_frame(_status_frame(5, "k", "RUNNING"))  # the gap
     lane.on_frame(_snapshot_frame(8, {}, status="ENDED"))
     assert ended == [SessionEndedEvent(session_id="s-1")]
+
+
+def test_a_refused_subscribe_emits_the_end_instead_of_a_dead_lane():
+    wire = RecordingWire()
+    lane = RemoteSessionClient(wire, "s-1")
+    ended = []
+    lane.subscribe(SessionEndedEvent, ended.append)
+    lane.on_subscribe_refused("session id 's-1' does not resolve")
+    assert ended == [SessionEndedEvent(session_id="s-1")]
+
+
+def test_a_reconnect_onto_a_lost_session_emits_the_end(e2e_repo):
+    """The serve process restarts with an empty registry: the resubscribe
+    is refused, and the lane surfaces the end instead of waiting for a
+    snapshot forever."""
+    workflow, session, registry = registered(e2e_repo)
+    process = ServedProcess(registry).start()
+    client = RemoteAppClient(process.url, token=TOKEN).connect()
+    fresh = None
+    try:
+        remote = client.session(session.session_id)
+        ended = threading.Event()
+        remote.subscribe(SessionEndedEvent, lambda e: ended.set())
+        time.sleep(0.3)
+
+        process.stop()
+        fresh = ServedProcess(SessionRegistry())
+        fresh.port = process.port
+        fresh.start()
+
+        assert ended.wait(15), "the refused resubscribe never surfaced the end"
+    finally:
+        client.close()
+        if fresh is not None:
+            fresh.stop()

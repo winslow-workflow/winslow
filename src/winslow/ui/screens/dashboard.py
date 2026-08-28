@@ -11,6 +11,7 @@ from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
+from winslow.ui.reads import READ_FAILURES, port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
 
 
@@ -106,12 +107,9 @@ class DashboardScreen(SlottedScreen):
         self.app.push_screen(modal)
 
     def _session_status(self, session_id):
+        rows = port_read(self, self.client.sessions)
         return next(
-            (
-                row.status
-                for row in self.client.sessions()
-                if row.session_id == session_id
-            ),
+            (row.status for row in rows or () if row.session_id == session_id),
             None,
         )
 
@@ -122,7 +120,14 @@ class DashboardScreen(SlottedScreen):
         if session_id is None:
             return
         if self._session_status(session_id) == "ENDING":
-            self.app.push_screen(ForceEndModal(self.client.session(session_id)))
+            # The modal reads the snapshot at construction, so an outage in
+            # that window lands here, not on the crash screen.
+            try:
+                modal = ForceEndModal(self.client.session(session_id))
+            except READ_FAILURES as exc:
+                self.notify(str(exc), severity="warning")
+                return
+            self.app.push_screen(modal)
             return
         await self.app.end_session(session_id)
         # A session with active batches drains first; the session_ended event
@@ -166,7 +171,7 @@ class DashboardScreen(SlottedScreen):
             widget = self.query_one(RestorableWidget)
         except NoMatches:
             return
-        manifests = await asyncio.to_thread(self.client.manifests)
+        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
         if not manifests:
             widget.display = False
             return

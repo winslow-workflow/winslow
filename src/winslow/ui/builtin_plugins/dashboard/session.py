@@ -5,6 +5,7 @@ from textual.widgets import Label, Button, LoadingIndicator
 
 from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.formatting import format_status_summary, format_elapsed
+from winslow.ui.reads import port_read
 
 SUMMARY_REFRESH_INTERVAL = 2
 
@@ -117,18 +118,27 @@ class SessionRow(Widget):
         )
 
     def _active_batches(self):
-        snapshot = self.app.client.session(self.session_id).snapshot()
+        """The active batch rows, or None when the read fails (an outage
+        skips one refresh; the tick reads again)."""
+        client = self.app.client.session(self.session_id)
+        snapshot = port_read(self, client.snapshot, quiet=True)
+        if snapshot is None:
+            return None
         return [b for b in snapshot.batches if b.status in ACTIVE_BATCH_STATUSES]
 
     def begin_ending(self):
         label = self.query_one(".waiting", Label)
         label.display = True
-        label.update(self._waiting_text(self._active_batches()))
+        batches = self._active_batches()
+        if batches is not None:
+            label.update(self._waiting_text(batches))
 
     def fetch_row(self):
         """The current SessionRow value of this session, or the last known
-        one when the read finds no match."""
-        rows = self.app.client.sessions()
+        one when the read fails or finds no match."""
+        rows = port_read(self, self.app.client.sessions, quiet=True)
+        if rows is None:
+            return self.row
         return next((r for r in rows if r.session_id == self.session_id), self.row)
 
     def _tick(self):
@@ -137,9 +147,9 @@ class SessionRow(Widget):
         self.row = self.fetch_row()
         self._refresh_summary()
         if self.row.status == "ENDING":
-            self.query_one(".waiting", Label).update(
-                self._waiting_text(self._active_batches())
-            )
+            batches = self._active_batches()
+            if batches is not None:
+                self.query_one(".waiting", Label).update(self._waiting_text(batches))
 
     def compose(self):
         with Horizontal(classes="loading-state"):

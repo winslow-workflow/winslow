@@ -51,6 +51,7 @@ from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 from winslow.ui.modals import TaskDetail, FilterHelp, WorkflowParams
 
 from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
+from winslow.ui.reads import port_read
 from winslow.ui.store_adapter import StoreEvent
 
 
@@ -204,7 +205,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         """Overlay the current snapshot: a port event that arrived before the
         screen ran is healed here. The mirror only updates, because the store
         of an ended session is empty."""
-        snapshot = self.client.snapshot()
+        snapshot = port_read(self, self.client.snapshot)
+        if snapshot is None:
+            return
         self.session_status = snapshot.status
         for key, name in snapshot.tasks.items():
             self.propagate_task_status(key, TaskStatus[name])
@@ -249,8 +252,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         yield Header()
 
         # The first view can come long after the install: a fresh snapshot
-        # composes the panes from the current state.
-        self.snapshot = self.client.snapshot()
+        # composes the panes from the current state. An outage keeps the
+        # snapshot of the install.
+        self.snapshot = port_read(self, self.client.snapshot, default=self.snapshot)
         context = WorkflowRenderContext(
             client=self.client,
             session=self.session_row,
@@ -344,7 +348,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     @refuse_if_ending
     async def _handle_task_info(self, key):
         # The on-demand capture point: the user asked, so the getters evaluate.
-        info = self.client.task_detail(key)
+        info = await asyncio.to_thread(port_read, self, self.client.task_detail, key)
+        if info is None:
+            return
         self.app.push_screen(
             TaskDetail(
                 info,
@@ -375,10 +381,11 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
     @on(Button.Pressed, ".workflow-params")
     def handle_workflow_params(self, event):
+        params = port_read(self, self.client.session_params)
+        if params is None:
+            return
         self.app.push_screen(
-            WorkflowParams(
-                self.session_row.instance_name, self.client.session_params()
-            )
+            WorkflowParams(self.session_row.instance_name, params)
         )
 
     @on(Input.Submitted, "#filter-input")

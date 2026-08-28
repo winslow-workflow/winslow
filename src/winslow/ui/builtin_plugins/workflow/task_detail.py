@@ -18,6 +18,7 @@ from winslow.decorators import NOT_MATERIALIZED
 from winslow.model import SnapshotEncoding
 from winslow.runner.execution import ExecutionPhase
 from winslow.ui.modals.cache_value import CacheSnapshotValue
+from winslow.ui.reads import port_read
 from winslow.task.info import _ambiguous_names, _location, _origin_label
 from winslow.util import safe_repr
 from winslow.ui.css import package_css
@@ -63,9 +64,10 @@ class TaskLogView(LogView):
         elif self._live:
             # A line between the backlog read and the subscribe duplicates
             # rather than disappears (see LocalSessionClient.subscribe_task_log).
-            for line in self._client.subscribe_task_log(
-                self._task_key, self._on_task_log
-            ):
+            backlog = port_read(
+                self, self._client.subscribe_task_log, self._task_key, self._on_task_log
+            )
+            for line in backlog or ():
                 self.write(line)
 
     def on_unmount(self):

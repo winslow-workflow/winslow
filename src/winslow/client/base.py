@@ -1,6 +1,15 @@
 """The shared surface of the session port, defined once. A transport module
 implements both classes with these signatures (see winslow.client). Every
-method takes values and returns values (see winslow.model)."""
+method takes values and returns values (see winslow.model).
+
+The refusal contract: a read the server or the session refuses raises
+RequestError with the served reason (see winslow.exceptions) - an unknown
+key, an ended session, a bad query. Actions never raise; a refused action
+answers an ack (see submit). A connection outage of the wire transport
+raises ConnectionError or TimeoutError instead: the request never reached
+a server, so there is no served reason (see winslow.client.websocket).
+MisconfigurationError stays a composition error of the local process, for
+example a LocalAppClient built without an orchestrator."""
 
 
 class AppClient:
@@ -79,7 +88,7 @@ class SessionClient:
     def apply_filter(self, query, builtin_only=False, scope="tasks"):
         """Return the identity keys the query matches over the named corpus,
         'tasks' or 'history' (see Workflow.filter_keys). A bad query raises
-        ValueError with the parse error."""
+        RequestError with the parse error."""
         raise NotImplementedError
 
     def batch_options(self):
