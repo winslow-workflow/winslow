@@ -782,3 +782,24 @@ def test_apply_filter_history_scope_covers_a_task_outside_the_roster(e2e_repo):
 
     run_to_completion(workflow, client, alpha)
     assert client.apply_filter("alpha", scope="history") == (alpha.identity_key,)
+
+
+def test_an_ending_session_finalizes_when_its_last_batch_drains(e2e_repo):
+    """The drain rule lives in the runner: the last batch completion
+    finalizes the end with no frontend in the loop (see
+    HeadlessRunner._execute_batch)."""
+    workflow, tasks = gated_workflow(e2e_repo)
+    gate, batch = start_gated_batch(workflow, tasks)
+    client = LocalSessionClient(workflow.session)
+    events = []
+    client.subscribe(SessionEndedEvent, events.append)
+
+    ack = client.submit(EndSession())
+    assert ack.accepted
+    assert workflow.session.is_ending
+    assert not workflow.session.has_ended
+
+    gate.set()
+    batch.wait()
+    assert workflow.session.has_ended
+    wait_for(lambda: events, "no session_ended event after the drain")

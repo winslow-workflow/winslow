@@ -16,7 +16,13 @@ from winslow.serve.wire import Actions, Requests
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 
-from harness import build_workflow, by_name, wait_for_status
+from harness import (
+    build_workflow,
+    by_name,
+    gated_workflow,
+    start_gated_batch,
+    wait_for_status,
+)
 
 from test_serve_actions import connect, frames_until, registered, serve_orchestrator
 
@@ -902,4 +908,26 @@ def test_history_log_tail_and_record_detail_still_serve_an_ended_session(e2e_rep
         batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
     )
     assert record_detail["info"]["key"] == alpha.identity_key
+    ws.close()
+
+
+def test_end_session_finalizes_after_the_drain_over_the_wire(e2e_repo):
+    """end_session with a running batch: the runner drains into the
+    finalization, so a wire client receives session_ended with no local TUI
+    in the loop (see HeadlessRunner._execute_batch)."""
+    workflow, tasks = gated_workflow(e2e_repo)
+    registry = SessionRegistry()
+    registry.register(workflow.session)
+    gate, batch = start_gated_batch(workflow, tasks)
+    ws = connect(registry)
+    ws.send_json({"type": "subscribe", "session_id": workflow.session.session_id})
+    assert ws.receive_json()["type"] == "snapshot"
+
+    ack = action(ws, "r-70", workflow.session.session_id, Actions.END_SESSION)
+    assert ack["accepted"] is True
+    assert workflow.session.is_ending
+
+    gate.set()
+    frames_until(ws, "session_ended")
+    assert workflow.session.has_ended
     ws.close()

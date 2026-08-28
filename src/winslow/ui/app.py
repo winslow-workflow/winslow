@@ -11,7 +11,7 @@ from winslow.ui import screens
 from winslow.ui.store_adapter import SessionLifecycleEvent
 from winslow.actions import EndSession
 from winslow.client import LocalAppClient
-from winslow.events import BatchCompletedEvent, SessionEndedEvent
+from winslow.events import SessionEndedEvent
 from winslow.session import SessionRegistry
 from winslow.state import create_state_store
 
@@ -130,22 +130,15 @@ class Winslow(App):
 
     def _connect_session(self, session_row):
         """Install the workflow screen over one SessionClient and wire the
-        app-level lifecycle lanes of the session."""
+        session-ended lane that moves the dashboard row to the history."""
         session_id = session_row.session_id
         client = self.client.session(session_id)
         screen = screens.WorkflowScreen(client, session_row)
         self.install_screen(screen, name=session_screen_name(session_id))
         screen.connect()
 
-        # The finalization clears the store, so it runs on the UI thread,
-        # serialized with the widgets that read it (see finalize_if_drained).
-        def on_batch_completed(event):
-            self.post_message(
-                SessionLifecycleEvent(partial(self._finalize_session, session_id))
-            )
-
         # The end event moves the dashboard row to the history. The bus
-        # close at session end disconnects both lanes.
+        # close at session end disconnects the lane.
         def on_session_ended(event):
             self.post_message(
                 SessionLifecycleEvent(
@@ -153,13 +146,7 @@ class Winslow(App):
                 )
             )
 
-        client.subscribe(BatchCompletedEvent, on_batch_completed)
         client.subscribe(SessionEndedEvent, on_session_ended)
-
-    def _finalize_session(self, session_id):
-        session = self.sessions.get(session_id)
-        if session is not None:
-            session.finalize_if_drained()
 
     @on(SessionLifecycleEvent)
     async def handle_session_lifecycle_event(self, event):

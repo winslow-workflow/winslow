@@ -130,10 +130,10 @@ class Session:
             batch.request_stop()
 
     def finalize_if_drained(self):
-        """The rule from ENDING to ENDED, in one place: a session that is ending
-        finalizes when its last batch completes. The callers, which are the
-        lifecycle adapter of the app and the tests, call this when a batch
-        completes."""
+        """The rule from ENDING to ENDED, in one place: a session that is
+        ending finalizes when its last batch completes. The runner calls this
+        after each batch completion (see HeadlessRunner._execute_batch); on
+        any other state it is a no-op."""
         with self._lifecycle_lock:
             if self.is_ending and not self.active_batches:
                 self._finalize_end()

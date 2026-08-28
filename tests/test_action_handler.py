@@ -130,11 +130,11 @@ def test_end_session_force_stops_the_running_batch(e2e_repo):
     gate.set()
     batch.wait()
     assert batch.status is ExecutionStatus.STOPPED
-    # Before finalize: the end of the session releases the store.
-    for name in ("TailOne", "TailTwo"):
-        assert workflow.store[tasks[name]] is S.ABORTED
-    workflow.session.finalize_if_drained()
+    # The drain rule ran on the batch worker: the last completion finalized
+    # the end, with no caller outside the runner (see finalize_if_drained).
     assert workflow.session.has_ended
+    for name in ("TailOne", "TailTwo"):
+        assert workflow.store.history[tasks[name].identity_key][-1] is S.ABORTED
 
 
 def test_submit_options_ride_the_batch_and_leave_the_baseline_alone(e2e_repo):

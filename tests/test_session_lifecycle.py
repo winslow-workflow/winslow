@@ -52,8 +52,8 @@ def test_quiet_end_finalizes_immediately(e2e_repo):
 def test_ending_waits_for_running_work(e2e_repo):
     """end() during a live batch parks at ENDING with the store intact -
     ending is patient, it never kills running work - while the admission
-    gate refuses anything new. Draining plus finalize_if_drained (the exact
-    call the app's lifecycle adapter makes) completes the end."""
+    gate refuses anything new. Draining alone completes the end: the runner
+    calls finalize_if_drained after the last batch completion."""
     workflow, tasks = gated_workflow(e2e_repo)
     gate, batch = start_gated_batch(workflow, tasks)
 
@@ -67,7 +67,6 @@ def test_ending_waits_for_running_work(e2e_repo):
 
     gate.set()
     batch.wait()
-    workflow.session.finalize_if_drained()
 
     assert workflow.session.status is SessionStatus.ENDED
     # The batch the end waited for finished normally, work and all.
@@ -92,7 +91,6 @@ def test_submitted_batch_is_visible_before_it_starts(e2e_repo):
 
     gate.set()
     batch.wait()
-    workflow.session.finalize_if_drained()
 
     assert workflow.session.status is SessionStatus.ENDED
     for name in ("Gated", "TailOne", "TailTwo"):
@@ -111,7 +109,6 @@ def test_force_end_stops_the_batch(e2e_repo):
 
     gate.set()
     batch.wait()
-    workflow.session.finalize_if_drained()
 
     assert workflow.session.status is SessionStatus.ENDED
     # The stop was seen only after the run returned: the work landed in the

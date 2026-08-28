@@ -62,6 +62,11 @@ class HeadlessRunner(BaseRunner):
                 self.workflow.bus.publish(
                     BatchCompletedEvent(BatchInfo.from_batch(batch, tasks))
                 )
+                # The drain rule: an ending session finalizes when its last
+                # batch completes. After the publish, so every subscriber sees
+                # the completion before the finalization closes the bus.
+                if (session := self.workflow.session) is not None:
+                    session.finalize_if_drained()
 
     def _submit(self, action, tasks, body, options=None):
         batch, tasks = self._open_batch(action, tasks, options)

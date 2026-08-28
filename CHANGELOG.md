@@ -93,6 +93,10 @@ versions may include breaking changes).
 
 ### Changed
 
+- The drain rule moved into the runner: after each batch completion the batch worker calls
+  `Session.finalize_if_drained`, so an ending session reaches ENDED the same way for the TUI, the
+  websocket and headless. Before, only the TUI app drove the transition, and a session ended over
+  the wire with running batches stayed ENDING forever.
 - Breaking: the batch flags (dry run, force run, force success, disable concurrency) are per client,
   like the search filters. `RunTasks` and `CheckTasks` carry them as `options` over the session
   baseline; each batch snapshots the flags it ran with, so two clients with different toggles never
