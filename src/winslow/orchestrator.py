@@ -37,6 +37,7 @@ class Action(Enum):
     RUN = "run"
     SHOW = "show"
     SERVE = "serve"
+    CONNECT = "connect"
 
 
 def _parse_mode(value):
@@ -363,6 +364,19 @@ class Orchestrator(_ConfigBase):
             help_text="Serve the live sessions over one websocket endpoint.",
         )
 
+        connect_parser = cls._generate_subcommand(
+            subparsers,
+            action=Action.CONNECT,
+            help_text="Run the TUI against a serve process.",
+        )
+        # The one positional of the CLI: the ConfigOption machinery declares
+        # only --flags, and the URL is the whole point of the subcommand.
+        connect_parser.add_argument(
+            "url",
+            help="The websocket URL of the serve process, e.g. ws://host:8866. "
+            "A non-loopback server reads the bearer token from WINSLOW_TOKEN.",
+        )
+
         return parser
 
     @classmethod
@@ -681,6 +695,34 @@ class Orchestrator(_ConfigBase):
         )
         uvicorn.run(app, host=config.host, port=config.port)
 
+    def _handle_connect(self):
+        """The remote TUI: the same app over the wire transport of the
+        session port. The process collects no workflows and keeps no state;
+        the serve process owns both."""
+        try:
+            from winslow.client.websocket import RemoteAppClient
+            from winslow.ui import Winslow
+        except ImportError as e:
+            raise MisconfigurationError(
+                "Connect mode requires the connect extra - install with: "
+                "pip install 'winslow[connect]'"
+            ) from e
+
+        config = self.orchestrator_config
+        client = RemoteAppClient(config.url, token=os.environ.get("WINSLOW_TOKEN"))
+        client.connect()
+        self.logger.info(f"Connected to {config.url}")
+
+        setup_run_logging()
+        self.app = Winslow(
+            orchestrator_config=config, orchestrator=self, client=client
+        )
+        try:
+            self.app.run()
+        finally:
+            client.close()
+            shutdown_run_logging()
+
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")
 
@@ -765,6 +807,11 @@ class Orchestrator(_ConfigBase):
         self.validate_option_dependencies(
             self.orchestrator_config, subcommand=self.orchestrator_config.action.value
         )
+
+        if self.orchestrator_config.action is Action.CONNECT:
+            # A remote TUI reads everything over the wire: no local workflow
+            # collection, no local caches.
+            return self._handle_connect()
 
         self.workflow_registry.collect_classes(self.directory)
         self._collect_caches()

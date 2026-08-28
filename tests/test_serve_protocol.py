@@ -74,6 +74,43 @@ def wait_for_cache_value(ws, session_id, cache_name, entry_name, state, timeout=
     raise AssertionError(f"{cache_name}.{entry_name} never reached {state!r}")
 
 
+# --- sessions and snapshot -----------------------------------------------------
+
+
+def test_sessions_request_serves_the_rows_of_the_registry(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    result = request(ws, "s-1", Requests.SESSIONS)
+    (row,) = result["sessions"]
+    assert row["session_id"] == session.session_id
+    assert row["status"] == "ACTIVE"
+    ws.close()
+
+
+def test_snapshot_request_serves_the_session_snapshot(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    result = request(ws, "s-2", Requests.SNAPSHOT, session_id=session.session_id)
+    assert result["session_id"] == session.session_id
+    assert result["tasks"] == {
+        key: status.name for key, status in workflow.store.current.items()
+    }
+    assert result["batches"] == []
+    ws.close()
+
+
+def test_snapshot_request_answers_after_the_session_end(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    session.end()
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and session.status.name != "ENDED":
+        time.sleep(0.01)
+    result = request(ws, "s-3", Requests.SNAPSHOT, session_id=session.session_id)
+    assert result["status"] == "ENDED"
+    ws.close()
+
+
 # --- roster ------------------------------------------------------------------
 
 

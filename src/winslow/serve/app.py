@@ -35,6 +35,7 @@ from winslow.serve.wire import (
     roster_payload,
     session_params_payload,
     session_row,
+    session_snapshot,
 )
 from winslow.session import create_session
 
@@ -584,6 +585,18 @@ class Connection:
             )
             return
         self.result(envelope, **session_row(session))
+
+    @request_handler(Requests.SESSIONS)
+    async def _request_sessions(self, envelope):
+        self.result(
+            envelope,
+            sessions=[session_row(s) for s in self.app.registry.sessions()],
+        )
+
+    @request_handler(Requests.SNAPSHOT)
+    @requires_session
+    async def _request_snapshot(self, envelope, session):
+        self.result(envelope, **session_snapshot(session))
 
     @request_handler(Requests.HISTORY)
     @requires_session

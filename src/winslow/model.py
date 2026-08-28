@@ -153,6 +153,21 @@ class ManifestsRequest:
 
 
 @dataclass(frozen=True)
+class SessionsRequest:
+    type: str
+    kind: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class SnapshotRequest:
+    type: str
+    kind: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
 class RestoreSessionRequest:
     type: str
     kind: str
@@ -258,7 +273,7 @@ class CacheEntryInfo:
     written_at: Optional[float]
     ttl: Optional[float]
     eager: bool
-    depends_on: tuple
+    depends_on: tuple[str, ...]
     storage: str
     error: Optional[CacheEntryError]
 
@@ -269,6 +284,10 @@ class CacheEntryInfo:
 # TaskInfo.from_task). Only the on-demand capture runs a getter.
 NOT_EVALUATED = "<not evaluated>"
 
+# One attribute section of a full TaskInfo capture: a (title, columns, rows)
+# triple of plain strings (see winslow.task.info._attribute_sections).
+AttributeSection = tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]]
+
 
 @dataclass(frozen=True)
 class SourceNode:
@@ -277,8 +296,8 @@ class SourceNode:
     name: str
     module: str
     source: str
-    path: str  # absolute source file, or None
-    children: tuple  # tuple[SourceNode, ...]
+    path: str | None  # the absolute source file
+    children: tuple["SourceNode", ...]
 
 
 @dataclass(frozen=True)
@@ -324,21 +343,21 @@ class TaskInfo:
     is_noop: bool
     task_class: str
     index: int
-    groups: tuple = ()
-    parameters: dict = None
-    dependencies: tuple = ()
-    premier_dependencies: tuple = ()
-    terminal_dependencies: tuple = ()
+    groups: tuple[str, ...] = ()
+    parameters: dict | None = None
+    dependencies: tuple[TaskRef, ...] = ()
+    premier_dependencies: tuple[TaskRef, ...] = ()
+    terminal_dependencies: tuple[TaskRef, ...] = ()
     # The trust fields of the check_ttl rule, from the session snapshots. None
     # means no verification on record, or no TTL (see Workflow.task_info).
-    checked_at: float = None
-    effective_ttl: float = None
+    checked_at: float | None = None
+    effective_ttl: float | None = None
     # Full-capture fields. None marks a stub, an empty tuple marks a capture
-    # that found nothing.
-    attributes: tuple = None
-    docs: tuple = None
-    source: SourceNode = None
-    transients: tuple = None
+    # that found nothing. A doc is a (title, markdown) pair.
+    attributes: tuple[AttributeSection, ...] | None = None
+    docs: tuple[tuple[str, str], ...] | None = None
+    source: SourceNode | None = None
+    transients: tuple[str, ...] | None = None
 
     def __str__(self):
         return self.label
@@ -447,7 +466,7 @@ class BatchInfo:
     status: str
     task_count: int
     # The roster, {identity key: label} (see BatchRecord.tasks).
-    tasks: dict
+    tasks: dict[str, str]
     # The batch option snapshot of the execution context, without the uuid.
     options: dict | None
     created_at: float
@@ -538,7 +557,7 @@ class HistoryRow:
     completed_at: float | None
     # The batch option snapshot, without the uuid (see BatchInfo.options).
     options: dict | None
-    tasks: dict  # {identity key: TaskOutcome}
+    tasks: dict[str, TaskOutcome]  # keyed by identity key
 
     @classmethod
     def from_batch(cls, batch, store):
@@ -634,13 +653,13 @@ class SessionSnapshot:
     session_id: str
     workflow: str
     status: str
-    tasks: dict  # {identity key: TaskStatus name}
-    session_log_backlog: tuple
-    batches: tuple  # tuple[BatchRow, ...]
+    tasks: dict[str, str]  # {identity key: TaskStatus name}
+    session_log_backlog: tuple[str, ...]
+    batches: tuple[BatchRow, ...]
     # The cache names of the session, so a client can decide whether to show
     # a caches pane before the first caches read. None once the session has
     # ended and released its caches; an empty tuple means no registered caches.
-    cache_names: tuple | None = None
+    cache_names: tuple[str, ...] | None = None
 
     @classmethod
     def _cache_names(cls, workflow):
@@ -701,9 +720,9 @@ class RecordDetail:
     The snapshot dicts key by the phase name."""
 
     info: TaskInfo
-    phases: tuple  # tuple[PhaseRow, ...]
+    phases: tuple[PhaseRow, ...]
     transient_snapshots: dict
-    cache_snapshots: dict  # {phase name: tuple[CacheReadSnapshot, ...]}
+    cache_snapshots: dict[str, tuple[CacheReadSnapshot, ...]]  # by phase name
 
     @classmethod
     def from_record(cls, record):
@@ -760,9 +779,9 @@ class CacheCard:
     scope: str
     docstring: str | None
     storage: str
-    entries: tuple  # tuple[CacheEntryCard, ...]
-    info: tuple  # tuple[CacheEntryInfo, ...]
-    values: dict
+    entries: tuple[CacheEntryCard, ...]
+    info: tuple[CacheEntryInfo, ...]
+    values: dict[str, str | None]  # {entry name: safe_repr preview}
     error: str | None = None
 
     @classmethod
@@ -814,7 +833,7 @@ class CacheCard:
 class CachesPayload:
     """Every cache of one session, in name order."""
 
-    caches: tuple
+    caches: tuple[CacheCard, ...]
 
     @classmethod
     def from_workflow(cls, workflow):
@@ -957,17 +976,17 @@ class OptionRow:
     default: str | None
     initial: str | None
     required: bool
-    choices: tuple | None
+    choices: tuple[str, ...] | None
     multiselect: bool
     type: str | None
     identifier: bool
-    depends_on: tuple
+    depends_on: tuple[str, ...]
     action: str | None
     const: object
     # The initial value of a multiselect option, one string per selected
     # choice. The joined `initial` string cannot split a choice that holds a
     # comma, so a form preselects from this field.
-    initial_selection: tuple | None = None
+    initial_selection: tuple[str, ...] | None = None
 
     @classmethod
     def from_option(cls, name, option, current=None):
@@ -1004,7 +1023,7 @@ class WorkflowDescriptor:
     Workflow.auto_init)."""
 
     workflow: str
-    options: tuple  # tuple[OptionRow, ...]
+    options: tuple[OptionRow, ...]
     auto_init: bool = False
 
 
@@ -1017,8 +1036,8 @@ class Descriptors:
     Orchestrator.collect_workflow_args). A workflow the orchestrator config
     excludes from the local selector is excluded here too."""
 
-    workflows: tuple  # tuple[WorkflowDescriptor, ...]
-    overrides: tuple  # tuple[OptionRow, ...]
+    workflows: tuple[WorkflowDescriptor, ...]
+    overrides: tuple[OptionRow, ...]
 
     @classmethod
     def from_orchestrator(cls, orchestrator):

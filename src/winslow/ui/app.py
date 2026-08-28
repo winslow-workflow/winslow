@@ -21,9 +21,11 @@ def session_screen_name(session_id):
 
 
 class Winslow(App):
-    """The local TUI app: the composition root. It owns the session registry
-    and the state store, builds the LocalAppClient over them, and hands every
-    screen the port surface alone (see winslow.client)."""
+    """The TUI app: the composition root. Every screen consumes the port
+    surface alone (see winslow.client). Locally the app owns the session
+    registry and the state store and builds the LocalAppClient over them;
+    `winslow connect` passes the wire client instead, and the app touches
+    no local session state."""
 
     BINDINGS = [
         ("ctrl+d", "switch_mode('dashboard')", "Dashboard"),
@@ -42,20 +44,26 @@ class Winslow(App):
         "styles/modals.tcss",
     ]
 
-    def __init__(self, orchestrator, orchestrator_config):
+    def __init__(self, orchestrator, orchestrator_config, client=None):
         # A private name, to prevent a clash if Textual adds a config object.
         self._winslow_config = orchestrator_config
         self.orchestrator = orchestrator
 
-        self.sessions = SessionRegistry()
-        # One durable store for every session of the app: manifests, task
-        # snapshots and batch records live here (see winslow.state).
-        self.state_store = create_state_store(orchestrator_config)
-        # The session port of this process. Every screen reads, subscribes
-        # and acts through it (see winslow.client).
-        self.client = LocalAppClient(
-            self.sessions, orchestrator=orchestrator, state_store=self.state_store
-        )
+        if client is None:
+            self.sessions = SessionRegistry()
+            # One durable store for every session of the app: manifests, task
+            # snapshots and batch records live here (see winslow.state).
+            self.state_store = create_state_store(orchestrator_config)
+            # The session port of this process. Every screen reads, subscribes
+            # and acts through it (see winslow.client).
+            client = LocalAppClient(
+                self.sessions, orchestrator=orchestrator, state_store=self.state_store
+            )
+        else:
+            # A wire client: the serve process owns the registry and the store.
+            self.sessions = None
+            self.state_store = None
+        self.client = client
 
         super().__init__()
 

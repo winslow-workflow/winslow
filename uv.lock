@@ -1556,6 +1556,12 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+connect = [
+    { name = "psutil" },
+    { name = "pydantic" },
+    { name = "textual" },
+    { name = "websockets" },
+]
 mcp = [
     { name = "mcp" },
     { name = "uvicorn" },
@@ -1594,6 +1600,8 @@ dev = [
     { name = "ruff" },
     { name = "sentry-sdk" },
     { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -1605,19 +1613,23 @@ requires-dist = [
     { name = "networkx", specifier = ">=3.4.2" },
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
+    { name = "psutil", marker = "extra == 'connect'", specifier = ">=6.1.0" },
     { name = "psutil", marker = "extra == 'tui'", specifier = ">=6.1.0" },
+    { name = "pydantic", marker = "extra == 'connect'", specifier = ">=2.0" },
     { name = "pydantic", marker = "extra == 'serve'", specifier = ">=2.0" },
     { name = "python-decouple", specifier = ">=3.8" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.0" },
     { name = "starlette", marker = "extra == 'otel'", specifier = ">=0.40" },
     { name = "starlette", marker = "extra == 'serve'", specifier = ">=0.40" },
+    { name = "textual", marker = "extra == 'connect'", specifier = ">=8.2.7" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.2.7" },
     { name = "uvicorn", marker = "extra == 'mcp'", specifier = ">=0.30" },
     { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },
+    { name = "websockets", marker = "extra == 'connect'", specifier = ">=13.0" },
     { name = "websockets", marker = "extra == 'serve'", specifier = ">=13.0" },
 ]
-provides-extras = ["tui", "sentry", "serve", "mcp", "otel"]
+provides-extras = ["tui", "sentry", "serve", "connect", "mcp", "otel"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1632,4 +1644,6 @@ dev = [
     { name = "ruff", specifier = ">=0.9.0" },
     { name = "sentry-sdk", specifier = ">=2.0" },
     { name = "starlette", specifier = ">=0.40" },
+    { name = "uvicorn", specifier = ">=0.30" },
+    { name = "websockets", specifier = ">=13.0" },
 ]

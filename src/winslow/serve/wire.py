@@ -35,6 +35,9 @@ from winslow.model import (
     SessionParams,
     SessionParamsRequest,
     SessionRow,
+    SessionSnapshot,
+    SessionsRequest,
+    SnapshotRequest,
     TaskDetailRequest,
 )
 
@@ -108,6 +111,8 @@ class Requests:
 
     CREATE_SESSION = "create_session"
     DESCRIPTORS = "descriptors"
+    SESSIONS = "sessions"
+    SNAPSHOT = "snapshot"
     HISTORY = "history"
     LOG_TAIL = "log_tail"
     TASK_DETAIL = "task_detail"
@@ -139,6 +144,8 @@ ACTION_CLASSES = {
 REQUEST_CLASSES = {
     Requests.CREATE_SESSION: CreateSessionRequest,
     Requests.DESCRIPTORS: DescriptorsRequest,
+    Requests.SESSIONS: SessionsRequest,
+    Requests.SNAPSHOT: SnapshotRequest,
     Requests.HISTORY: HistoryRequest,
     Requests.LOG_TAIL: LogTailRequest,
     Requests.TASK_DETAIL: TaskDetailRequest,
@@ -156,6 +163,10 @@ REQUEST_CLASSES = {
 
 def session_row(session):
     return asdict(SessionRow.from_session(session))
+
+
+def session_snapshot(session):
+    return asdict(SessionSnapshot.from_session(session))
 
 
 def roster_payload(workflow):
