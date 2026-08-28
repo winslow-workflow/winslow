@@ -289,6 +289,8 @@ class LocalSessionClient(SessionClient):
             formatter=INLINE_FORMATTER,
         )
         dispatcher = get_task_dispatcher()
+        # Listener first, backlog second: a line in that window duplicates
+        # instead of getting lost.
         dispatcher.add_listener(task.log_key, log_handler)
         self._teardowns[key] = partial(
             dispatcher.remove_listener, task.log_key, log_handler

@@ -4,24 +4,49 @@ the subscriptions relay the bus payloads, and the app scope creates and
 restores sessions through the shared create_session flow."""
 
 import time
+from dataclasses import asdict
 
 import pytest
 
-from winslow.actions import BatchAck, LoadCacheEntries, RunTasks, StopBatch
+from winslow.actions import (
+    BatchAck,
+    CheckTasks,
+    ClearCacheEntries,
+    EndSession,
+    LoadCacheEntries,
+    RunTasks,
+    SetBatchOptions,
+    StopBatch,
+)
 from winslow.client import LocalAppClient, LocalSessionClient
 from winslow.constants import Mode
-from winslow.events import BatchCreatedEvent, TaskStatusEvent
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    BatchOptionsChangedEvent,
+    ExecutionStatusEvent,
+    LogLineEvent,
+    SessionEndedEvent,
+    TaskStatusEvent,
+)
 from winslow.exceptions import MisconfigurationError
 from winslow.model import (
     BatchInfo,
+    CacheCard,
     CacheUpdatedEvent,
+    CacheValueView,
+    HistoryRow,
+    RecordDetail,
     SessionLogEvent,
+    SessionParams,
+    SessionSnapshot,
     TaskLogEvent,
 )
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
+from winslow.runner.execution import ExecutionStatus
 from winslow.session import Session, SessionRegistry
 
-from harness import build_workflow, by_name
+from harness import build_workflow, by_name, gated_workflow, start_gated_batch
 
 
 def registered(e2e_repo, name="my-workflow", mode=Mode.TUI):
@@ -187,6 +212,9 @@ def test_snapshot_equals_the_core_state(e2e_repo):
     ack = run_to_completion(workflow, client, alpha)
 
     snapshot = client.snapshot()
+    # The whole DTO, not field spot checks: the port serves exactly what the
+    # core state implies.
+    assert snapshot == SessionSnapshot.from_session(session)
     assert snapshot.session_id == session.session_id
     assert snapshot.workflow == str(workflow)
     assert snapshot.status == "ACTIVE"
@@ -203,8 +231,10 @@ def test_snapshot_equals_the_core_state(e2e_repo):
 def test_roster_hands_the_core_built_stubs_through_in_order(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     roster = client.roster()
-    assert [info.key for info in roster] == [
-        task.identity_key for task in workflow.get_filtered_tasks()
+    # asdict per row: TaskInfo equality compares only the key.
+    assert [asdict(info) for info in roster] == [
+        asdict(workflow.task_info(task))
+        for task in workflow.get_filtered_tasks()
     ]
     # Stubs: no full-capture fields.
     assert all(info.attributes is None for info in roster)
@@ -230,6 +260,9 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
     record = store.get_record(alpha.identity_key)
 
     (row,) = client.history()
+    assert row == HistoryRow.from_batch(
+        workflow.runner.get_batch(ack.batch_uuid), store
+    )
     assert row.uuid == ack.batch_uuid
     assert row.status == "FINISHED"
     outcome = row.tasks[alpha.identity_key]
@@ -237,6 +270,7 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
     assert outcome.last_log == record.last_log
 
     detail = client.record_detail(ack.batch_uuid, alpha.identity_key)
+    assert detail == RecordDetail.from_record(record)
     # The hand-through guarantee: the same TaskInfo the core built.
     assert detail.info is record.info
     assert [row.phase for row in detail.phases] == [
@@ -254,6 +288,9 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
 
 def test_caches_serve_the_inspection_projections(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
+    assert client.caches() == tuple(
+        CacheCard.from_cache(cache) for cache in workflow.caches()
+    )
     (weather,) = [card for card in client.caches() if card.name == "weather"]
     cache = workflow.get_cache("weather")
     assert weather.scope == "workflow"
@@ -268,6 +305,7 @@ def test_caches_serve_the_inspection_projections(e2e_repo):
 def test_cache_value_renders_warm_and_reports_cold(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
     view = client.cache_value("weather", "cities")
+    assert view == CacheValueView.from_entry(workflow.get_cache("weather"), "cities")
     assert view.state == "warm"
     assert view.encoding == "text"
     assert "athens" in view.rendered
@@ -301,11 +339,10 @@ def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatc
 
 
 def test_batch_options_and_session_params_mirror_the_workflow(e2e_repo):
-    from dataclasses import asdict
-
     workflow, session, client = session_client(e2e_repo)
     assert client.batch_options() == asdict(workflow.batch_options)
     params = client.session_params()
+    assert params == SessionParams.from_workflow(workflow)
     assert params.settings == workflow.settings_snapshot
     assert set(params.workflow_config) == set(workflow.config_option_names)
 
@@ -316,24 +353,50 @@ def test_batch_options_and_session_params_mirror_the_workflow(e2e_repo):
 def test_bus_topics_relay_the_published_payloads(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    statuses, batches = [], []
+    statuses, executions, created, completed = [], [], [], []
     client.subscribe(TaskStatusEvent, statuses.append)
-    client.subscribe(BatchCreatedEvent, batches.append)
+    client.subscribe(ExecutionStatusEvent, executions.append)
+    client.subscribe(BatchCreatedEvent, created.append)
+    client.subscribe(BatchCompletedEvent, completed.append)
 
     ack = run_to_completion(workflow, client, alpha)
-    wait_for(lambda: batches, "no batch_created event")
-    info = batches[0].info
+    wait_for(lambda: created, "no batch_created event")
+    info = created[0].info
     assert isinstance(info, BatchInfo)
     assert info.uuid == ack.batch_uuid
+    wait_for(lambda: completed, "no batch_completed event")
+    assert completed[0].info.uuid == ack.batch_uuid
+    assert completed[0].info.status == "FINISHED"
     wait_for(
         lambda: any(e.key == alpha.identity_key for e in statuses),
         "no task status event for alpha",
+    )
+    wait_for(
+        lambda: any(
+            e.task_key == alpha.identity_key and e.batch_uuid == ack.batch_uuid
+            for e in executions
+        ),
+        "no execution status event for alpha",
     )
 
     client.unsubscribe(TaskStatusEvent, statuses.append)
     seen = len(statuses)
     run_to_completion(workflow, client, alpha)
     assert len(statuses) == seen
+
+
+def test_subscribe_is_idempotent_and_unsubscribe_of_an_unknown_pair_is_a_noop(
+    e2e_repo,
+):
+    workflow, session, client = session_client(e2e_repo)
+    lines = []
+    client.subscribe(SessionLogEvent, lines.append)
+    client.subscribe(SessionLogEvent, lines.append)
+    workflow.logger.warning("logged once")
+    assert len(lines) == 1
+
+    client.unsubscribe(SessionLogEvent, print)
+    client.unsubscribe_task_log("no-such-key", print)
 
 
 def test_session_log_lane_emits_the_logger_lines(e2e_repo):
@@ -374,21 +437,35 @@ def test_task_log_lane_serves_backlog_then_live_lines(e2e_repo, monkeypatch):
 
     monkeypatch.setattr(type(alpha), "run", run)
 
-    events = []
+    events, log_lines = [], []
     backlog = client.subscribe_task_log(alpha.identity_key, events.append)
     assert backlog == ()
+    # The batch-scoped log lane fires for the same lines (see LogLineEvent).
+    client.subscribe(LogLineEvent, log_lines.append)
 
-    run_to_completion(workflow, client, alpha)
+    ack = run_to_completion(workflow, client, alpha)
     wait_for(
         lambda: any("alpha task-log hello" in e.line for e in events),
         "no task log event",
     )
     assert all(e.task_key == alpha.identity_key for e in events)
+    wait_for(
+        lambda: any(
+            e.batch_uuid == ack.batch_uuid and "alpha task-log hello" in e.line
+            for e in log_lines
+        ),
+        "no log line event",
+    )
 
     client.unsubscribe_task_log(alpha.identity_key, events.append)
     seen = len(events)
     run_to_completion(workflow, client, alpha)
     assert len(events) == seen
+
+    # A fresh subscribe now serves the buffered lines as its backlog.
+    late = []
+    backlog = client.subscribe_task_log(alpha.identity_key, late.append)
+    assert any("alpha task-log hello" in line for line in backlog)
 
 
 def test_close_disconnects_every_subscription(e2e_repo):
@@ -419,3 +496,65 @@ def test_submit_answers_the_acks_of_the_action_handler(e2e_repo):
     refused = client.submit(StopBatch(batch_uuid="no-such-batch"))
     assert refused.accepted is False
     assert "no-such-batch" in refused.reason
+
+
+def test_check_tasks_submits_a_check_batch(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ack = client.submit(CheckTasks(keys=(alpha.identity_key,)))
+    assert ack.accepted
+    batch = workflow.runner.get_batch(ack.batch_uuid)
+    batch.wait()
+    assert batch.action.name == "CHECK"
+
+
+def test_stop_batch_stops_a_running_batch(e2e_repo):
+    workflow, tasks = gated_workflow(e2e_repo)
+    client = LocalSessionClient(workflow.session)
+    gate, batch = start_gated_batch(workflow, tasks)
+    ack = client.submit(StopBatch(batch_uuid=batch.uuid))
+    assert ack.accepted
+    gate.set()
+    batch.wait()
+    assert batch.status is ExecutionStatus.STOPPED
+
+
+def test_set_batch_options_acks_and_publishes_the_changed_event(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    events = []
+    client.subscribe(BatchOptionsChangedEvent, events.append)
+    ack = client.submit(SetBatchOptions(dry_run=True))
+    assert ack.accepted
+    assert workflow.batch_options.dry_run is True
+    wait_for(
+        lambda: any(e.options["dry_run"] is True for e in events),
+        "no batch_options_changed event",
+    )
+
+
+def test_clear_cache_entries_invalidates_through_the_handler(e2e_repo):
+    workflow, session, client = session_client(e2e_repo, "my-cache")
+    assert client.cache_value("weather", "cities").state == "warm"
+    ack = client.submit(ClearCacheEntries(entries=(("weather", "cities"),)))
+    assert ack.accepted
+    # The ack means "started": the handler clears on a worker thread.
+    wait_for(
+        lambda: client.cache_value("weather", "cities").state == "cold",
+        "cities never went cold",
+    )
+
+
+def test_end_session_publishes_session_ended_and_refuses_later_actions(e2e_repo):
+    workflow, session, client = session_client(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    events = []
+    client.subscribe(SessionEndedEvent, events.append)
+    ack = client.submit(EndSession())
+    assert ack.accepted
+    wait_for(lambda: events, "no session_ended event")
+    assert events[0].session_id == session.session_id
+    assert session.has_ended
+
+    refused = client.submit(RunTasks(keys=(alpha.identity_key,)))
+    assert refused.accepted is False
+    assert "has ended" in refused.reason

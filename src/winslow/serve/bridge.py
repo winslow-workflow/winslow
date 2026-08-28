@@ -1,10 +1,15 @@
 """The EventBridge: one per session, the fan-out from the session bus to the
 subscriber queues of the connections. The bus callbacks run on worker threads
-and only enqueue scalar dicts; the drain task on the loop coalesces log lines
-per task per tick, serializes each frame once, and stamps the only sequence
+and only enqueue values; the drain task on the loop coalesces log lines per
+task per tick, serializes each frame once, and stamps the only sequence
 numbers. A subscriber holds a bounded deque: the fan-out drops the oldest
 frame at the bound and counts the drop, and the sender disconnects a client
-that stays behind a full window (see serve-spec, slice two)."""
+that stays behind a full window (see serve-spec, slice two).
+
+A coalesced lane enqueues its model event (LogLineEvent, SessionLogEvent,
+TaskLogEvent, CacheUpdatedEvent), so the lane shape has one declaration; the
+drain aggregates the lines into the *_BATCH envelope frames. The other lanes
+enqueue final frame dicts, because their frames flatten enum fields."""
 
 import asyncio
 import collections
@@ -23,18 +28,15 @@ from winslow.events import (
     TaskStatusEvent,
 )
 from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
-from winslow.model import SessionSnapshot
+from winslow.model import (
+    CacheUpdatedEvent,
+    SessionLogEvent,
+    SessionSnapshot,
+    TaskLogEvent,
+)
 from winslow.serve.wire import FrameTypes
 
 FLUSH_TICK = 0.05
-
-# The inbox item tags of the three lanes _drain coalesces before a frame
-# reaches the wire: a log line, a session_log line, a task_log line. Not on
-# the wire themselves - see FrameTypes.LOG_BATCH/SESSION_LOG_BATCH/
-# TASK_LOG_BATCH for the frame type each lane fans out as.
-_LOG = "log"
-_SESSION_LOG = "session_log"
-_TASK_LOG = "task_log"
 
 
 @dataclass(eq=False)
@@ -155,24 +157,22 @@ class EventBridge:
     # name, so no explicit base class is necessary).
 
     def on_entry_computed(self, info, previous_state):
-        self._inbox.put(
-            {"type": FrameTypes.CACHE_UPDATED, "cache_name": info.cache_name}
-        )
+        self._inbox.put(CacheUpdatedEvent(cache_name=info.cache_name))
 
     def on_entries_invalidated(self, scope, dropped, trigger):
         for name in dropped:
-            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
+            self._inbox.put(CacheUpdatedEvent(cache_name=name))
 
     def on_eager_population_started(self, scope, entries):
         for name in entries:
-            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
+            self._inbox.put(CacheUpdatedEvent(cache_name=name))
 
     def on_eager_population_finished(self, scope, entries):
         for name in entries:
-            self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": name})
+            self._inbox.put(CacheUpdatedEvent(cache_name=name))
 
     def on_entry_error(self, scope, cache_name, entry_name, error):
-        self._inbox.put({"type": FrameTypes.CACHE_UPDATED, "cache_name": cache_name})
+        self._inbox.put(CacheUpdatedEvent(cache_name=cache_name))
 
     def _retire(self):
         """The session ended and the frame is fanned out: release the bus
@@ -182,7 +182,7 @@ class EventBridge:
         if self.owner is not None:
             self.owner.discard(self.session_id)
 
-    # --- the bus side: worker threads, scalars only ---------------------------
+    # --- the bus side: worker threads, values only -----------------------------
 
     def _on_task_status(self, event):
         self._inbox.put(
@@ -216,14 +216,7 @@ class EventBridge:
         )
 
     def _on_log_line(self, event):
-        self._inbox.put(
-            {
-                "type": _LOG,
-                "task_key": event.task_key,
-                "batch_uuid": event.batch_uuid,
-                "line": event.line,
-            }
-        )
+        self._inbox.put(event)
 
     def _on_session_ended(self, event):
         self._inbox.put({"type": FrameTypes.SESSION_ENDED})
@@ -234,10 +227,10 @@ class EventBridge:
         )
 
     def _on_session_log_line(self, line):
-        self._inbox.put({"type": _SESSION_LOG, "line": line})
+        self._inbox.put(SessionLogEvent(line=line))
 
     def _on_task_log_line(self, task_key, line):
-        self._inbox.put({"type": _TASK_LOG, "task_key": task_key, "line": line})
+        self._inbox.put(TaskLogEvent(task_key=task_key, line=line))
 
     # --- the loop side ---------------------------------------------------------
 
@@ -280,19 +273,19 @@ class EventBridge:
             task_logs = {}
             # A dict, not a set: iteration must keep the first-seen order,
             # and a plain dict does that for free.
-            cache_names = {}
+            cache_events = {}
             others = []
             for item in batch:
-                if item["type"] == _LOG:
-                    logs.setdefault((item["task_key"], item["batch_uuid"]), []).append(
-                        item["line"]
+                if isinstance(item, LogLineEvent):
+                    logs.setdefault((item.task_key, item.batch_uuid), []).append(
+                        item.line
                     )
-                elif item["type"] == _SESSION_LOG:
-                    session_log_lines.append(item["line"])
-                elif item["type"] == _TASK_LOG:
-                    task_logs.setdefault(item["task_key"], []).append(item["line"])
-                elif item["type"] == FrameTypes.CACHE_UPDATED:
-                    cache_names[item["cache_name"]] = None
+                elif isinstance(item, SessionLogEvent):
+                    session_log_lines.append(item.line)
+                elif isinstance(item, TaskLogEvent):
+                    task_logs.setdefault(item.task_key, []).append(item.line)
+                elif isinstance(item, CacheUpdatedEvent):
+                    cache_events[item.cache_name] = item
                 else:
                     others.append(item)
             for (task_key, batch_uuid), lines in logs.items():
@@ -316,10 +309,8 @@ class EventBridge:
                         "lines": lines,
                     }
                 )
-            for cache_name in cache_names:
-                self._fan_out(
-                    {"type": FrameTypes.CACHE_UPDATED, "cache_name": cache_name}
-                )
+            for event in cache_events.values():
+                self._fan_out({"type": FrameTypes.CACHE_UPDATED, **asdict(event)})
             # After the logs of the same pass: a control event must not
             # overtake the lines that precede it.
             for item in others:
