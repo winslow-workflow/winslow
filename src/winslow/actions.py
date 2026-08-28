@@ -223,6 +223,12 @@ class ActionHandler:
     def _clear_cache_entry(self, cache, entry_name):
         cache.invalidate(entry_name)
 
+    def _run_cache_entries(self, work, resolved):
+        # A bare thread carries no LogContext. The scope routes the loader
+        # and invalidation lines to the session log (see Session.log_scope).
+        with self.session.log_scope():
+            execute_in_threads(work, resolved)
+
     def _cache_entries_action(self, action, work):
         if not action.entries:
             return self._refuse(action, "the entries list is empty - nothing to do.")
@@ -233,7 +239,7 @@ class ActionHandler:
         # until every entry finishes, so a background thread runs it and
         # the caller does not wait. cache_updated events report progress.
         threading.Thread(
-            target=execute_in_threads, args=(work, resolved), daemon=True
+            target=self._run_cache_entries, args=(work, resolved), daemon=True
         ).start()
         return Ack(accepted=True)
 

@@ -40,7 +40,6 @@ from winslow.model import (
     SessionLogEvent,
     SessionParams,
     SessionSnapshot,
-    TaskLogEvent,
 )
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.runner.execution import ExecutionStatus
@@ -543,6 +542,31 @@ def test_clear_cache_entries_invalidates_through_the_handler(e2e_repo):
     wait_for(
         lambda: client.cache_value("weather", "cities").state == "cold",
         "cities never went cold",
+    )
+
+
+def test_cache_actions_run_under_the_session_log_scope(e2e_repo, state_store):
+    """The action fan-out enters the session log scope, so a cache emission
+    reaches the session log backlog (see ActionHandler._run_cache_entries)."""
+    import logging
+
+    registry = SessionRegistry()
+    app = LocalAppClient(
+        registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
+    )
+    row = app.create_session("my-cache")
+    client = app.session(row.session_id)
+    # The drop line is info level; the run logger must let it through.
+    registry.get(row.session_id).workflow.logger.setLevel(logging.INFO)
+
+    ack = client.submit(ClearCacheEntries(entries=(("weather", "cities"),)))
+    assert ack.accepted
+    wait_for(
+        lambda: any(
+            "dropped" in line and "cities" in line
+            for line in client.snapshot().session_log_backlog
+        ),
+        "the drop line never reached the session log",
     )
 
 
