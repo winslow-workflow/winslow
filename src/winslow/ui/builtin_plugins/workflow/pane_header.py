@@ -5,10 +5,9 @@ from winslow.ui.filter_validation import FilterSyntaxValidator
 
 
 class PaneSearch(Horizontal):
-    """The three search controls that the headers of the Tasks pane and the
-    History pane share: the filter input, the syntax help button and the
-    parameters button. _pane_header.tcss holds their style. `parse` is any
-    callable that raises ValueError on a bad query (see FilterSyntaxValidator)."""
+    """The three search controls that the Tasks pane and the History pane
+    share: the filter input, the syntax help button and the parameters
+    button. `parse` feeds the syntax validator (see FilterSyntaxValidator)."""
 
     DEFAULT_CLASSES = "search"
 

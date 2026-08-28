@@ -3,12 +3,10 @@ from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Button, LoadingIndicator
 
+from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.formatting import format_status_summary, format_elapsed
 
 SUMMARY_REFRESH_INTERVAL = 2
-
-# The batch statuses that still count as active (see ExecutionStatus).
-_ACTIVE_STATUSES = ("QUEUED", "RUNNING")
 
 
 class RestorableRow(Widget):
@@ -106,7 +104,7 @@ class SessionRow(Widget):
         self.is_loading = False
         self._refresh_summary()
         # The tick only refreshes the display; the app moves the row to the
-        # history on the session_ended event (see Winslow._on_session_ended).
+        # history on the session_ended event (see Winslow._connect_session).
         self.set_interval(SUMMARY_REFRESH_INTERVAL, self._tick)
 
     @classmethod
@@ -120,21 +118,23 @@ class SessionRow(Widget):
 
     def _active_batches(self):
         snapshot = self.app.client.session(self.session_id).snapshot()
-        return [b for b in snapshot.batches if b.status in _ACTIVE_STATUSES]
+        return [b for b in snapshot.batches if b.status in ACTIVE_BATCH_STATUSES]
 
     def begin_ending(self):
         label = self.query_one(".waiting", Label)
         label.display = True
         label.update(self._waiting_text(self._active_batches()))
 
-    def _fetch_row(self):
+    def fetch_row(self):
+        """The current SessionRow value of this session, or the last known
+        one when the read finds no match."""
         rows = self.app.client.sessions()
         return next((r for r in rows if r.session_id == self.session_id), self.row)
 
     def _tick(self):
         if self.row is None:
             return
-        self.row = self._fetch_row()
+        self.row = self.fetch_row()
         self._refresh_summary()
         if self.row.status == "ENDING":
             self.query_one(".waiting", Label).update(

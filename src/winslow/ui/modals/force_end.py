@@ -3,15 +3,15 @@ from textual.widgets import Button, Label
 from textual.containers import Horizontal, VerticalScroll
 
 from winslow.actions import EndSession
+from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 
 from .common import BaseModal
 
-# The batch statuses that still count as active (see ExecutionStatus).
-_ACTIVE_STATUSES = ("QUEUED", "RUNNING")
-
 
 def _active_batches(snapshot):
-    return [batch for batch in snapshot.batches if batch.status in _ACTIVE_STATUSES]
+    return [
+        batch for batch in snapshot.batches if batch.status in ACTIVE_BATCH_STATUSES
+    ]
 
 
 class ForceEndModal(BaseModal):

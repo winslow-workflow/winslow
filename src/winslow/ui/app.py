@@ -137,15 +137,15 @@ class Winslow(App):
         self.install_screen(screen, name=session_screen_name(session_id))
         screen.connect()
 
-        # The drain rule needs the UI thread: the finalization clears the
-        # store, so it must serialize with the widgets that read it. The end
-        # event moves the dashboard row to the history. The bus close at
-        # session end disconnects both lanes.
+        # The finalization clears the store, so it runs on the UI thread,
+        # serialized with the widgets that read it (see finalize_if_drained).
         def on_batch_completed(event):
             self.post_message(
                 SessionLifecycleEvent(partial(self._finalize_session, session_id))
             )
 
+        # The end event moves the dashboard row to the history. The bus
+        # close at session end disconnects both lanes.
         def on_session_ended(event):
             self.post_message(
                 SessionLifecycleEvent(

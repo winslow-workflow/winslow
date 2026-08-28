@@ -235,10 +235,9 @@ def validate_values(
     workflow_name, workflow_kls, orchestrator, values, overrides, workflow_base=None
 ):
     """Refuse a bad create payload with direction, before any initialization
-    work runs. The descriptors name every option this checks against; the
-    parsed CLI base satisfies a required option the caller did not send.
-    Return the (values, overrides) pair with each string value parsed through
-    the declared option type, so every door hands the workflow typed values."""
+    work runs. Return (values, overrides), each string value parsed through
+    its declared option type. The CLI base satisfies a required option the
+    caller did not send."""
     known_values = workflow_kls.config_meta
     known_overrides = orchestrator.config_meta
     for name in values:

@@ -220,8 +220,8 @@ class TaskDetailWidget(Widget):
 
     @property
     def _root_dir(self):
-        # A display nicety of the local app: the root dir shortens the source
-        # paths. A client process without an orchestrator shows full paths.
+        # A local-only display aid: the root dir shortens the source paths.
+        # A client process without an orchestrator shows full paths.
         orchestrator = getattr(self.app, "orchestrator", None)
         return orchestrator.directory if orchestrator is not None else None
 

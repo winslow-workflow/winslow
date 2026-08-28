@@ -224,13 +224,12 @@ class CachesPane(SearchFlowMixin, Widget):
         self._collecting = True
         try:
             cards = await asyncio.to_thread(self.client.caches)
-        finally:
-            self._collecting = False
-        try:
             await self._apply(cards)
         except Exception:
             # A raise would tear the whole app down: log and continue.
             self.app.logger.error("The cache pane repaint failed.", exc_info=True)
+        finally:
+            self._collecting = False
 
     async def _mount_card(self, card):
         widget = CacheCardWidget(card)

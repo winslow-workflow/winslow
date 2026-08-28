@@ -420,6 +420,18 @@ class TaskInfo:
 # --- the batch and session state shapes --------------------------------------
 
 
+def _batch_options(batch):
+    """The batch option snapshot of the execution context, without the uuid."""
+    context = batch.execution_context
+    if context is None:
+        return None
+    return {
+        name: value
+        for name, value in asdict(context).items()
+        if name != "batch_uuid"
+    }
+
+
 @dataclass(frozen=True)
 class BatchInfo:
     """The value snapshot of one batch, for events and the wire (the payload
@@ -442,17 +454,13 @@ class BatchInfo:
 
     @classmethod
     def from_batch(cls, batch, tasks):
-        context = batch.execution_context
-        options = asdict(context) if context is not None else None
-        if options is not None:
-            options.pop("batch_uuid")
         return cls(
             uuid=batch.uuid,
             action=batch.action.name,
             status=batch.status.name,
             task_count=batch.task_count,
             tasks={task.identity_key: str(task) for task in tasks},
-            options=options,
+            options=_batch_options(batch),
             created_at=batch.created_at.timestamp(),
             started_at=(
                 batch.started_at.timestamp() if batch.started_at else None
@@ -530,10 +538,6 @@ class HistoryRow:
 
     @classmethod
     def from_batch(cls, batch, store):
-        context = batch.execution_context
-        options = asdict(context) if context is not None else None
-        if options is not None:
-            options.pop("batch_uuid")
         return cls(
             uuid=batch.uuid,
             action=batch.action.name,
@@ -543,7 +547,7 @@ class HistoryRow:
             completed_at=(
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
-            options=options,
+            options=_batch_options(batch),
             tasks=(
                 {
                     key: TaskOutcome.from_record(status, store.get_record(key))
@@ -736,9 +740,8 @@ class CacheEntryCard:
 @dataclass(frozen=True)
 class CacheCard:
     """One cache: identity, storage, the declared entries with their
-    display style, and the current value preview of each written entry.
-    A cache whose storage cannot be observed answers a card with the error
-    message set and no entry info (see CachesPayload.from_workflow)."""
+    display style, and the current value preview of each written entry
+    (see unobservable for the error form)."""
 
     name: str
     scope: str

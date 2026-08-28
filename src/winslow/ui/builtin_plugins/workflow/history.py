@@ -1,6 +1,6 @@
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 
 from textual import on
@@ -30,6 +30,7 @@ from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.formatting import format_status_summary
 from winslow.ui.modals import TaskDetail
 from winslow.ui.modals.common import BaseModal
+from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.icons import get_task_icon
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
@@ -49,9 +50,6 @@ _STATUS_OPTIONS = (
     *((str(status), status) for status in TaskStatus),
 )
 
-# The batch statuses a stop request can still reach.
-_STOPPABLE_STATUSES = ("QUEUED", "RUNNING")
-
 
 # (batch option name, pill label, css class). The UI shows a pill on the
 # header of the batch card if the flag is set.
@@ -63,7 +61,7 @@ _FLAG_PILLS = (
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class BatchView:
     """The card model of one batch, from either port shape: a HistoryRow at
     compose time, a BatchInfo from a batch_created event."""
@@ -123,8 +121,8 @@ class RecordRow(TaskRowBase):
         self.batch_uuid = batch_uuid
         self.key = key
         self._outcome = outcome
-        # The first live status observation, for the elapsed display of a
-        # record whose outcome has not arrived yet.
+        # The time of the first status event. The elapsed display of a
+        # record without an outcome starts here.
         self._running_since = None
         super().__init__(info, *args, **kwargs)
 
@@ -169,8 +167,8 @@ class RecordRow(TaskRowBase):
     def update_outcome(self, outcome):
         self._outcome = outcome
         self.log_line = outcome.last_log
-        # The reactive repaints the row; an equal status still needs the
-        # runtime refresh, so paint it directly first.
+        # An equal status does not trigger the reactive. Paint directly
+        # first, so the runtime column still refreshes.
         self.watch_status(TaskStatus[outcome.status])
         self.status = TaskStatus[outcome.status]
 
@@ -211,7 +209,7 @@ class BatchCard(Widget):
         self._infos_by_key = infos_by_key
         super().__init__(*args, **kwargs)
 
-    def _refresh_title(self):
+    def refresh_title(self):
         statuses = [row.status for row in self.query(RecordRow).results()]
         completed = sum(1 for s in statuses if s in PASSING_STATUSES)
         problematic = sum(1 for s in statuses if s in PROBLEMATIC_STATUSES)
@@ -230,7 +228,7 @@ class BatchCard(Widget):
             (label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)
         ]
 
-        stoppable = view.status in _STOPPABLE_STATUSES
+        stoppable = view.status in ACTIVE_BATCH_STATUSES
         with Horizontal(classes="batch-header"):
             with Horizontal(classes="batch-tags"):
                 for label, cls in pills:
@@ -253,13 +251,13 @@ class BatchCard(Widget):
             )
 
     def on_mount(self):
-        self._refresh_title()
+        self.refresh_title()
 
     def batch_completed(self, info):
-        self.view.status = info.status
+        self.view = replace(self.view, status=info.status)
         if self.view.task_count > 1:
             self.query_one(".stop-btn", Button).disabled = True
-        self._refresh_title()
+        self.refresh_title()
 
     @on(Button.Pressed, ".details-btn")
     def show_details(self):
@@ -289,10 +287,9 @@ class HistoryPane(SearchFlowMixin, Widget):
         super().__init__(*args, **kwargs)
 
     def _matching_tasks(self, query: str, warn=True) -> set:
-        """The identity keys the query matches over the row infos. The parse
-        knows only the builtin filters, so a search of stored rows needs no
-        live session. The typing preview passes warn=False, so it does not
-        toast per tick."""
+        """The identity keys the query matches over the row infos. The
+        builtin-only parse needs no live session. The typing preview passes
+        warn=False, so it does not toast per tick."""
         infos = [row.w_task for row in self.query(RecordRow).results() if row.w_task]
         try:
             parsed = parse_builtin(query)
@@ -455,7 +452,7 @@ class HistoryPane(SearchFlowMixin, Widget):
                 record_row.update_outcome(outcome)
         self._apply_visibility()
         if card := self._cards.get(batch_uuid):
-            card._refresh_title()
+            card.refresh_title()
 
     @on(ExecutionStatusChanged)
     def on_execution_status_changed(self, event):
@@ -465,7 +462,7 @@ class HistoryPane(SearchFlowMixin, Widget):
             row.display = self._row_visible(row)
         card = self._cards.get(event.batch_uuid)
         if card:
-            card._refresh_title()
+            card.refresh_title()
             card.display = any(r.display for r in card.query(RecordRow).results())
 
     @on(TaskLogUpdated)

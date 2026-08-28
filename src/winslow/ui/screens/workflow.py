@@ -1,6 +1,5 @@
 import asyncio
-import functools
-from functools import partial
+from functools import partial, wraps
 
 from textual import on
 from textual.widgets import (
@@ -62,7 +61,7 @@ def refuse_if_ending(method):
     only the task detail. A batch action needs no guard: its refused ack
     carries the same message (see ActionHandler)."""
 
-    @functools.wraps(method)
+    @wraps(method)
     async def wrapper(self, *args, **kwargs):
         if self.session_status in ("ENDING", "ENDED"):
             self.notify(SESSION_ENDING_MESSAGE, severity="warning")
@@ -99,7 +98,6 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         self.snapshot = client.snapshot()
         self.session_status = self.snapshot.status
         self.roster = client.roster()
-        self.infos_by_key = {info.key: info for info in self.roster}
         # The statuses-by-key mirror of the session, read by the DTO-driven
         # panes (see WorkflowRenderContext.task_statuses).
         self.statuses_by_key = {
@@ -131,10 +129,9 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     # --- port subscriptions ---------------------------------------------------
 
     def connect(self):
-        """Wire the screen onto the session events of the port. The app calls
-        this once, right after the screen installs. The bus close at session
-        end disconnects the bus lanes; the cache lane detaches itself (see
-        _on_session_ended)."""
+        """Wire the screen onto the session events of the port, once, right
+        after the install. The bus close at session end disconnects every
+        lane except the cache lane (see _on_session_ended)."""
         for topic, method in (
             (TaskStatusEvent, self._on_task_status),
             (ExecutionStatusEvent, self._on_execution_status),
@@ -336,7 +333,7 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         ack = self.submit_action(action_class(keys=self._visible_keys()))
         if not ack.accepted:
             return
-        # The batch_created event carries the admitted count; the toast waits
+        # The batch_created event carries the admitted count. The toast waits
         # for it (see _on_batch_created).
         self._pending_bulk[ack.batch_uuid] = verb
 

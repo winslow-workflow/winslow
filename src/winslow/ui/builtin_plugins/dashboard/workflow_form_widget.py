@@ -33,23 +33,13 @@ def switch_checked(row):
 
 
 class WorkflowFormGenerator:
+    """Generate the start form of one workflow from its OptionRow values:
+    the workflow options and the orchestrator overrides, in two sections.
+    A CLI-supplied value prefills its field (see Descriptors)."""
+
     # If a single-select field has more options than this number, the form uses
     # an option list with a search instead of a radio set.
     MAX_OPTIONS_FOR_RADIO_SELECT = 10
-
-    """
-    In the interactive mode the UI shows a form that it generates. The form
-    collects the initial workflow arguments, and it can also override the meta
-    parameters that come from the orchestrator.
-
-    A field is filled if the user gave the value as a command-line argument. For
-    example, force-run is checked if the user started the UI app with
-    'winslow run --force-run'.
-
-    The fields come from the OptionRow values of the Descriptors read: the
-    collected workflow options and the orchestrator overrides, in two sections
-    (see winslow.model.Descriptors).
-    """
 
     def __init__(self, logger):
         self.logger = logger

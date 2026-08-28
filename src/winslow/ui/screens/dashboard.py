@@ -48,10 +48,8 @@ class DashboardScreen(SlottedScreen):
 
         await self._populate_restorable()
 
-        # Initialize each workflow that has Workflow.auto_init. The UI thus does
-        # not show the selector and the form, which helps a test. There is no
-        # value from a form: create_session starts from the parsed base of the
-        # workflow, which holds each default.
+        # Start each auto_init workflow without a form: create_session fills
+        # every value from the parsed base of the workflow.
         for descriptor in self.descriptors.workflows:
             if descriptor.auto_init:
                 self.logger.info(f"auto_init: initializing {descriptor.workflow}")
@@ -135,7 +133,7 @@ class DashboardScreen(SlottedScreen):
     async def move_session_to_history(self, session_id):
         """The session_ended reaction: replace the live row with a history
         row. The app calls this from its port subscription (see
-        Winslow._on_session_ended)."""
+        Winslow._connect_session)."""
         row = next(
             (
                 r
@@ -147,7 +145,7 @@ class DashboardScreen(SlottedScreen):
         # The end paths can race; the second call finds no row.
         if row is None or not row.is_mounted:
             return
-        final = row._fetch_row()
+        final = row.fetch_row()
         await row.remove()
         await self.add_history_session(final)
 

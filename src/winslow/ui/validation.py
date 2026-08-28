@@ -40,12 +40,9 @@ class FormValues:
 
 
 class WorkflowFormValidator:
-    """
-    Apply the validation rules of the OptionRow metadata to the form inputs.
-    Mark each input that fails and show the error message. A scalar type
-    parses inline for an immediate field error; every other value stays a
-    string for the server-side parse of create_session.
-    """
+    """Apply the OptionRow rules to the form inputs and mark each input that
+    fails. A scalar type parses inline for an immediate field error; every
+    other value stays a string for create_session to parse."""
 
     def __init__(self, logger):
         self.logger = logger

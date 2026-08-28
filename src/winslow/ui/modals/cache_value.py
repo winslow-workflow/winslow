@@ -66,9 +66,8 @@ class CacheValue(BaseModal):
     @classmethod
     def for_entry(cls, client, cache_name, entry_name, logger=None):
         """The live view: read the CacheValueView through the port. The value
-        arrives rendered per its display_style, so the modal shows the same
-        text a wire client receives. An ERRORED entry shows its error context
-        above the value, or alone when no record exists (see CacheEntryError)."""
+        arrives rendered, so the modal shows the same text a wire client
+        receives. An ERRORED entry shows its context (see CacheEntryError)."""
 
         def produce():
             view = client.cache_value(cache_name, entry_name)
