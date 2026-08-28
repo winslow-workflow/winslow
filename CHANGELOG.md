@@ -139,7 +139,9 @@ versions may include breaking changes).
 - The Caches pane renders from the `caches()` read of the port and submits `LoadCacheEntries` and
   `ClearCacheEntries` through the action handler; it held live `BaseCache` objects and called them
   directly. The cache value modal shows the server-rendered `CacheValueView`, the same text a wire
-  client receives. "Clear all" clears the visible entries; it cleared whole caches.
+  client receives, and splits by source: `CacheEntryValue` (live, through the port) and
+  `CacheSnapshotValue` (history) over the `CacheValue` shell. "Clear all" clears the visible
+  entries; it cleared whole caches.
 - `create_session` parses string values through the declared option types, checks each element of a
   multiselect value against the choices, and fills unsent options from the parsed CLI base, so the
   serve door and the TUI form start a workflow from the same value context.

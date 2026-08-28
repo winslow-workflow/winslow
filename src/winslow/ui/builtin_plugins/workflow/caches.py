@@ -16,7 +16,7 @@ from winslow.ui.css import package_css
 from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.history import HistoryPlugin
-from winslow.ui.modals.cache_value import CacheValue
+from winslow.ui.modals.cache_value import CacheEntryValue
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.workflow_events import CacheUpdated, SessionEnded
@@ -347,9 +347,7 @@ class CachesPane(SearchFlowMixin, Widget):
         pair = (event.cache_name, event.entry_name)
         match event.action:
             case CacheAction.VIEW:
-                self.app.push_screen(
-                    CacheValue.for_entry(self.client, *pair)
-                )
+                self.app.push_screen(CacheEntryValue(self.client, *pair))
             case CacheAction.LOAD:
                 self.screen.submit_action(LoadCacheEntries(entries=(pair,)))
             case CacheAction.CLEAR:

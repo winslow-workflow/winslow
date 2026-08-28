@@ -17,7 +17,7 @@ from textual.message import Message
 from winslow.decorators import NOT_MATERIALIZED
 from winslow.model import SnapshotEncoding
 from winslow.runner.execution import ExecutionPhase
-from winslow.ui.modals.cache_value import CacheValue
+from winslow.ui.modals.cache_value import CacheSnapshotValue
 from winslow.task.info import _ambiguous_names, _location, _origin_label
 from winslow.util import safe_repr
 from winslow.ui.css import package_css
@@ -92,7 +92,7 @@ class AttributeTable(DataTable):
 
 class CacheReadsTable(AttributeTable):
     """The cache reads of a record. The selection of a JSON snapshot row opens
-    its stored value as a tree (see CacheValue.for_snapshot)."""
+    its stored value as a tree (see CacheSnapshotValue)."""
 
     def __init__(self, columns, reads, *args, **kwargs):
         # reads: (snapshot, row) pairs, in display order. The snapshots key
@@ -112,7 +112,7 @@ class CacheReadsTable(AttributeTable):
     def open_snapshot(self, event):
         snapshot = self._snapshots_by_key[event.row_key]
         if snapshot.encoding is SnapshotEncoding.JSON:
-            self.app.push_screen(CacheValue.for_snapshot(snapshot))
+            self.app.push_screen(CacheSnapshotValue(snapshot))
 
 
 def _walk_nodes(node):
