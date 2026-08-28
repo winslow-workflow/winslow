@@ -46,6 +46,26 @@ class RequestFrame:
 
 
 @dataclass(frozen=True)
+class SubscribeFrame:
+    """One inbound subscribe or unsubscribe frame, decoded at the serve
+    edge. unsubscribe reads only session_id."""
+
+    type: str
+    session_id: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
+class TaskLogSubscribeFrame:
+    """One inbound subscribe_task_log or unsubscribe_task_log frame."""
+
+    type: str
+    session_id: str
+    task_key: str
+    request_id: str | None = None
+
+
+@dataclass(frozen=True)
 class TaskStatusSummary:
     """The (completed, problematic, total) counts of one session (see
     Session.task_status_summary)."""

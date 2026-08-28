@@ -547,4 +547,138 @@ def test_a_valid_json_non_dict_frame_answers_an_error_and_the_connection_survive
     )
     assert result["request_id"] == "r-35"
     ws.close()
+
+
+def test_an_unhashable_session_id_on_a_subscribe_frame_answers_an_error(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    ws.send_json({"type": "subscribe", "session_id": ["not", "a", "string"]})
+    error = frames_until(ws, "error")
+    assert "malformed" in error["reason"]
+
+    # The connection is still alive: a valid frame answers normally.
+    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    assert ws.receive_json()["type"] == "snapshot"
+    ws.close()
+
+
+def test_an_unhashable_session_id_on_a_task_log_frame_answers_an_error(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    ws.send_json(
+        {
+            "type": "subscribe_task_log",
+            "session_id": {"not": "a string"},
+            "task_key": "whatever",
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "malformed" in error["reason"]
+    ws.close()
+
+
+def test_a_malformed_unsubscribe_frame_answers_an_error(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    ws.send_json({"type": "unsubscribe"})
+    error = frames_until(ws, "error")
+    assert "malformed" in error["reason"]
+    ws.close()
+
+
+# --- ended sessions answer directional errors, not a generic 500 ------------------
+
+
+def test_the_live_session_reads_answer_directional_errors_once_ended(e2e_repo):
+    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
+    ws = connect(registry)
+    session.end()
+    assert session.has_ended
+
+    for kind, fields in [
+        (Requests.ROSTER, {}),
+        (Requests.CACHES, {}),
+        (Requests.CACHE_VALUE, {"cache_name": "weather", "entry_name": "cities"}),
+        (Requests.APPLY_FILTER, {"query": "alpha"}),
+    ]:
+        ws.send_json(
+            {
+                "type": "request",
+                "request_id": f"ended-{kind}",
+                "kind": kind,
+                "session_id": session.session_id,
+                **fields,
+            }
+        )
+        error = frames_until(ws, "error")
+        assert error["request_id"] == f"ended-{kind}"
+        assert "has ended" in error["reason"]
+    ws.close()
+
+
+def test_task_detail_answers_a_directional_error_once_ended(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ws = connect(registry)
+    session.end()
+    ws.send_json(
+        {
+            "type": "request",
+            "request_id": "r-36",
+            "kind": Requests.TASK_DETAIL,
+            "session_id": session.session_id,
+            "task_key": alpha.identity_key,
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "has ended" in error["reason"]
+    ws.close()
+
+
+def test_subscribe_task_log_answers_a_directional_error_once_ended(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ws = connect(registry)
+    session.end()
+    ws.send_json(
+        {
+            "type": "subscribe_task_log",
+            "request_id": "r-37",
+            "session_id": session.session_id,
+            "task_key": alpha.identity_key,
+        }
+    )
+    error = frames_until(ws, "error")
+    assert "has ended" in error["reason"]
+    ws.close()
+
+
+def test_history_log_tail_and_record_detail_still_serve_an_ended_session(e2e_repo):
+    """The five handlers on requires_session (not requires_live_session)
+    keep working after end: they read the record store and workflow
+    attributes that survive release_tasks."""
+    workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    ws = connect(registry)
+    ack = action(
+        ws, "r-38", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key]
+    )
+    wait_for_status(workflow, alpha, S.COMPLETED)
+    session.end()
+    assert session.has_ended
+
+    history = request(ws, "r-39", Requests.HISTORY, session_id=session.session_id)
+    assert history["batches"]
+
+    log_tail = request(
+        ws, "r-40", Requests.LOG_TAIL, session_id=session.session_id,
+        batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
+    )
+    assert "lines" in log_tail
+
+    record_detail = request(
+        ws, "r-41", Requests.RECORD_DETAIL, session_id=session.session_id,
+        batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
+    )
+    assert record_detail["info"]["key"] == alpha.identity_key
     ws.close()

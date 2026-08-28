@@ -19,7 +19,12 @@ from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
 from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.logger import INLINE_FORMATTER, LOGGER, get_task_dispatcher
-from winslow.model import ActionFrame, RequestFrame
+from winslow.model import (
+    ActionFrame,
+    RequestFrame,
+    SubscribeFrame,
+    TaskLogSubscribeFrame,
+)
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.sessions import create_session
 from winslow.serve.wire import (
@@ -74,6 +79,29 @@ def requires_session(method):
             await method(self, envelope, session)
 
     return wrapper
+
+
+def requires_live_session(method):
+    """requires_session, plus a refusal once the session has ended: its
+    tasks and workflow cache are released (see Workflow.release_tasks), so
+    a read past that point fails inside the handler with no direction.
+    history, log_tail, record_detail, batch_options and session_params use
+    requires_session instead - they read state that survives the release."""
+
+    @requires_session
+    async def guarded(self, envelope, session):
+        if session.has_ended:
+            self.request_error(
+                envelope.request_id,
+                f"{session.session_id} has ended - its live task and cache "
+                f"state is released.",
+            )
+            return
+        await method(self, envelope, session)
+
+    # requires_session already wraps guarded with functools.wraps(guarded);
+    # re-wrap with the real handler so a traceback names it, not "guarded".
+    return functools.wraps(method)(guarded)
 
 
 class Bridges:
@@ -311,13 +339,17 @@ class Connection:
         kind = frame.get("type")
         match kind:
             case FrameTypes.SUBSCRIBE:
-                self.handle_subscribe(frame)
+                if envelope := self.decode(frame, SubscribeFrame):
+                    self.handle_subscribe(envelope)
             case FrameTypes.UNSUBSCRIBE:
-                self.handle_unsubscribe(frame.get("session_id"))
+                if envelope := self.decode(frame, SubscribeFrame):
+                    self.handle_unsubscribe(envelope.session_id)
             case FrameTypes.SUBSCRIBE_TASK_LOG:
-                self.handle_subscribe_task_log(frame)
+                if envelope := self.decode(frame, TaskLogSubscribeFrame):
+                    self.handle_subscribe_task_log(envelope)
             case FrameTypes.UNSUBSCRIBE_TASK_LOG:
-                self.handle_unsubscribe_task_log(frame)
+                if envelope := self.decode(frame, TaskLogSubscribeFrame):
+                    self.handle_unsubscribe_task_log(envelope)
             case FrameTypes.ACTION:
                 self.dispatch(frame, ActionFrame, self.run_action)
             case FrameTypes.REQUEST:
@@ -333,20 +365,27 @@ class Connection:
                     }
                 )
 
-    def dispatch(self, frame, envelope_class, run):
-        """Decode the frame into its envelope and spawn the handler. A
-        malformed frame answers an error and never reaches the handler: the
-        envelope replaces a trusted frame.get(...) read from here on (see
+    def decode(self, frame, envelope_class):
+        """The envelope of one inbound frame, or None after an error reply.
+        Every inbound frame decodes through its envelope before a handler
+        sees it: the envelope replaces a trusted frame.get(...) read (see
         winslow.model, winslow.codec)."""
         try:
-            envelope = CODEC.decode(envelope_class, frame)
+            return CODEC.decode(envelope_class, frame)
         except ValidationError as exc:
             self.request_error(
                 frame.get("request_id"),
                 f"the {frame.get('type')} frame is malformed - {exc}",
             )
-            return
-        self.spawn(envelope, run(envelope))
+            return None
+
+    def dispatch(self, frame, envelope_class, run):
+        """Decode the frame, then spawn the handler as a job (see spawn):
+        the async request and action path, where the handler itself may
+        block or fail."""
+        envelope = self.decode(frame, envelope_class)
+        if envelope is not None:
+            self.spawn(envelope, run(envelope))
 
     def spawn(self, envelope, coroutine):
         job = asyncio.get_running_loop().create_task(
@@ -388,12 +427,12 @@ class Connection:
     def resolve_for(self, envelope):
         return self.resolve(envelope.session_id, envelope.request_id)
 
-    def handle_subscribe(self, frame):
+    def handle_subscribe(self, envelope):
         """Attach, snapshot, and queue - synchronous on the loop, so no drain
         pass lands between the attach and the snapshot. A second subscribe of
         one session resets the queue and resends the snapshot: that is the
         recovery of a client that saw a sequence gap."""
-        session = self.resolve(frame.get("session_id"), frame.get("request_id"))
+        session = self.resolve_for(envelope)
         if session is None:
             return
         session_id = session.session_id
@@ -415,20 +454,26 @@ class Connection:
             bridge.unsubscribe(subscription)
         self.reply({"type": "unsubscribed", "session_id": session_id})
 
-    def handle_subscribe_task_log(self, frame):
+    def handle_subscribe_task_log(self, envelope):
         """The backlog and the live stream of one task's log, outside any
         batch. The backlog answers at once. The live lines ride the session
         subscription as task_log_batch frames, so the client must also
         subscribe to the session."""
-        request_id = frame.get("request_id")
-        session = self.resolve(frame.get("session_id"), request_id)
+        session = self.resolve_for(envelope)
         if session is None:
             return
-        task_key = frame.get("task_key")
+        if session.has_ended:
+            self.request_error(
+                envelope.request_id,
+                f"{session.session_id} has ended - its live task state is "
+                f"released.",
+            )
+            return
+        task_key = envelope.task_key
         try:
             task = session.workflow.task_index.resolve(task_key)
         except KeyError as exc:
-            self.request_error(request_id, exc.args[0])
+            self.request_error(envelope.request_id, exc.args[0])
             return
         bridge = self.app.bridges.get_or_create(session)
         key = (session.session_id, task_key)
@@ -445,9 +490,9 @@ class Connection:
             }
         )
 
-    def handle_unsubscribe_task_log(self, frame):
-        session_id = frame.get("session_id")
-        task_key = frame.get("task_key")
+    def handle_unsubscribe_task_log(self, envelope):
+        session_id = envelope.session_id
+        task_key = envelope.task_key
         key = (session_id, task_key)
         if key in self.task_log_subscriptions:
             self.task_log_subscriptions.discard(key)
@@ -563,7 +608,7 @@ class Connection:
         )
 
     @request_handler(Requests.TASK_DETAIL)
-    @requires_session
+    @requires_live_session
     async def _request_task_detail(self, envelope, session):
         try:
             task = session.workflow.task_index.resolve(envelope.task_key)
@@ -584,19 +629,19 @@ class Connection:
         self.result(envelope, info=asdict(info))
 
     @request_handler(Requests.ROSTER)
-    @requires_session
+    @requires_live_session
     async def _request_roster(self, envelope, session):
         workflow = session.workflow
         tasks = workflow.get_filtered_tasks()
         self.result(envelope, tasks=[asdict(workflow.task_info(t)) for t in tasks])
 
     @request_handler(Requests.CACHES)
-    @requires_session
+    @requires_live_session
     async def _request_caches(self, envelope, session):
         self.result(envelope, **caches_payload(session.workflow))
 
     @request_handler(Requests.CACHE_VALUE)
-    @requires_session
+    @requires_live_session
     async def _request_cache_value(self, envelope, session):
         cache = resolve_cache(session.workflow, envelope.cache_name)
         if cache is None:
@@ -649,7 +694,7 @@ class Connection:
         self.result(envelope, **session_params_payload(session.workflow))
 
     @request_handler(Requests.APPLY_FILTER)
-    @requires_session
+    @requires_live_session
     async def _request_apply_filter(self, envelope, session):
         try:
             query = session.workflow.filter_registry.parse(envelope.query)
