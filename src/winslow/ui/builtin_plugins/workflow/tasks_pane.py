@@ -1,17 +1,12 @@
 from textual import on
 from textual.widget import Widget
-from textual.widgets import Checkbox
 
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.task_bar import TaskBar
 from winslow.ui.builtin_plugins.workflow.task_list import TaskList, TaskRow
 from winslow.task.status import PASSING_STATUSES
-from winslow.ui.workflow_events import (
-    BatchOptionsChanged,
-    TaskStatusChanged,
-    TaskLogUpdated,
-)
+from winslow.ui.workflow_events import TaskStatusChanged, TaskLogUpdated
 
 
 class TasksPaneWidget(Widget):
@@ -39,14 +34,6 @@ class TasksPaneWidget(Widget):
     def on_task_log_updated(self, event):
         if row := self._rows_by_key.get(event.task_key):
             row.log_line = event.line
-
-    @on(BatchOptionsChanged)
-    def on_batch_options_changed(self, event):
-        # Track a change another client set. An equal value leaves the
-        # reactive unchanged, so this cannot loop through the submit path.
-        for name, value in event.options.items():
-            for checkbox in self.query(f"#{name.replace('_', '-')}").results(Checkbox):
-                checkbox.value = value
 
     def compose(self):
         context = self._context

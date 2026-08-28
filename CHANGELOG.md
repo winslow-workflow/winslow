@@ -93,6 +93,13 @@ versions may include breaking changes).
 
 ### Changed
 
+- Breaking: the batch flags (dry run, force run, force success, disable concurrency) are per client,
+  like the search filters. `RunTasks` and `CheckTasks` carry them as `options` over the session
+  baseline; each batch snapshots the flags it ran with, so two clients with different toggles never
+  overwrite each other. `SetBatchOptions`, `BatchOptionsChangedEvent` and the checkbox sync are gone;
+  the toggles no longer fold into the manifest, so a restored session prefills from the CLI baseline.
+  The `batch_options` read serves that baseline. `BatchOptions` is frozen; `Workflow.batch_options`
+  never changes after construction.
 - `apply_filter` carries a `scope`: `tasks` (the default, today's behavior) applies the full filter
   registry over the live tasks; `history` applies the builtin filters over the execution record infos
   and also serves an ended session. The server owns the one query parser, so a client (the TUI, a

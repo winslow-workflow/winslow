@@ -15,7 +15,6 @@ from winslow.actions import (
     EndSession,
     LoadCacheEntries,
     RunTasks,
-    SetBatchOptions,
     StopBatch,
 )
 from winslow.client import LocalAppClient, LocalSessionClient
@@ -23,7 +22,6 @@ from winslow.constants import Mode
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
-    BatchOptionsChangedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
     SessionEndedEvent,
@@ -528,17 +526,24 @@ def test_stop_batch_stops_a_running_batch(e2e_repo):
     assert batch.status is ExecutionStatus.STOPPED
 
 
-def test_set_batch_options_acks_and_publishes_the_changed_event(e2e_repo):
+def test_submit_options_snapshot_per_batch_through_the_port(e2e_repo):
+    """The batch flags are per client, so they ride the submit: the batch
+    snapshots them and the session baseline never changes."""
     workflow, session, client = session_client(e2e_repo)
-    events = []
-    client.subscribe(BatchOptionsChangedEvent, events.append)
-    ack = client.submit(SetBatchOptions(dry_run=True))
-    assert ack.accepted
-    assert workflow.batch_options.dry_run is True
-    wait_for(
-        lambda: any(e.options["dry_run"] is True for e in events),
-        "no batch_options_changed event",
+    alpha = by_name(workflow)["Alpha"]
+    ack = client.submit(
+        RunTasks(keys=(alpha.identity_key,), options={"force_run": True})
     )
+    assert ack.accepted, ack.reason
+    workflow.runner.get_batch(ack.batch_uuid).wait()
+    assert workflow.runner.get_batch(ack.batch_uuid).execution_context.force_run
+    assert client.batch_options()["force_run"] is False
+
+    refused = client.submit(
+        RunTasks(keys=(alpha.identity_key,), options={"warp_speed": True})
+    )
+    assert not refused.accepted
+    assert "names no batch option" in refused.reason
 
 
 def test_clear_cache_entries_invalidates_through_the_handler(e2e_repo):
@@ -644,9 +649,12 @@ def test_snapshot_names_the_caches_until_the_session_ends(e2e_repo):
 
 def test_history_rows_carry_the_batch_options(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
-    client.submit(SetBatchOptions(force_run=True))
     alpha = by_name(workflow)["Alpha"]
-    run_to_completion(workflow, client, alpha)
+    ack = client.submit(
+        RunTasks(keys=(alpha.identity_key,), options={"force_run": True})
+    )
+    assert ack.accepted, ack.reason
+    workflow.runner.get_batch(ack.batch_uuid).wait()
     (row,) = client.history()
     assert row.options["force_run"] is True
     assert "batch_uuid" not in row.options

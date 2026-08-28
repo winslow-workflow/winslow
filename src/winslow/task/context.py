@@ -4,11 +4,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-@dataclass
+@dataclass(frozen=True)
 class BatchOptions:
-    """Shared and mutable. The UI changes it live, and each batch takes a snapshot
-    of it at its start. A later change thus does not affect a batch, and history
-    shows the options that the batch used."""
+    """The four batch flags. The workflow holds the session baseline, seeded
+    from the CLI; a client sends its own values with each submit (see
+    RunTasks.options). Each batch snapshots the options it runs with, so
+    history shows them per batch."""
 
     dry_run: bool
     force_run: bool

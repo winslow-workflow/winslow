@@ -2,7 +2,6 @@ import operator
 import time
 import uuid
 from argparse import ArgumentParser, Namespace
-from dataclasses import asdict, replace
 from functools import cached_property
 
 from winslow._config import _ConfigBase
@@ -111,6 +110,8 @@ class Workflow(_ConfigBase):
         # references. initialize fills the list, release_tasks clears it.
         self.tasks = None
 
+        # The session baseline of the batch flags, from the CLI. A submit can
+        # carry its own values; this never changes (see BatchOptions).
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
             force_run=orchestrator_config.force_run,
@@ -482,27 +483,6 @@ class Workflow(_ConfigBase):
             # event. The SEED origin keeps checked_at where the probe
             # left it (see SessionPersistenceAdapter).
             self.runner.set_status(task, status, None, origin=Origin.SEED)
-
-    def record_batch_options(self):
-        """Fold the live batch options into the stored manifest. A restore
-        thus rebuilds the session with the toggles the user set."""
-        listener = self.persistence_listener
-        if listener is None:
-            return
-        try:
-            manifest = listener.load_manifest()
-            if manifest is None:
-                return
-            overrides = {
-                **(manifest.orchestrator_overrides or {}),
-                **asdict(self.batch_options),
-            }
-            listener.save_manifest(replace(manifest, orchestrator_overrides=overrides))
-        except Exception:
-            self.logger.error(
-                f"Could not update the manifest of {self.session_id}",
-                exc_info=True,
-            )
 
     def archive_state(self):
         """End persistence: stop the sweeper and the writer, unsubscribe them,

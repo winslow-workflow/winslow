@@ -10,7 +10,6 @@ from winslow.actions import (
     EndSession,
     LoadCacheEntries,
     RunTasks,
-    SetBatchOptions,
     StopBatch,
 )
 from winslow.model import (
@@ -73,7 +72,6 @@ class FrameTypes:
     BATCH_CREATED = "batch_created"
     BATCH_COMPLETED = "batch_completed"
     SESSION_ENDED = "session_ended"
-    BATCH_OPTIONS_CHANGED = "batch_options_changed"
     CACHE_UPDATED = "cache_updated"
     LOG_BATCH = "log_batch"
     SESSION_LOG_BATCH = "session_log_batch"
@@ -100,7 +98,6 @@ class Actions:
     CHECK_TASKS = "check_tasks"
     STOP_BATCH = "stop_batch"
     END_SESSION = "end_session"
-    SET_BATCH_OPTIONS = "set_batch_options"
     LOAD_CACHE_ENTRIES = "load_cache_entries"
     CLEAR_CACHE_ENTRIES = "clear_cache_entries"
 
@@ -132,7 +129,6 @@ ACTION_CLASSES = {
     Actions.CHECK_TASKS: CheckTasks,
     Actions.STOP_BATCH: StopBatch,
     Actions.END_SESSION: EndSession,
-    Actions.SET_BATCH_OPTIONS: SetBatchOptions,
     Actions.LOAD_CACHE_ENTRIES: LoadCacheEntries,
     Actions.CLEAR_CACHE_ENTRIES: ClearCacheEntries,
 }

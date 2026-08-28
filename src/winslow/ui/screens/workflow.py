@@ -23,7 +23,6 @@ from winslow.ui.workflow_events import (
     TaskStatusChanged,
     BatchCreated,
     BatchCompleted,
-    BatchOptionsChanged,
     CacheSelected,
     CacheUpdated,
     ExecutionStatusChanged,
@@ -32,11 +31,10 @@ from winslow.ui.workflow_events import (
     TaskSelected,
 )
 
-from winslow.actions import CheckTasks, RunTasks, SetBatchOptions
+from winslow.actions import CheckTasks, RunTasks
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
-    BatchOptionsChangedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
     SessionEndedEvent,
@@ -99,6 +97,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.snapshot = client.snapshot()
         self.session_status = self.snapshot.status
         self.roster = client.roster()
+        # The toggles of this client: view state, seeded from the session
+        # baseline and sent with every submit (see RunTasks.options).
+        self.batch_options = dict(client.batch_options())
         # The statuses-by-key mirror of the session, read by the DTO-driven
         # panes (see WorkflowRenderContext.task_statuses).
         self.statuses_by_key = {
@@ -138,7 +139,6 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             (ExecutionStatusEvent, self._on_execution_status),
             (BatchCreatedEvent, self._on_batch_created),
             (BatchCompletedEvent, self._on_batch_completed),
-            (BatchOptionsChangedEvent, self._on_batch_options_changed),
             (LogLineEvent, self._on_log_line),
             (SessionEndedEvent, self._on_session_ended),
             (CacheUpdatedEvent, self._on_cache_updated),
@@ -187,9 +187,6 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
     def _on_batch_completed(self, event):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(event.info))
-
-    def _on_batch_options_changed(self, event):
-        self._dispatch_to_slot(Slots.TASKS_PANE, BatchOptionsChanged(event.options))
 
     def _on_log_line(self, event):
         self._dispatch_to_slot(
@@ -318,20 +315,24 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     @on(Checkbox.Changed, "#dry-run")
     @on(Checkbox.Changed, "#disable-concurrency")
     def _sync_batch_option(self, event):
-        # A live change is safe, because each batch takes a snapshot of these
-        # options at its start. The handler also folds the toggle into the
-        # stored manifest, so a restore rebuilds it.
+        # The toggle is view state of this client alone; the next submit
+        # carries it (see RunTasks.options).
         name = event.control.id.replace("-", "_")
-        self.submit_action(SetBatchOptions(**{name: event.value}))
+        self.batch_options[name] = event.value
+
+    def _submit_batch(self, action_class, keys):
+        return self.submit_action(
+            action_class(keys=keys, options=dict(self.batch_options))
+        )
 
     async def _handle_task_run(self, key):
-        self.submit_action(RunTasks(keys=(key,)))
+        self._submit_batch(RunTasks, (key,))
 
     async def _handle_task_check(self, key):
-        self.submit_action(CheckTasks(keys=(key,)))
+        self._submit_batch(CheckTasks, (key,))
 
     async def _handle_bulk_action(self, verb, action_class):
-        ack = self.submit_action(action_class(keys=self._visible_keys()))
+        ack = self._submit_batch(action_class, self._visible_keys())
         if not ack.accepted:
             return
         # The batch_created event carries the admitted count. The toast waits

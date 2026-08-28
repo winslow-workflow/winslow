@@ -72,16 +72,17 @@ class BaseRunner(_Base):
         self.store = store
         self.logger = logger
         self.workflow_config = workflow_config
-        # The workflow and the UI share this object and change it live.
+        # The session baseline, seeded from the CLI. A submit can carry its
+        # own options; a batch without them snapshots this (see BatchOptions).
         self.batch_options = batch_options
         # On the base class, so both runners share it. Callers look up a batch
         # through get_batch and batches.
         self._execution_batches_map = {}
 
-    def _new_execution_context(self, batch_uuid):
-        """Snapshot the batch options. A later change in the UI does not affect
-        the batch, and history shows the options that the batch used."""
-        o = self.batch_options
+    def _new_execution_context(self, batch_uuid, options=None):
+        """Snapshot the options of this batch: the submit's own, or the
+        session baseline. History shows the options that the batch used."""
+        o = options or self.batch_options
         return TaskExecutionContext(
             batch_uuid=batch_uuid,
             dry_run=o.dry_run,

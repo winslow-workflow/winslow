@@ -228,11 +228,13 @@ class InteractiveRunner(HeadlessRunner):
         for task in tasks:
             store.capture(task)
 
-    def submit_check_single(self, task):
-        return self._submit(ExecutionAction.CHECK, [task], self._single_check_body)
+    def submit_check_single(self, task, options=None):
+        return self._submit(
+            ExecutionAction.CHECK, [task], self._single_check_body, options
+        )
 
-    def submit_run_single(self, task):
-        return self._submit(ExecutionAction.RUN, [task], self._single_run_body)
+    def submit_run_single(self, task, options=None):
+        return self._submit(ExecutionAction.RUN, [task], self._single_run_body, options)
 
     def check_single(self, task):
         if batch := self.submit_check_single(task):

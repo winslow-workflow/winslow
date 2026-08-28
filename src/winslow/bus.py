@@ -9,7 +9,6 @@ from blinker import Signal
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
-    BatchOptionsChangedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
     SessionEndedEvent,
@@ -66,8 +65,7 @@ class SessionBus:
         BatchCompletedEvent,
         LogLineEvent,
         SessionEndedEvent,
-        BatchOptionsChangedEvent,
-    )
+        )
 
     @classmethod
     def get_event_classes(cls):

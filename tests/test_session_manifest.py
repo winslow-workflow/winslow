@@ -1,13 +1,11 @@
 """The manifest lifecycle: a session with a state store writes a manifest once
-its pipeline is runnable, updates it on option changes, and archives it at the
-end."""
+its pipeline is runnable and archives it at the end."""
 
 import pytest
 
 from winslow.constants import Mode
 from winslow.events import TaskStatusEvent
 from winslow.exceptions import RegistrationError
-from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.session import Session
 from winslow.state import StaleSweeper
 
@@ -51,49 +49,9 @@ def test_an_errored_session_archives_as_failed(e2e_repo, state_store):
     assert not (state_store.ended_directory / session.session_id).exists()
 
 
-def test_option_changes_update_the_manifest(e2e_repo, state_store):
-    workflow, session = persisted_session(
-        e2e_repo, state_store, orchestrator_overrides={"filter": "gate"}
-    )
-    workflow.batch_options.dry_run = True
-    workflow.record_batch_options()
-
-    (manifest,) = state_store.list_open_manifests()
-    assert manifest.orchestrator_overrides["dry_run"] is True
-    # The original overrides survive the fold.
-    assert manifest.orchestrator_overrides["filter"] == "gate"
-    assert manifest.session_id == session.session_id
-
-
-def test_recorded_options_rebuild_the_workflow(e2e_repo, state_store):
-    # The restore leg of the option round trip, minus the UI: the manifest
-    # overrides land on the orchestrator config, which builds the options.
-    workflow, session = persisted_session(e2e_repo, state_store)
-    workflow.batch_options.dry_run = True
-    workflow.record_batch_options()
-    (manifest,) = state_store.list_open_manifests()
-
-    parser = Orchestrator.get_base_parser()
-    config = parser.parse_args(
-        ["run", "--mode", Mode.TUI.value, "--workflow", "my-workflow"],
-        namespace=OrchestratorConfig(),
-    )
-    orchestrator = Orchestrator(config, directory=e2e_repo)
-    orchestrator.workflow_registry.collect_classes(e2e_repo)
-    rebuilt = orchestrator.initialize_workflow(
-        workflow_kls=orchestrator.workflow_registry["my-workflow"],
-        orchestrator_overrides=manifest.orchestrator_overrides,
-        workflow_values=manifest.workflow_values or {},
-    )
-    assert rebuilt.batch_options.dry_run is True
-    assert rebuilt.batch_options.force_run is False
-
-
 def test_a_session_without_a_store_persists_nothing(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI)
     session = Session(workflow)
-    # The persistence hooks are no-ops without a store.
-    workflow.record_batch_options()
     session.end()
     assert workflow.persistence_listener is None
 
@@ -155,20 +113,6 @@ def test_a_manifest_write_failure_degrades_to_a_non_persistent_session(
     workflow.runner.bulk_run(workflow.tasks)
     session.end()
     assert session.has_ended
-
-
-def test_an_option_save_failure_does_not_break_the_toggle(
-    e2e_repo, state_store, monkeypatch
-):
-    workflow, session = persisted_session(e2e_repo, state_store)
-
-    monkeypatch.setattr(state_store, "save_manifest", _explode)
-    workflow.batch_options.dry_run = True
-    workflow.record_batch_options()
-
-    # The stored manifest keeps its creation state.
-    (manifest,) = state_store.list_open_manifests()
-    assert manifest.orchestrator_overrides is None
 
 
 def test_an_end_persistence_failure_does_not_break_the_end(

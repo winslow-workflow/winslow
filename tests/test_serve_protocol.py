@@ -339,10 +339,10 @@ def test_snapshot_session_rows_carry_display_and_progress_fields(e2e_repo):
         assert row["task_status_summary"]["total"] > 0
 
 
-# --- batch_options and batch_options_changed -----------------------------------
+# --- batch options ---------------------------------------------------------------
 
 
-def test_batch_options_request_serves_the_live_snapshot(e2e_repo):
+def test_batch_options_request_serves_the_session_baseline(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     ws = connect(registry)
     result = request(ws, "r-16", Requests.BATCH_OPTIONS, session_id=session.session_id)
@@ -355,15 +355,35 @@ def test_batch_options_request_serves_the_live_snapshot(e2e_repo):
     ws.close()
 
 
-def test_set_batch_options_fires_the_changed_event(e2e_repo):
+def test_submit_options_snapshot_per_batch_over_the_wire(e2e_repo):
+    """The batch flags ride the submit: two clients with different toggles
+    run with their own, and the session baseline never changes."""
     workflow, session, registry = registered(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
     ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
+    ack = action(
+        ws,
+        "r-17",
+        session.session_id,
+        Actions.RUN_TASKS,
+        keys=[alpha.identity_key],
+        options={"force_run": True},
+    )
+    assert ack["accepted"] is True
+    context = workflow.runner.get_batch(ack["batch_uuid"]).execution_context
+    assert context.force_run is True
+    assert workflow.batch_options.force_run is False
 
-    action(ws, "r-17", session.session_id, Actions.SET_BATCH_OPTIONS, force_run=True)
-    frame = frames_until(ws, "batch_options_changed")
-    assert frame["options"]["force_run"] is True
+    refused = action(
+        ws,
+        "r-18b",
+        session.session_id,
+        Actions.RUN_TASKS,
+        keys=[alpha.identity_key],
+        options={"warp_speed": True},
+    )
+    assert refused["accepted"] is False
+    assert "names no batch option" in refused["reason"]
     ws.close()
 
 

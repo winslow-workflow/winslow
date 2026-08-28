@@ -7,8 +7,8 @@ import threading
 from dataclasses import asdict, dataclass, fields
 
 from winslow.cache import declared_entries
-from winslow.events import BatchOptionsChangedEvent
 from winslow.exceptions import SessionEndingError
+from winslow.task.context import BatchOptions
 from winslow.util import execute_in_threads
 
 
@@ -31,12 +31,20 @@ class BatchAck(Ack):
 
 @dataclass(frozen=True)
 class RunTasks:
+    """options carries the batch flags of this submit: {name: bool}, over
+    the session baseline. The flags are client view state, so each client
+    sends its own with every batch (see BatchOptions)."""
+
     keys: tuple
+    options: dict | None = None
 
 
 @dataclass(frozen=True)
 class CheckTasks:
+    """The check form of RunTasks; options works the same."""
+
     keys: tuple
+    options: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -47,17 +55,6 @@ class StopBatch:
 @dataclass(frozen=True)
 class EndSession:
     force: bool = False
-
-
-@dataclass(frozen=True)
-class SetBatchOptions:
-    """A None field stays unchanged. The new values land in the stored
-    manifest, so a restore rebuilds the toggles."""
-
-    dry_run: bool | None = None
-    force_run: bool | None = None
-    force_success: bool | None = None
-    disable_concurrency: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -140,6 +137,20 @@ class ActionHandler:
             action, self._runner.submit_check_single, self._runner.submit_check
         )
 
+    def _batch_options_for(self, action):
+        """The BatchOptions of one submit: the session baseline with the
+        action's flags on top, or (None, reason) on an unknown flag."""
+        overrides = action.options or {}
+        known = {field.name for field in fields(BatchOptions)}
+        unknown = sorted(set(overrides) - known)
+        if unknown:
+            return None, (
+                f"{', '.join(repr(name) for name in unknown)} names no batch "
+                f"option - the options are {sorted(known)}."
+            )
+        baseline = asdict(self._workflow.batch_options)
+        return BatchOptions(**{**baseline, **overrides}), None
+
     def _submit_batch(self, action, submit_single, submit_bulk):
         keys = tuple(dict.fromkeys(action.keys))
         if len(keys) != len(action.keys):
@@ -148,15 +159,18 @@ class ActionHandler:
             self._workflow.logger.warning(
                 f"{type(action).__name__} repeats {dupes}; each task enters the batch once."
             )
+        options, reason = self._batch_options_for(action)
+        if reason is not None:
+            return self._refuse(action, reason)
         try:
             tasks = [self._workflow.task_index.resolve(key) for key in keys]
         except KeyError as exc:
             return self._refuse(action, exc.args[0])
         try:
             if len(tasks) == 1:
-                batch = submit_single(tasks[0])
+                batch = submit_single(tasks[0], options=options)
             else:
-                batch = submit_bulk(tasks)
+                batch = submit_bulk(tasks, options=options)
         except SessionEndingError as exc:
             return self._refuse(action, str(exc))
         if batch is None:
@@ -180,16 +194,6 @@ class ActionHandler:
             self.session.force_end()
         else:
             self.session.end()
-        return Ack(accepted=True)
-
-    def set_batch_options(self, action):
-        options = self._workflow.batch_options
-        for field in fields(SetBatchOptions):
-            value = getattr(action, field.name)
-            if value is not None:
-                setattr(options, field.name, value)
-        self._workflow.record_batch_options()
-        self._workflow.bus.publish(BatchOptionsChangedEvent(options=asdict(options)))
         return Ack(accepted=True)
 
     def _resolve_cache_entries(self, action):
@@ -255,7 +259,6 @@ class ActionHandler:
         CheckTasks: check_tasks,
         StopBatch: stop_batch,
         EndSession: end_session,
-        SetBatchOptions: set_batch_options,
         LoadCacheEntries: load_cache_entries,
         ClearCacheEntries: clear_cache_entries,
     }

@@ -86,13 +86,3 @@ class CacheSelected(Message):
     def __init__(self, card):
         self.card = card
         super().__init__()
-
-
-class BatchOptionsChanged(Message):
-    """The live batch option values after a SetBatchOptions lands."""
-
-    BUBBLE = False
-
-    def __init__(self, options):
-        self.options = options
-        super().__init__()

@@ -17,7 +17,6 @@ from winslow.actions import (
     CheckTasks,
     EndSession,
     RunTasks,
-    SetBatchOptions,
     StopBatch,
 )
 from winslow.exceptions import MisconfigurationError
@@ -123,14 +122,23 @@ class McpEndpoint:
         return [session_row(s) for s in self.serve_app.registry.sessions()]
 
     @tool
-    async def run_tasks(self, session_id: str, keys: list[str]) -> dict:
-        """Submit a run batch for the given task identity keys."""
-        return await self._submit(session_id, RunTasks(keys=tuple(keys)))
+    async def run_tasks(
+        self, session_id: str, keys: list[str], options: dict | None = None
+    ) -> dict:
+        """Submit a run batch for the given task identity keys. options
+        carries the batch flags of this submit, for example
+        {"force_run": true} (see batch_options for the baseline)."""
+        return await self._submit(session_id, RunTasks(keys=tuple(keys), options=options))
 
     @tool
-    async def check_tasks(self, session_id: str, keys: list[str]) -> dict:
-        """Submit a check batch for the given task identity keys."""
-        return await self._submit(session_id, CheckTasks(keys=tuple(keys)))
+    async def check_tasks(
+        self, session_id: str, keys: list[str], options: dict | None = None
+    ) -> dict:
+        """Submit a check batch for the given task identity keys. options
+        works as in run_tasks."""
+        return await self._submit(
+            session_id, CheckTasks(keys=tuple(keys), options=options)
+        )
 
     @tool
     async def stop_batch(self, session_id: str, batch_uuid: str) -> dict:
@@ -141,27 +149,6 @@ class McpEndpoint:
     async def end_session(self, session_id: str, force: bool = False) -> dict:
         """End the session; force stops its running batches first."""
         return await self._submit(session_id, EndSession(force=force))
-
-    @tool
-    async def set_batch_options(
-        self,
-        session_id: str,
-        dry_run: bool | None = None,
-        force_run: bool | None = None,
-        force_success: bool | None = None,
-        disable_concurrency: bool | None = None,
-    ) -> dict:
-        """Set the batch options of the session; a None field stays
-        unchanged."""
-        return await self._submit(
-            session_id,
-            SetBatchOptions(
-                dry_run=dry_run,
-                force_run=force_run,
-                force_success=force_success,
-                disable_concurrency=disable_concurrency,
-            ),
-        )
 
     @tool
     async def descriptors(self) -> dict:

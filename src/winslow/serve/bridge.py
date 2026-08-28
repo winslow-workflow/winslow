@@ -21,7 +21,6 @@ from functools import partial
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
-    BatchOptionsChangedEvent,
     ExecutionStatusEvent,
     LogLineEvent,
     SessionEndedEvent,
@@ -87,7 +86,6 @@ class EventBridge:
             (BatchCompletedEvent, self._on_batch_completed),
             (LogLineEvent, self._on_log_line),
             (SessionEndedEvent, self._on_session_ended),
-            (BatchOptionsChangedEvent, self._on_batch_options_changed),
         )
         # The session_log lane (see _on_session_log_line): a second handler,
         # not a bus subscription, because workflow.logger is a plain logger.
@@ -218,11 +216,6 @@ class EventBridge:
 
     def _on_session_ended(self, event):
         self._inbox.put({"type": FrameTypes.SESSION_ENDED})
-
-    def _on_batch_options_changed(self, event):
-        self._inbox.put(
-            {"type": FrameTypes.BATCH_OPTIONS_CHANGED, "options": event.options}
-        )
 
     def _on_session_log_line(self, line):
         self._inbox.put(SessionLogEvent(line=line))

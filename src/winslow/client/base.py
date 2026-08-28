@@ -84,8 +84,10 @@ class SessionClient:
         raise NotImplementedError
 
     def batch_options(self):
-        """Return the live batch option values as a dict, the shape
-        BatchOptionsChangedEvent carries."""
+        """Return the baseline batch option values of the session as a dict:
+        the CLI-seeded defaults a fresh client prefills its toggles from.
+        The toggles themselves are client view state; a submit carries them
+        (see RunTasks.options)."""
         raise NotImplementedError
 
     def session_params(self):
