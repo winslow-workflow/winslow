@@ -17,11 +17,10 @@ from starlette.websockets import WebSocketDisconnect
 from winslow.cache import declared_entries
 from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
-from winslow.filter.builtin import BUILTIN_FILTERS
+from winslow.filter.builtin import enforce_builtin_only
 from winslow.logger import INLINE_FORMATTER, LOGGER, get_task_dispatcher
 from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
 from winslow.serve.bridge import EventBridge, Subscription
-from winslow.serve.sessions import create_session
 from winslow.serve.wire import (
     INBOUND_FRAME_TYPES,
     REQUEST_CLASSES,
@@ -35,11 +34,11 @@ from winslow.serve.wire import (
     history_rows,
     manifest_row,
     record_detail_payload,
-    resolve_cache,
     roster_payload,
     session_params_payload,
     session_row,
 )
+from winslow.session import create_session
 
 PROTOCOL_VERSION = 1
 
@@ -663,7 +662,7 @@ class Connection:
     @request_handler(Requests.CACHE_VALUE)
     @requires_live_session
     async def _request_cache_value(self, envelope, session):
-        cache = resolve_cache(session.workflow, envelope.cache_name)
+        cache = session.workflow.get_cache(envelope.cache_name)
         if cache is None:
             self.request_error(
                 envelope.request_id,
@@ -718,24 +717,11 @@ class Connection:
     async def _request_apply_filter(self, envelope, session):
         try:
             query = session.workflow.filter_registry.parse(envelope.query)
+            if envelope.builtin_only:
+                enforce_builtin_only(query)
         except ValueError as exc:
             self.request_error(envelope.request_id, str(exc))
             return
-        if envelope.builtin_only:
-            foreign = sorted(
-                {
-                    type(f).get_name()
-                    for f in query.filters()
-                    if type(f) not in BUILTIN_FILTERS
-                }
-            )
-            if foreign:
-                self.request_error(
-                    envelope.request_id,
-                    f"this search supports only the builtin filters (name, "
-                    f"group) - not: {', '.join(foreign)}.",
-                )
-                return
         keys = await asyncio.to_thread(
             apply_filter_keys, query, session.workflow.tasks
         )

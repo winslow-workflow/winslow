@@ -16,7 +16,7 @@ import pytest
 from winslow.constants import Mode
 from winslow.logger import RUNS_LOGGER_NAME
 from winslow.events import ExecutionStatusEvent
-from winslow.task.info import NOT_EVALUATED, TaskInfo, TaskRef
+from winslow.model import NOT_EVALUATED, TaskInfo, TaskRef
 from winslow.task.status import TaskStatus as S
 from winslow.task.task import Task
 

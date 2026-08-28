@@ -30,6 +30,7 @@ from winslow.exceptions import (
     SerializationError,
 )
 from winslow.logger import LOGGER
+from winslow.model import StatusSnapshot
 from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE, config
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
@@ -64,17 +65,6 @@ class SessionManifest:
     started_at: float
     ended_at: float | None = None
     outcome: str | None = None
-
-
-@dataclass(frozen=True)
-class StatusSnapshot:
-    """The latest snapshot of one task in one session. The key is the task
-    identity key; the status is a TaskStatus name; checked_at is a wall-clock
-    epoch."""
-
-    key: str
-    status: str
-    checked_at: float
 
 
 @dataclass(frozen=True)

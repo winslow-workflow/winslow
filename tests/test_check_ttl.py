@@ -7,7 +7,7 @@ FAILED - the final status shows which path the runner took."""
 import time
 
 from winslow.session import Session
-from winslow.state import StatusSnapshot
+from winslow.model import StatusSnapshot
 from winslow.task.status import TaskStatus as S
 
 from harness import build_workflow, by_name, check_batch, run_batch

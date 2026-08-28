@@ -8,7 +8,8 @@ import pytest
 
 from winslow.constants import Mode
 from winslow.events import BatchCompletedEvent, BatchCreatedEvent
-from winslow.runner.execution import BatchInfo, ExecutionStatus
+from winslow.model import BatchInfo
+from winslow.runner.execution import ExecutionStatus
 from winslow.session import Session
 from winslow.task.status import TaskStatus as S
 

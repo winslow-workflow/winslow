@@ -1,3 +1,4 @@
+import collections
 import copy
 import json
 import queue
@@ -85,6 +86,22 @@ class InteractiveLogHandler(RichHandler):
     def emit(self, record):
         if self.log_method:
             self.log_method(self.format(record))
+
+
+class SessionLogBuffer(logging.Handler):
+    """A bounded backlog of one session's log lines. Attach at session
+    creation, not at first subscribe: init and eligibility lines happen
+    before any client can know the session id to subscribe with, and this
+    handler catches them anyway. TaskLogDispatcher.buffered() is the same
+    idea for one task."""
+
+    def __init__(self, maxlen=200):
+        super().__init__()
+        self.setFormatter(INLINE_FORMATTER)
+        self.lines = collections.deque(maxlen=maxlen)
+
+    def emit(self, record):
+        self.lines.append(self.format(record))
 
 
 class ContextStampFilter(logging.Filter):

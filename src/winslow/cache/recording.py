@@ -10,7 +10,7 @@ from contextlib import contextmanager
 
 from winslow import settings
 from winslow.cache.base import BaseCache, DisplayStyle, declared_entries
-from winslow.cache.inspection import CacheReadSnapshot, SnapshotEncoding
+from winslow.model import CacheReadSnapshot, SnapshotEncoding
 from winslow.cache.storage import StorageRecord
 
 

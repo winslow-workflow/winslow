@@ -9,7 +9,6 @@ that stays behind a full window (see serve-spec, slice two)."""
 import asyncio
 import collections
 import json
-import logging
 import queue
 from dataclasses import asdict, dataclass, field
 from functools import partial
@@ -24,6 +23,7 @@ from winslow.events import (
     TaskStatusEvent,
 )
 from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
+from winslow.model import SessionSnapshot
 from winslow.serve.wire import FrameTypes
 
 FLUSH_TICK = 0.05
@@ -35,22 +35,6 @@ FLUSH_TICK = 0.05
 _LOG = "log"
 _SESSION_LOG = "session_log"
 _TASK_LOG = "task_log"
-
-
-class SessionLogBuffer(logging.Handler):
-    """A bounded backlog of one session's log lines. Attach at session
-    creation, not at first subscribe: init and eligibility lines happen
-    before any client can know the session id to subscribe with, and this
-    handler catches them anyway. TaskLogDispatcher.buffered() is the same
-    idea for one task."""
-
-    def __init__(self, maxlen=200):
-        super().__init__()
-        self.setFormatter(INLINE_FORMATTER)
-        self.lines = collections.deque(maxlen=maxlen)
-
-    def emit(self, record):
-        self.lines.append(self.format(record))
 
 
 @dataclass(eq=False)
@@ -268,33 +252,11 @@ class EventBridge:
     def snapshot(self):
         """The current state of the session, stamped with the sequence the
         events continue from. Runs on the loop between drain passes, so the
-        stamp and the state cannot separate."""
-        workflow = self.session.workflow
+        stamp and the state cannot separate (see SessionSnapshot)."""
         return {
             "type": FrameTypes.SNAPSHOT,
-            "session_id": self.session_id,
             "seq": self.seq,
-            "workflow": str(workflow),
-            "status": self.session.status.name,
-            "tasks": {key: status.name for key, status in workflow.store.items()},
-            "session_log_backlog": (
-                list(self.session.log_buffer.lines)
-                if self.session.log_buffer is not None
-                else []
-            ),
-            "batches": [
-                {
-                    "uuid": batch.uuid,
-                    "action": batch.action.name,
-                    "status": batch.status.name,
-                    "task_count": batch.task_count,
-                    "created_at": batch.created_at.timestamp(),
-                    "completed_at": (
-                        batch.completed_at.timestamp() if batch.completed_at else None
-                    ),
-                }
-                for batch in workflow.runner.batches
-            ],
+            **asdict(SessionSnapshot.from_session(self.session)),
         }
 
     def _fan_out(self, frame):

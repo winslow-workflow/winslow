@@ -2,7 +2,7 @@ import collections
 import threading
 import uuid as _uuid
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
@@ -11,7 +11,7 @@ from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE
 
 if TYPE_CHECKING:
     from winslow.task.context import TaskExecutionContext
-    from winslow.task.info import TaskInfo
+    from winslow.model import TaskInfo
     from winslow.runner.store import ExecutionRecordStore
 
 
@@ -94,50 +94,6 @@ class PhaseSpan:
         if self.completed_at:
             return (self.completed_at - self.started_at).total_seconds()
         return None
-
-
-@dataclass(frozen=True)
-class BatchInfo:
-    """The value snapshot of one batch, for events and the wire (the payload
-    rule, see winslow.events). Enum values travel by name, timestamps as epoch
-    seconds."""
-
-    uuid: str
-    action: str
-    status: str
-    task_count: int
-    # The roster, {identity key: label} (see BatchRecord.tasks).
-    tasks: dict
-    # The batch option snapshot of the execution context, without the uuid.
-    options: dict | None
-    created_at: float
-    started_at: float | None
-    completed_at: float | None
-    # The message of the framework error that aborted the batch, or None.
-    error: str | None = None
-
-    @classmethod
-    def from_batch(cls, batch, tasks):
-        context = batch.execution_context
-        options = asdict(context) if context is not None else None
-        if options is not None:
-            options.pop("batch_uuid")
-        return cls(
-            uuid=batch.uuid,
-            action=batch.action.name,
-            status=batch.status.name,
-            task_count=batch.task_count,
-            tasks={task.identity_key: str(task) for task in tasks},
-            options=options,
-            created_at=batch.created_at.timestamp(),
-            started_at=(
-                batch.started_at.timestamp() if batch.started_at else None
-            ),
-            completed_at=(
-                batch.completed_at.timestamp() if batch.completed_at else None
-            ),
-            error=batch.error,
-        )
 
 
 @dataclass(eq=False)

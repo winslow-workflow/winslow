@@ -5,9 +5,10 @@ from winslow.task import TaskStatus
 from winslow.events import BatchCompletedEvent, BatchCreatedEvent
 from winslow.exceptions import TaskBlock
 from winslow.cache import batch_cache
+from winslow.model import BatchInfo
 
 from .base import BaseRunner
-from .execution import BatchInfo, ExecutionAction, new_batch
+from .execution import ExecutionAction, new_batch
 
 
 class HeadlessRunner(BaseRunner):

@@ -21,9 +21,9 @@ from winslow.actions import (
     StopBatch,
 )
 from winslow.exceptions import MisconfigurationError
-from winslow.serve.sessions import create_session
+from winslow.session import create_session
 from winslow.serve.wire import descriptor_rows, history_rows, session_row
-from winslow.task.info import TaskInfo
+from winslow.model import TaskInfo
 
 
 class BearerTokenVerifier(TokenVerifier):

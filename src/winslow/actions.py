@@ -192,16 +192,12 @@ class ActionHandler:
         self._workflow.bus.publish(BatchOptionsChangedEvent(options=asdict(options)))
         return Ack(accepted=True)
 
-    def _caches(self):
-        return (
-            *self._workflow.workflow_cache.caches(),
-            *self._workflow.global_cache.caches(),
-        )
-
     def _resolve_cache_entries(self, action):
         """(cache, entry_name) pairs for the wire pairs of the action, or a
         refusal reason naming the first unknown cache or entry."""
-        caches_by_name = {cache.get_name(): cache for cache in self._caches()}
+        caches_by_name = {
+            cache.get_name(): cache for cache in self._workflow.caches()
+        }
         resolved = []
         for cache_name, entry_name in action.entries:
             cache = caches_by_name.get(cache_name)

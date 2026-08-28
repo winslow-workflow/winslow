@@ -1,9 +1,12 @@
+"""The capture machinery of TaskInfo: the helpers that walk a live task
+class, its files and its MRO. The value shapes live in winslow.model;
+TaskInfo.from_task imports these helpers at call time."""
+
 import inspect
 import os
 from functools import cached_property, lru_cache
 
-from dataclasses import dataclass
-
+from winslow.model import NOT_EVALUATED, SourceNode
 from winslow.util import safe_repr
 
 # The types that Pretty renders directly. Any other value becomes a safe
@@ -11,10 +14,6 @@ from winslow.util import safe_repr
 _PLAIN_TYPES = (str, int, float, bool, type(None))
 
 _VALUE_LIMIT = 100
-
-# The value of a property that no automatic capture evaluated (see
-# TaskInfo.from_task). Only the on-demand capture runs a getter.
-NOT_EVALUATED = "<not evaluated>"
 
 
 def _display_parameters(task):
@@ -47,17 +46,6 @@ def _safe_sourcefile(cls):
     except TypeError:
         return None
     return os.path.abspath(path) if path else None
-
-
-@dataclass(frozen=True)
-class SourceNode:
-    """A node in the inheritance source tree of a task."""
-
-    name: str
-    module: str
-    source: str
-    path: str  # absolute source file, or None
-    children: tuple  # tuple[SourceNode, ...]
 
 
 @lru_cache(maxsize=None)
@@ -316,134 +304,3 @@ def _attribute_sections(task, root_dir=None, evaluate=False):
         )
     )
     return tuple(sections)
-
-
-@dataclass(frozen=True)
-class TaskRef:
-    """A renderable pointer to another task: what a dependency row needs. No
-    nested dependencies, so a TaskInfo stays bounded on a deep graph."""
-
-    key: str
-    label: str
-    is_premier: bool
-    is_terminal: bool
-    is_noop: bool
-
-    def __str__(self):
-        return self.label
-
-    @classmethod
-    def from_task(cls, task):
-        return cls(
-            key=task.identity_key,
-            label=str(task),
-            is_premier=task.is_premier,
-            is_terminal=task.is_terminal,
-            is_noop=task.is_noop,
-        )
-
-
-@dataclass(frozen=True, eq=False)
-class TaskInfo:
-    """The value view model of a task: plain values only, so asdict is
-    JSON-serializable and history can hold it without a retention of the task.
-
-    from_task has two depths. The stub, the default, carries the identity and
-    the dependency refs. The full capture adds attributes, docs, source and
-    transients, and it evaluates a getter only with evaluate=True, which only
-    the on-demand detail view passes. Equality and hash use the key."""
-
-    key: str
-    label: str
-    name: str
-    is_premier: bool
-    is_terminal: bool
-    is_noop: bool
-    task_class: str
-    index: int
-    groups: tuple = ()
-    parameters: dict = None
-    dependencies: tuple = ()
-    premier_dependencies: tuple = ()
-    terminal_dependencies: tuple = ()
-    # The trust fields of the check_ttl rule, from the session snapshots. None
-    # means no verification on record, or no TTL (see Workflow.task_info).
-    checked_at: float = None
-    effective_ttl: float = None
-    # Full-capture fields. None marks a stub, an empty tuple marks a capture
-    # that found nothing.
-    attributes: tuple = None
-    docs: tuple = None
-    source: SourceNode = None
-    transients: tuple = None
-
-    def __str__(self):
-        return self.label
-
-    def __hash__(self):
-        return hash(self.key)
-
-    def __eq__(self, other):
-        if not isinstance(other, TaskInfo):
-            return NotImplemented
-        return self.key == other.key
-
-    def get_name(self):
-        return self.name
-
-    def get_groups(self):
-        return frozenset(self.groups)
-
-    @property
-    def groups_readable(self):
-        return ", ".join(self.groups) if self.groups else None
-
-    @classmethod
-    def from_task(
-        cls,
-        task,
-        full=False,
-        evaluate=False,
-        root_dir=None,
-        checked_at=None,
-        effective_ttl=None,
-    ):
-        from winslow.decorators import declared_transient_properties
-
-        full = full or evaluate
-        deps = task.dependent_tasks
-        task_cls = task.__class__
-
-        return cls(
-            key=task.identity_key,
-            checked_at=checked_at,
-            effective_ttl=effective_ttl,
-            label=str(task),
-            name=task.instance_name,
-            is_terminal=task.is_terminal,
-            is_premier=task.is_premier,
-            is_noop=task.is_noop,
-            index=task._index,
-            # The real source file through inspect, and not the synthetic scoped
-            # __module__.
-            task_class=f"{task_cls.__qualname__} ({_safe_sourcefile(task_cls) or task_cls.__module__})",
-            groups=tuple(sorted(task.get_groups())),
-            parameters=_display_parameters(task) or None,
-            dependencies=tuple(
-                TaskRef.from_task(d)
-                for d in deps
-                if not (d.is_premier or d.is_terminal)
-            ),
-            premier_dependencies=tuple(
-                TaskRef.from_task(d) for d in deps if d.is_premier
-            ),
-            terminal_dependencies=tuple(
-                TaskRef.from_task(d) for d in deps if d.is_terminal
-            ),
-            attributes=_attribute_sections(task, root_dir, evaluate) if full else None,
-            docs=_task_docs(task) if full else None,
-            source=_source_tree(task_cls) if full else None,
-            transients=(
-                tuple(sorted(declared_transient_properties(task_cls))) if full else None
-            ),
-        )

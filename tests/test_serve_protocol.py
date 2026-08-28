@@ -413,7 +413,7 @@ def test_apply_filter_answers_the_parse_error(e2e_repo):
 def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatch):
     from winslow.filter.builtin import GroupFilter
 
-    monkeypatch.setattr("winslow.serve.app.BUILTIN_FILTERS", (GroupFilter,))
+    monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
     workflow, session, registry = registered(e2e_repo)
     ws = connect(registry)
     ws.send_json(

@@ -3,7 +3,7 @@ from winslow.store import BaseStore
 from winslow.logger import LOGGER
 
 from winslow.task.task import Task
-from winslow.task.info import TaskInfo
+from winslow.model import TaskInfo
 from winslow.task.status import TaskStatus
 
 from .execution import ExecutionRecord

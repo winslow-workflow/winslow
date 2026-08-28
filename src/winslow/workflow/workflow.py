@@ -16,7 +16,7 @@ from winslow.cache import (
 from winslow.filter import FilterRegistry
 from winslow.task import TaskIndex, TaskRegistry, TaskStatus
 from winslow.task.context import BatchOptions
-from winslow.task.info import TaskInfo
+from winslow.model import TaskInfo
 from winslow.task.status import PASSING_STATUSES, UNSUCCESSFUL_STATUSES
 from winslow.constants import Mode
 from winslow.runner.store import TaskStore, log_task_status
@@ -374,6 +374,17 @@ class Workflow(_ConfigBase):
         if self._workflow_cache is not None:
             self._workflow_cache.remove_listener(listener)
         self.global_cache.remove_listener(listener)
+
+    def caches(self):
+        """The caches this workflow can see, workflow scope first."""
+        return (*self.workflow_cache.caches(), *self.global_cache.caches())
+
+    def get_cache(self, name):
+        """The live cache named `name`, or None."""
+        for cache in self.caches():
+            if cache.get_name() == name:
+                return cache
+        return None
 
     def init_state(
         self,

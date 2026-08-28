@@ -204,5 +204,6 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
         orchestrator=orchestrator,
     )
     (result,) = call_tools(app, [("descriptors", {})])
-    assert result == descriptor_rows(orchestrator)
+    # The MCP result round-trips through JSON, so tuples arrive as lists.
+    assert result == json.loads(json.dumps(descriptor_rows(orchestrator)))
     assert {"workflows", "overrides"} <= set(result)

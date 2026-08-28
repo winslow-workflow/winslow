@@ -231,7 +231,7 @@ def test_log_tail_serves_the_captured_lines(e2e_repo, monkeypatch):
 
 
 def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
-    from winslow.task.info import TaskInfo
+    from winslow.model import TaskInfo
 
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]

@@ -22,7 +22,7 @@ from winslow.cache import CacheContainerRef, get_global_cache, get_workflow_cach
 from winslow import exceptions
 from winslow.exceptions import TaskActionRequired
 
-from .info import TaskInfo
+from winslow.model import TaskInfo
 
 
 # Instance-level constraint gates -> the attribute that holds each list. These
