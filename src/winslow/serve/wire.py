@@ -15,6 +15,7 @@ from winslow.actions import (
 )
 from winslow.cache import (
     MISSING,
+    PREVIEWABLE_STATES,
     DisplayStyle,
     EntryState,
     StorageRecord,
@@ -373,7 +374,7 @@ def cache_card_payload(cache):
             values={
                 info.entry_name: _entry_value_preview(cache, info.entry_name)
                 for info in infos
-                if info.written_at is not None
+                if info.state in PREVIEWABLE_STATES
             },
         )
     )

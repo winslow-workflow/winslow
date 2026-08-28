@@ -34,6 +34,7 @@ from winslow.cache.container import (
     CacheContainerRef,
 )
 from winslow.cache.inspection import (
+    PREVIEWABLE_STATES,
     CacheEntryError,
     CacheEntryInfo,
     CacheReadSnapshot,

@@ -17,6 +17,10 @@ class EntryState(StrEnum):
     ERRORED = "errored"
 
 
+# States with a trustworthy value: ERRORED can carry a leftover one.
+PREVIEWABLE_STATES = frozenset((EntryState.WARM, EntryState.STALE))
+
+
 class ErrorOrigin(StrEnum):
     """The operation that left an entry in the ERRORED state."""
 
