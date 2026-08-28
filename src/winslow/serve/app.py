@@ -30,6 +30,7 @@ from winslow.serve.sessions import create_session
 from winslow.serve.wire import (
     FrameTypes,
     Requests,
+    apply_filter_keys,
     build_action,
     cache_value_payload,
     caches_payload,
@@ -38,6 +39,7 @@ from winslow.serve.wire import (
     manifest_row,
     record_detail_payload,
     resolve_cache,
+    roster_payload,
     session_params_payload,
     session_row,
 )
@@ -631,14 +633,14 @@ class Connection:
     @request_handler(Requests.ROSTER)
     @requires_live_session
     async def _request_roster(self, envelope, session):
-        workflow = session.workflow
-        tasks = workflow.get_filtered_tasks()
-        self.result(envelope, tasks=[asdict(workflow.task_info(t)) for t in tasks])
+        payload = await asyncio.to_thread(roster_payload, session.workflow)
+        self.result(envelope, **payload)
 
     @request_handler(Requests.CACHES)
     @requires_live_session
     async def _request_caches(self, envelope, session):
-        self.result(envelope, **caches_payload(session.workflow))
+        payload = await asyncio.to_thread(caches_payload, session.workflow)
+        self.result(envelope, **payload)
 
     @request_handler(Requests.CACHE_VALUE)
     @requires_live_session
@@ -716,7 +718,9 @@ class Connection:
                     f"group) - not: {', '.join(foreign)}.",
                 )
                 return
-        keys = [task.identity_key for task in query.apply(session.workflow.tasks)]
+        keys = await asyncio.to_thread(
+            apply_filter_keys, query, session.workflow.tasks
+        )
         self.result(envelope, keys=keys)
 
     @request_handler(Requests.MANIFESTS)
@@ -726,7 +730,7 @@ class Connection:
                 envelope.request_id, "this server keeps no session state"
             )
             return
-        manifests = self.app.state_store.list_open_manifests()
+        manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
         self.result(
             envelope,
             manifests=[

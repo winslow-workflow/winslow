@@ -118,6 +118,21 @@ def session_row(session):
     )
 
 
+def roster_payload(workflow):
+    """The stub TaskInfo of every task, in launch-filter order. get_filtered_tasks
+    can run project filter code and task_info builds one stub per task, so a
+    caller runs this off the event loop (see Connection._request_roster)."""
+    tasks = workflow.get_filtered_tasks()
+    return {"tasks": [asdict(workflow.task_info(t)) for t in tasks]}
+
+
+def apply_filter_keys(query, tasks):
+    """The identity keys of the tasks a parsed filter query matches. A
+    project filter can run arbitrary code, so a caller runs this off the
+    event loop (see Connection._request_apply_filter)."""
+    return [task.identity_key for task in query.apply(tasks)]
+
+
 def build_action(name, fields):
     """The action dataclass for one wire frame. Raises ValueError with a
     directional message on an unknown name or on bad fields."""
