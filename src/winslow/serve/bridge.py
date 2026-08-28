@@ -7,7 +7,7 @@ frame at the bound and counts the drop, and the sender disconnects a client
 that stays behind a full window (see serve-spec, slice two).
 
 A coalesced lane enqueues its model event (LogLineEvent, SessionLogEvent,
-TaskLogEvent, CacheUpdatedEvent), so the lane shape has one declaration; the
+TaskLogEvent, CacheUpdatedEvent), so the lane shape has one declaration. The
 drain aggregates the lines into the *_BATCH envelope frames. The other lanes
 enqueue final frame dicts, because their frames flatten enum fields."""
 

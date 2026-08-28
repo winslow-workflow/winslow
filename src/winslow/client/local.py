@@ -29,7 +29,7 @@ from winslow.session import create_session
 
 class _CacheUpdateListener:
     """Collapse the five CacheListener callbacks into CacheUpdatedEvent per
-    name (see EventBridge for the wire twin of this fan-in)."""
+    name. EventBridge does the same collapse on the serve side."""
 
     def __init__(self, handler):
         self.handler = handler
@@ -165,7 +165,7 @@ class LocalAppClient(AppClient):
 
 class LocalSessionClient(SessionClient):
     """One live session, in-process. The reads build the same dataclasses
-    the serve handlers serialize; a subscription handler runs on the thread
+    the serve handlers serialize. A subscription handler runs on the thread
     that publishes, like a bus subscriber."""
 
     def __init__(self, session, root_dir=None):
@@ -289,8 +289,8 @@ class LocalSessionClient(SessionClient):
             formatter=INLINE_FORMATTER,
         )
         dispatcher = get_task_dispatcher()
-        # Listener first, backlog second: a line in that window duplicates
-        # instead of getting lost.
+        # The listener attaches before the backlog read, so a line in that
+        # window duplicates rather than disappears.
         dispatcher.add_listener(task.log_key, log_handler)
         self._teardowns[key] = partial(
             dispatcher.remove_listener, task.log_key, log_handler

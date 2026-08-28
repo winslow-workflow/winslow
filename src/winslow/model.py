@@ -1,14 +1,13 @@
 """The data model of the session port: every value shape that crosses the
 port or the serve boundary (the payload rule, see winslow.events). Every
 field is JSON-safe. The local adapter hands these instances through
-in-process (see winslow.client.local); winslow.serve.wire serializes each
+in-process (see winslow.client.local). winslow.serve.wire serializes each
 with dataclasses.asdict and winslow.codec decodes the inbound frames, so a
 wire shape has exactly one declaration.
 
-The producing side keeps the from_x classmethods (from_task, from_batch,
-from_session, ...). A constructor that needs core machinery imports it
-inside the method, so this module stays import-free at the bottom of the
-dependency graph."""
+The producing side keeps the from_x classmethods, for example from_task and
+from_batch. A constructor that needs core machinery imports it inside the
+method, so this module imports nothing from winslow at module level."""
 
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
@@ -468,7 +467,7 @@ class BatchInfo:
 @dataclass(frozen=True)
 class BatchRow:
     """One batch of a session snapshot: the identity and the lifecycle
-    stamps, without the roster (see HistoryRow for the row with outcomes)."""
+    stamps. HistoryRow is the row that adds the per-task outcomes."""
 
     uuid: str
     action: str
@@ -516,8 +515,8 @@ class TaskOutcome:
 @dataclass(frozen=True)
 class HistoryRow:
     """One batch of the history, with the per-task outcomes of its record
-    store, so a client joining mid-flight renders rows without one log_tail
-    per task."""
+    store. A client that subscribes after the batch renders these rows
+    without one log_tail call per task."""
 
     uuid: str
     action: str
@@ -667,7 +666,7 @@ class PhaseRow:
 class RecordDetail:
     """The full capture of one execution record: its TaskInfo, its phase
     timeline, and its transient and cache snapshots (see ExecutionRecord).
-    The snapshot dicts key by phase name, not by the enum."""
+    The snapshot dicts key by the phase name."""
 
     info: TaskInfo
     phases: tuple  # tuple[PhaseRow, ...]
@@ -986,7 +985,7 @@ class Descriptors:
 class CacheUpdatedEvent:
     """The repaint trigger of one cache. The port synthesizes it from the
     CacheListener callbacks (see winslow.client.local) or from cache_updated
-    frames; it never rides the session bus."""
+    frames."""
 
     cache_name: str
 

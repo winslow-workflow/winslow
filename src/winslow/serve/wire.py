@@ -197,14 +197,10 @@ def build_action(name, fields):
 
 
 def descriptor_rows(orchestrator):
-    """The parameter context of the serve process, as one serializable dict
-    (see Descriptors)."""
     return asdict(Descriptors.from_orchestrator(orchestrator))
 
 
 def history_rows(session):
-    """One dict per batch, with the per-task outcomes of its record store
-    (see HistoryRow)."""
     runner = session.workflow.runner
     return [
         asdict(HistoryRow.from_batch(batch, runner.record_store(batch.uuid)))
@@ -213,13 +209,10 @@ def history_rows(session):
 
 
 def record_detail_payload(record):
-    """The full capture of one execution record (see RecordDetail)."""
     return asdict(RecordDetail.from_record(record))
 
 
 def cache_card_payload(cache):
-    """One cache card: identity, storage, and the declared entries with
-    their display style and their current value preview (see CacheCard)."""
     return asdict(CacheCard.from_cache(cache))
 
 
@@ -232,14 +225,10 @@ def caches_payload(workflow):
 
 
 def cache_value_payload(cache, entry_name):
-    """The rendered form of one entry value, built server-side (see
-    CacheValueView)."""
     return asdict(CacheValueView.from_entry(cache, entry_name))
 
 
 def session_params_payload(workflow):
-    """settings_snapshot plus the resolved workflow_config values (see
-    SessionParams)."""
     return asdict(SessionParams.from_workflow(workflow))
 
 

@@ -1,6 +1,6 @@
 """The shared surface of the session port, defined once. A transport module
-implements both classes and changes no signature (see winslow.client). The
-contract of every method: values in, values out (see winslow.model)."""
+implements both classes with these signatures (see winslow.client). Every
+method takes values and returns values (see winslow.model)."""
 
 
 class AppClient:
@@ -78,8 +78,8 @@ class SessionClient:
 
     def apply_filter(self, query, builtin_only=False):
         """Return the identity keys the parsed query matches. A bad query
-        raises ValueError with the parse error; builtin_only additionally
-        refuses a project filter (see enforce_builtin_only)."""
+        raises ValueError with the parse error. builtin_only also refuses a
+        project filter (see enforce_builtin_only)."""
         raise NotImplementedError
 
     def batch_options(self):
@@ -98,7 +98,7 @@ class SessionClient:
         """Connect the handler to one event topic of the session. The topics
         are the session bus event classes (see winslow.events) plus
         CacheUpdatedEvent and SessionLogEvent (see winslow.model). A handler
-        can run on any thread, and the dispatch order between handlers is
+        can run on any thread. The dispatch order between handlers is
         undefined."""
         raise NotImplementedError
 
