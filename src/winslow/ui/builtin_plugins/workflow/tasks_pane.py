@@ -51,7 +51,6 @@ class TasksPaneWidget(Widget):
     def compose(self):
         context = self._context
         yield TaskBar(
-            client=context.client,
             options=context.client.batch_options(),
             classes="task-bar round pane-header",
         )

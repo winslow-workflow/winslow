@@ -93,6 +93,16 @@ versions may include breaking changes).
 
 ### Changed
 
+- `apply_filter` carries a `scope`: `tasks` (the default, today's behavior) applies the full filter
+  registry over the live tasks; `history` applies the builtin filters over the execution record infos
+  and also serves an ended session. The server owns the one query parser, so a client (the TUI, a
+  future web client) sends the query and receives identity keys, never parsing the language itself.
+  A tasks search on an ended session now refuses with direction instead of failing inside the handler.
+- The two search panes share one contract (`QuerySearchMixin`): an unparseable query clears the
+  preview instead of dimming every row, and a refused submit keeps the previous filter and toasts the
+  reason. The history pane matches through `apply_filter(scope="history")`, so a record whose task
+  left the roster matches again. The filter inputs validate with a grammar-only parse
+  (`parse_syntax`); an unknown command surfaces at submit through the matcher.
 - Breaking for plugin authors: the TUI renders from the session port alone (see `docs/ui-plugins.md`).
   `WorkflowRenderContext` carries `client` (the `SessionClient`), `session` (a `SessionRow` value),
   `snapshot` (a `SessionSnapshot` value), `roster` (stub `TaskInfo` rows) and `task_statuses`; the

@@ -20,13 +20,12 @@ from textual.widgets import (
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from winslow.actions import StopBatch
-from winslow.filter.builtin import parse_builtin
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPanePlugin
-from winslow.ui.filtering import SearchFlowMixin
+from winslow.ui.filtering import QuerySearchMixin
 from winslow.ui.formatting import format_status_summary
 from winslow.ui.modals import TaskDetail
 from winslow.ui.modals.common import BaseModal
@@ -272,8 +271,10 @@ class BatchCard(Widget):
             self.query_one(".stop-btn", Button).disabled = True
 
 
-class HistoryPane(SearchFlowMixin, Widget):
+class HistoryPane(QuerySearchMixin, Widget):
     DEFAULT_CSS = _CSS
+
+    search_input_id = "record-search"
 
     def __init__(self, client, infos_by_key, *args, **kwargs):
         self.client = client
@@ -281,33 +282,17 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._rows: dict[tuple, RecordRow] = {}
         self._cards: dict[str, BatchCard] = {}
         self._init_search()
-        self._filter_matching: set | None = None
         self._hide_completed = False
         self._status_filter = _STATUS_ALL
         super().__init__(*args, **kwargs)
 
-    def _matching_tasks(self, query: str, warn=True) -> set:
-        """The identity keys the query matches over the row infos. The
-        builtin-only parse needs no live session. The typing preview passes
-        warn=False, so it does not toast per tick."""
-        infos = [row.w_task for row in self.query(RecordRow).results() if row.w_task]
-        try:
-            parsed = parse_builtin(query)
-        except ValueError as exc:
-            if warn:
-                self.notify(str(exc), severity="warning")
-            return set()
-        return {info.key for info in parsed.apply(infos)}
+    def match_keys(self, query):
+        """Match over the record infos through the port: the history scope
+        also serves an ended session (see Workflow.filter_keys)."""
+        return set(self.client.apply_filter(query, scope="history"))
 
     def search_rows(self):
         return self.query(RecordRow).results()
-
-    def search_matches(self, query):
-        return self._matching_tasks(query, warn=False)
-
-    def apply_search(self, query):
-        self._filter_matching = self._matching_tasks(query) if query else None
-        self._apply_visibility()
 
     def _row_visible(self, row) -> bool:
         """A row is shown if it passes the search filter, the status filter,
@@ -334,6 +319,8 @@ class HistoryPane(SearchFlowMixin, Widget):
     @on(Input.Changed, "#record-search")
     def handle_search_changed(self, event):
         self.preview_search(event.value)
+        if not event.value.strip():
+            self._validate_search_input("")
 
     @on(Input.Submitted, "#record-search")
     def handle_search_submitted(self, event):
@@ -361,11 +348,7 @@ class HistoryPane(SearchFlowMixin, Widget):
             yield Button("<", classes="mini view-dashboard").with_tooltip(
                 "view dashboard"
             )
-            yield PaneSearch(
-                parse_builtin,
-                placeholder="search records...",
-                input_id="record-search",
-            )
+            yield PaneSearch(placeholder="search records...", input_id="record-search")
             yield Select(
                 _STATUS_OPTIONS,
                 value=_STATUS_ALL,

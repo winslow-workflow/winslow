@@ -9,6 +9,8 @@ site.
 
 from functools import partial
 
+from textual.widgets import Input
+
 FILTER_MATCH_CLASS = "filter-match"
 FILTER_DIM_CLASS = "filter-dim"
 
@@ -65,3 +67,45 @@ class SearchFlowMixin:
     def _stop_search_timer(self):
         if self._search_timer is not None:
             self._search_timer.stop()
+
+
+class QuerySearchMixin(SearchFlowMixin):
+    """A pane whose search input is a filter query. The host implements
+    match_keys(query): the identity keys the query matches, ValueError on a
+    bad query. search_input_id names the input the syntax marks paint. The
+    mixin owns the search contract: an unparseable preview clears, and a
+    refused submit keeps the previous filter and toasts the reason."""
+
+    search_input_id = None
+
+    def _init_search(self):
+        super()._init_search()
+        # The keys the active filter matches; None shows every row.
+        self._filter_matching = None
+
+    def match_keys(self, query):
+        raise NotImplementedError
+
+    def _validate_search_input(self, query):
+        if self.search_input_id is not None:
+            self.query_one(f"#{self.search_input_id}", Input).validate(query)
+
+    def search_matches(self, query):
+        # None marks an unparseable query: the preview clears, nothing dims.
+        self._validate_search_input(query)
+        try:
+            return self.match_keys(query)
+        except ValueError:
+            return None
+
+    def apply_search(self, query):
+        if not query:
+            self._filter_matching = None
+        else:
+            try:
+                matching = self.match_keys(query)
+            except ValueError as exc:
+                self.notify(str(exc), severity="warning")
+                return
+            self._filter_matching = matching
+        self._apply_visibility()

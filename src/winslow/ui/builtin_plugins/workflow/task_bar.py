@@ -9,8 +9,7 @@ class TaskBar(Widget):
     """The header controls of the Tasks pane. The checkboxes start from the
     live batch option values of the port (see SessionClient.batch_options)."""
 
-    def __init__(self, client, options, *args, **kwargs):
-        self._client = client
+    def __init__(self, options, *args, **kwargs):
         self._options = options
         super().__init__(*args, **kwargs)
 
@@ -20,11 +19,7 @@ class TaskBar(Widget):
             yield Button("<", classes="mini view-dashboard").with_tooltip(
                 "view dashboard"
             )
-            yield PaneSearch(
-                self._client.apply_filter,
-                placeholder="filter tasks...",
-                input_id="filter-input",
-            )
+            yield PaneSearch(placeholder="filter tasks...", input_id="filter-input")
 
             with Horizontal(classes="checkboxes"):
                 with Vertical(classes="column"):

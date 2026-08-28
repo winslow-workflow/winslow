@@ -298,19 +298,21 @@ def test_buffered_record_with_object_extra_cannot_retain_it():
     assert ref() is None, "the buffered record retained the extra object"
 
 
-def test_history_search_parses_builtin_filters_only():
-    """The history search parses with the builtin resolver alone: it can
-    construct only NameFilter and GroupFilter, so a project filter cannot
-    reach live-task API through it."""
+def test_parse_syntax_checks_the_grammar_and_accepts_any_command():
+    """The client-side validator checks the query structure alone: any
+    command name parses, so the server keeps the one command vocabulary
+    (see Workflow.filter_keys)."""
     import pytest
 
-    from winslow.filter.builtin import GroupFilter, NameFilter, parse_builtin
+    from winslow.filter.builtin import parse_syntax
 
-    parsed = parse_builtin("!g infra & alpha")
-    assert {type(f) for f in parsed.filters()} == {NameFilter, GroupFilter}
+    parse_syntax("!g infra & alpha")
+    parse_syntax("!some-project-filter value | beta")
 
-    with pytest.raises(ValueError, match="not a builtin filter"):
-        parse_builtin("!project c")
+    with pytest.raises(ValueError):
+        parse_syntax("((unclosed")
+    with pytest.raises(ValueError):
+        parse_syntax("~!g foo")
 
 
 class _EventRecorder:

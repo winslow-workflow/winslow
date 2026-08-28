@@ -16,7 +16,7 @@ from textual.css.query import NoMatches
 
 import winslow.ui.builtin_plugins.workflow as workflow_plugins
 
-from winslow.ui.filtering import SearchFlowMixin
+from winslow.ui.filtering import QuerySearchMixin
 from winslow.ui.plugin import WorkflowRenderContext, Slots
 from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.workflow_events import (
@@ -71,7 +71,7 @@ def refuse_if_ending(method):
     return wrapper
 
 
-class WorkflowScreen(SearchFlowMixin, SlottedScreen):
+class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     """One session, rendered from the session port alone: the reads and the
     actions go through the SessionClient, the live updates arrive as port
     subscriptions (see winslow.client)."""
@@ -82,12 +82,13 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
         ("ctrl+d", "switch_mode('dashboard')", "Dashboard"),
     ]
 
+    search_input_id = "filter-input"
+
     def __init__(self, client, session_row):
         self.client = client
         self.session_row = session_row
         self.session_id = session_row.session_id
         self._init_search()
-        self._filter_matching = None  # keys matched by the search filter (None = all)
         self._asyncio_tasks: set[asyncio.Task] = set()
         # {batch uuid: toast verb} of the bulk submits that wait for their
         # batch_created event, which carries the admitted task count.
@@ -359,36 +360,16 @@ class WorkflowScreen(SearchFlowMixin, SlottedScreen):
     def search_rows(self):
         return self.query(TaskRow).results()
 
-    def _matching_keys(self, query):
-        """Run the filter through the port and read the matching identity
-        keys, the shape that the rows test."""
+    def match_keys(self, query):
+        """Run the filter through the port: project filter code lives
+        server-side (see Workflow.filter_keys)."""
         return set(self.client.apply_filter(query))
-
-    def search_matches(self, query):
-        # None marks an unparseable query: the preview clears (see
-        # SearchFlowMixin._preview_now).
-        self._validate_filter_input(query)
-        try:
-            return self._matching_keys(query)
-        except ValueError:
-            return None
-
-    def apply_search(self, query):
-        try:
-            matching = None if not query else self._matching_keys(query)
-        except ValueError:
-            return
-        self._filter_matching = matching
-        self._apply_visibility()
-
-    def _validate_filter_input(self, query):
-        self.query_one("#filter-input", Input).validate(query)
 
     @on(Input.Changed, "#filter-input")
     def handle_filter_changed(self, event):
         self.preview_search(event.value)
         if not event.value.strip():
-            self._validate_filter_input("")
+            self._validate_search_input("")
 
     @on(Button.Pressed, ".search-help")
     def handle_filter_help(self, event):

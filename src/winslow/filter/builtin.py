@@ -25,30 +25,25 @@ class GroupFilter(TaskFilter):
 BUILTIN_FILTERS = (NameFilter, GroupFilter)
 
 
-class _BuiltinResolver:
-    """A registry stand-in that resolves only the builtin filter commands.
-    FilterParser reads `default` and `resolve` (see FilterRegistry)."""
+class _AnyCommand:
+    """A resolver that accepts every command name: the parse checks the
+    grammar alone. FilterParser reads `default` and `resolve` (see
+    FilterRegistry)."""
 
     default = NameFilter
 
     @classmethod
     def resolve(cls, cmd):
-        for filter_cls in BUILTIN_FILTERS:
-            if cmd in (filter_cls.short_command, filter_cls.long_command):
-                return filter_cls
-        raise ValueError(
-            f"'!{cmd}' is not a builtin filter - this search supports only "
-            f"name and group."
-        )
+        return NameFilter
 
 
-def parse_builtin(query_string):
-    """Parse a query with the builtin filters alone. A client-side search
-    over stored rows uses this: it needs no live session and no project
-    filter code. Raises ValueError with the parse error."""
+def parse_syntax(query_string):
+    """Check the grammar of a query without resolving its commands. A client
+    validates input syntax with this; the matcher resolves the vocabulary
+    server-side (see Workflow.filter_keys). Raises ValueError on a bad query."""
     from .parser import FilterParser
 
-    return FilterParser(_BuiltinResolver).parse(query_string)
+    return FilterParser(_AnyCommand).parse(query_string)
 
 
 def enforce_builtin_only(query):
