@@ -231,6 +231,33 @@ def _converted(name, value, option):
     return _convert_value(name, value, option)
 
 
+def _manifest_value(option, value):
+    """A manifest-safe form of one option value. A JSON-native value stays
+    as it is; anything else stores as its formatted string, and the restore
+    parses it back through the option type (see _convert_value)."""
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_manifest_value(option, item) for item in value]
+    return option.format_value(value)
+
+
+def effective_workflow_values(workflow_kls, workflow_base, values):
+    """Every declared workflow option, resolved for the manifest: the caller
+    value, else the parsed CLI base, else the declared default. The manifest
+    thus rebuilds the session without the argv of the restoring process."""
+    effective = {}
+    for name, option in workflow_kls.config_meta.items():
+        value = (
+            values[name]
+            if name in values
+            else getattr(workflow_base, name, option.default)
+        )
+        if value is not None:
+            effective[name] = _manifest_value(option, value)
+    return effective
+
+
 def validate_values(
     workflow_name, workflow_kls, orchestrator, values, overrides, workflow_base=None
 ):
@@ -354,11 +381,15 @@ def create_session(
             workflow.check_pipeline_eligibility(logger=workflow.logger)
             # Persistence starts only once the pipeline is runnable: a kill
             # during the initialization above leaves no restore candidate.
+            # The manifest stores the effective workflow values, so a restore
+            # does not depend on the argv of its process (spec decision 9).
             workflow.init_state(
                 state_store,
                 origin=origin,
                 orchestrator_overrides=orchestrator_overrides,
-                workflow_values=workflow_values,
+                workflow_values=effective_workflow_values(
+                    workflow_kls, workflow_base, workflow_values
+                ),
             )
             if seed:
                 # After the eligibility pass: that pass overwrites earlier

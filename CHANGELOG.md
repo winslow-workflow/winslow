@@ -93,6 +93,11 @@ versions may include breaking changes).
 
 ### Changed
 
+- The manifest stores the effective workflow values: every declared option, resolved from the
+  caller values, the parsed CLI base and the declared defaults. A restore no longer depends on the
+  argv of the restoring process - a session created with `--client acme` restores with it in a
+  process started without the flag. Orchestrator overrides stay caller-only: host, port, mode and
+  directory belong to the running process.
 - A cache read of an ended session refuses with direction: "has ended and released its caches",
   pointing at the recorded reads in the execution history. Before, it raised the pre-init message
   "caches read before initialize_tasks built them". `SessionSnapshot.cache_names` is `None` for an

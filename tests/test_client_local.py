@@ -830,3 +830,70 @@ def test_an_ending_session_finalizes_when_its_last_batch_drains(e2e_repo):
     batch.wait()
     assert workflow.session.has_ended
     wait_for(lambda: events, "no session_ended event after the drain")
+
+
+def test_restore_does_not_depend_on_the_argv_of_the_restoring_process(
+    e2e_repo, state_store
+):
+    """The manifest stores the effective workflow values, CLI base included,
+    so a process started without the original flags restores the session
+    with them (see effective_workflow_values)."""
+    registry = SessionRegistry()
+    creating = LocalAppClient(
+        registry,
+        orchestrator=local_orchestrator(e2e_repo, "--client", "acme"),
+        state_store=state_store,
+    )
+    row = creating.create_session("my-identified")
+    manifest = state_store.load_manifest(row.session_id)
+    assert manifest.workflow_values["client"] == "acme"
+
+    # Simulate a dead process, then restore from one with a bare argv.
+    registry.remove(row.session_id)
+    restoring = LocalAppClient(
+        SessionRegistry(),
+        orchestrator=local_orchestrator(e2e_repo),
+        state_store=state_store,
+    )
+    restored = restoring.restore_session(row.session_id)
+    session = restoring.registry.get(restored.session_id)
+    assert session.workflow.workflow_config.client == "acme"
+
+
+def test_effective_workflow_values_round_trip_through_the_manifest():
+    """Typed values survive the manifest: a JSON-native value stays as it
+    is, everything else stores formatted and re-parses through the option
+    type (see validate_values)."""
+    from decimal import Decimal
+    from types import SimpleNamespace
+
+    from winslow.descriptors import ConfigOption
+    from winslow.session import effective_workflow_values, validate_values
+
+    meta = {
+        "switch": ConfigOption(action="store_true"),
+        "count": ConfigOption(type=int),
+        "rate": ConfigOption(type=Decimal),
+        "picks": ConfigOption(type=int, multiselect=True, choices=[1, 2, 3]),
+        "unset": ConfigOption(),
+    }
+    workflow_kls = SimpleNamespace(config_meta=meta)
+    base = SimpleNamespace(switch=True, count=7, rate=Decimal("1.5"))
+
+    stored = effective_workflow_values(workflow_kls, base, {"picks": [1, 3]})
+    assert stored == {
+        "switch": True,
+        "count": 7,
+        "rate": "1.5",
+        "picks": [1, 3],
+    }
+
+    values, _ = validate_values(
+        "wf", workflow_kls, SimpleNamespace(config_meta={}), stored, {}
+    )
+    assert values == {
+        "switch": True,
+        "count": 7,
+        "rate": Decimal("1.5"),
+        "picks": [1, 3],
+    }

@@ -15,10 +15,11 @@ declaration that lets a restored success count without a new probe, how a stale 
 Everything durable about one session lives in one directory, written through one adapter, the state
 store. The directory holds three record kinds:
 
-- **The manifest** — the workflow name, the configuration values the session started with, and the
-  origin of the run: the inputs that rebuild the session. The batch option toggles are view state
-  of one client: each submit carries its own flags, and the batch record below stores the flags
-  the batch ran with.
+- **The manifest** — the workflow name, the origin of the run, and the effective workflow values:
+  every declared option, resolved from the form values and the command line. The manifest is thus
+  the complete record that rebuilds the session, whatever arguments the restoring process started
+  with. The batch option toggles are view state of one client: each submit carries its own flags,
+  and the batch record below stores the flags the batch ran with.
 - **Status snapshots** — one file per task, named by the task identity key, holding the latest terminal
   status (`COMPLETED`, `COMPLETED_WITH_ERROR`, `COMPLETED_PREVIOUSLY`, `FORCE_SUCCESS`, `FAILED`,
   `ERROR`) and the time of the check. Each terminal transition replaces the file atomically. The
