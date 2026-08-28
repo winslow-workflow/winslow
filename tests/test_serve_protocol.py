@@ -1,6 +1,6 @@
-"""The protocol version 2 extensions, black-box through the websocket wire:
-roster, caches, cache_value, cache_updated, record_detail, the history and
-session row enrichments, batch_options and its changed event,
+"""The session-port protocol extensions, black-box through the websocket
+wire: roster, caches, cache_value, cache_updated, record_detail, the
+history and session row enrichments, batch_options and its changed event,
 session_params, apply_filter, the session_log and task_log lanes,
 manifests and restore_session, the descriptor parity fields, the
 create_session error detail, the task_detail parity fix, the two cache
@@ -440,6 +440,21 @@ def test_descriptor_option_rows_carry_action_const_and_initial(e2e_repo):
     ws.close()
 
 
+def test_workflow_option_initial_prefills_from_cli_args(e2e_repo):
+    """A workflow option's `initial` matches the local start form: the value
+    the serve process's own CLI invocation supplied, not the class default
+    (see Orchestrator.collect_workflow_args)."""
+    orchestrator = serve_orchestrator(e2e_repo, "--client", "acme")
+    ws = connect(SessionRegistry(), orchestrator=orchestrator)
+    result = request(ws, "r-34", Requests.DESCRIPTORS)
+    identified = next(
+        row for row in result["workflows"] if row["workflow"] == "my-identified"
+    )
+    (client,) = [o for o in identified["options"] if o["name"] == "client"]
+    assert client["initial"] == "acme"
+    ws.close()
+
+
 # --- create_session error detail -------------------------------------------------
 
 
@@ -514,4 +529,22 @@ def test_a_malformed_request_frame_answers_an_error(e2e_repo):
     error = frames_until(ws, "error")
     assert error["request_id"] == "r-33"
     assert "malformed" in error["reason"]
+    ws.close()
+
+
+def test_a_valid_json_non_dict_frame_answers_an_error_and_the_connection_survives(
+    e2e_repo,
+):
+    workflow, session, registry = registered(e2e_repo)
+    ws = connect(registry)
+    ws.send_json([1, 2])
+    error = frames_until(ws, "error")
+    assert "must be a JSON object" in error["reason"]
+
+    # The connection is still alive: a valid frame answers normally.
+    result = request(
+        ws, "r-35", Requests.BATCH_OPTIONS, session_id=session.session_id
+    )
+    assert result["request_id"] == "r-35"
+    ws.close()
     ws.close()

@@ -17,11 +17,14 @@ from harness import build_workflow, by_name, wait_for_status
 TOKEN = "test-token"
 
 
-def serve_orchestrator(directory):
-    config = Orchestrator.get_base_parser().parse_args(
-        ["serve"], namespace=OrchestratorConfig()
+def serve_orchestrator(directory, *unknown_args):
+    """unknown_args mirrors the trailing CLI tokens a real `winslow serve`
+    invocation would leave unclaimed - the per-workflow prefill values (see
+    Orchestrator.collect_workflow_args)."""
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["serve", *unknown_args], namespace=OrchestratorConfig()
     )
-    orchestrator = Orchestrator(config, directory=directory)
+    orchestrator = Orchestrator(config, directory=directory, unknown_args=unknown)
     orchestrator.workflow_registry.collect_classes(directory)
     return orchestrator
 

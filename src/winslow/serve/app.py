@@ -37,7 +37,7 @@ from winslow.serve.wire import (
     session_row,
 )
 
-PROTOCOL_VERSION = 2
+PROTOCOL_VERSION = 1
 
 # The refusal codes of the handshake. The refusal also rides a hello_error
 # frame: after an accepted upgrade a browser reads the frame, the code, and
@@ -248,6 +248,15 @@ class Connection:
                     return
                 except ValueError:
                     self.reply({"type": "error", "reason": "the message is not JSON"})
+                    continue
+                if not isinstance(frame, dict):
+                    self.reply(
+                        {
+                            "type": "error",
+                            "reason": f"a frame must be a JSON object, not "
+                            f"{type(frame).__name__}.",
+                        }
+                    )
                     continue
                 self.handle_frame(frame)
         finally:

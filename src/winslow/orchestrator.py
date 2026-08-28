@@ -461,13 +461,15 @@ class Orchestrator(_ConfigBase):
                 cursor += 1
         return positions
 
-    def _collect_workflow_args(self):
+    def collect_workflow_args(self):
         """{workflow_kls: parsed args or None}, validated together.
 
-        Only `show` and the interactive start call this. They parse the args of
-        each discovered workflow at one time. A headless run has one named
-        workflow and parses its args strictly (see `_handle_headless_run`), so
-        the collision between workflows that this method handles cannot occur
+        `show`, the interactive start, and a serve process's descriptors
+        request call this. They parse the args of each discovered workflow
+        at one time, so a start form (local or remote) prefills from the
+        same CLI-supplied values. A headless run has one named workflow and
+        parses its args strictly (see `_handle_headless_run`), so the
+        collision between workflows that this method handles cannot occur
         there."""
         parsed = {
             kls: self._parse_known_workflow_args(kls, self.unknown_args)
@@ -539,7 +541,7 @@ class Orchestrator(_ConfigBase):
 
     def _list_workflow_classes(self):
         self.logger.debug("Listing workflow classes")
-        workflow_args_map = self._collect_workflow_args()
+        workflow_args_map = self.collect_workflow_args()
         workflows = []
 
         for workflow_kls in self.sorted_workflow_classes:
@@ -690,7 +692,7 @@ class Orchestrator(_ConfigBase):
             ) from e
 
         # Validate the CLI args before any effect, so a typo fails immediately.
-        workflow_args_map = self._collect_workflow_args()
+        workflow_args_map = self.collect_workflow_args()
 
         # Set up the winslow.runs sink and the propagate=False boundary BEFORE a
         # workflow logger or a task logger starts to propagate. The run logs then

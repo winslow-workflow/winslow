@@ -22,6 +22,18 @@ from winslow.cache import (
     render_value,
     resolve_snapshot_cap,
 )
+from winslow.model import (
+    CacheCard,
+    CacheEntryCard,
+    CachesPayload,
+    CacheValueView,
+    ManifestRow,
+    PhaseRow,
+    RecordDetail,
+    SessionParams,
+    SessionRow,
+    TaskStatusSummary,
+)
 from winslow.util import safe_repr
 
 
@@ -89,21 +101,21 @@ ACTION_CLASSES = {
 def session_row(session):
     workflow = session.workflow
     completed, problematic, total = session.task_status_summary
-    return {
-        "session_id": session.session_id,
-        "workflow": str(workflow),
-        "status": session.status.name,
-        "display_name": workflow.get_display_name(),
-        "instance_name": workflow.instance_name,
-        "identifier_suffix": workflow.identifier_suffix,
-        "started_at": session.start,
-        "elapsed": session.elapsed,
-        "task_status_summary": {
-            "completed": completed,
-            "problematic": problematic,
-            "total": total,
-        },
-    }
+    return asdict(
+        SessionRow(
+            session_id=session.session_id,
+            workflow=str(workflow),
+            status=session.status.name,
+            display_name=workflow.get_display_name(),
+            instance_name=workflow.instance_name,
+            identifier_suffix=workflow.identifier_suffix,
+            started_at=session.start,
+            elapsed=session.elapsed,
+            task_status_summary=TaskStatusSummary(
+                completed=completed, problematic=problematic, total=total
+            ),
+        )
+    )
 
 
 def build_action(name, fields):
@@ -153,15 +165,24 @@ def option_row(name, option, current=None):
 def descriptor_rows(orchestrator):
     """The parameter context of the serve process: one row per collected
     workflow (the `values` of create_session), plus the orchestrator options
-    the start form shows (the `overrides`)."""
+    the start form shows (the `overrides`). A workflow's `initial` values
+    come from the same CLI-supplied args that prefill the local start form
+    (see Orchestrator.collect_workflow_args). A workflow the orchestrator
+    config excludes from the local selector is excluded here too."""
+    workflow_args = orchestrator.collect_workflow_args()
     workflows = []
     for name in orchestrator.workflow_registry.names:
         workflow_kls = orchestrator.workflow_registry[name]
+        if not workflow_kls.should_be_initialized(orchestrator.orchestrator_config):
+            continue
+        parsed = workflow_args.get(workflow_kls)
         workflows.append(
             {
                 "workflow": name,
                 "options": [
-                    option_row(option_name, option)
+                    option_row(
+                        option_name, option, current=getattr(parsed, option_name, None)
+                    )
                     for option_name, option in workflow_kls.config_meta.items()
                     if option.show_on_ui
                 ],
@@ -228,28 +249,30 @@ def history_rows(session):
 def record_detail_payload(record):
     """The full capture of one execution record: its TaskInfo, its phase
     timeline, and its transient and cache snapshots (see ExecutionRecord)."""
-    return {
-        "info": asdict(record.info),
-        "phases": [
-            {
-                "phase": span.phase.value,
-                "started_at": span.started_at.timestamp(),
-                "completed_at": (
-                    span.completed_at.timestamp() if span.completed_at else None
-                ),
-                "duration": span.duration,
-            }
-            for span in record.phases
-        ],
-        "transient_snapshots": {
-            phase.value: snapshot
-            for phase, snapshot in record.transient_snapshots.items()
-        },
-        "cache_snapshots": {
-            phase.value: [asdict(snapshot) for snapshot in snapshots]
-            for phase, snapshots in record.cache_snapshots.items()
-        },
-    }
+    return asdict(
+        RecordDetail(
+            info=asdict(record.info),
+            phases=tuple(
+                PhaseRow(
+                    phase=span.phase.value,
+                    started_at=span.started_at.timestamp(),
+                    completed_at=(
+                        span.completed_at.timestamp() if span.completed_at else None
+                    ),
+                    duration=span.duration,
+                )
+                for span in record.phases
+            ),
+            transient_snapshots={
+                phase.value: snapshot
+                for phase, snapshot in record.transient_snapshots.items()
+            },
+            cache_snapshots={
+                phase.value: [asdict(snapshot) for snapshot in snapshots]
+                for phase, snapshots in record.cache_snapshots.items()
+            },
+        )
+    )
 
 
 def _display_style_label(display_style):
@@ -282,26 +305,51 @@ def cache_card_payload(cache):
     their display style and their current value preview."""
     entries = declared_entries(type(cache))
     infos = cache.inspect()
-    return {
-        "name": cache.get_name(),
-        "scope": cache.scope,
-        "docstring": type(cache).__doc__,
-        "storage": cache.describe_storage(),
-        "entries": [
-            {"name": name, "display_style": _display_style_label(entry.display_style)}
-            for name, entry in entries.items()
-        ],
-        "info": [asdict(info) for info in infos],
-        "values": {
-            info.entry_name: _entry_value_preview(cache, info.entry_name)
-            for info in infos
-            if info.written_at is not None
-        },
-    }
+    return asdict(
+        CacheCard(
+            name=cache.get_name(),
+            scope=cache.scope,
+            docstring=type(cache).__doc__,
+            storage=cache.describe_storage(),
+            entries=tuple(
+                CacheEntryCard(
+                    name=name, display_style=_display_style_label(entry.display_style)
+                )
+                for name, entry in entries.items()
+            ),
+            info=tuple(asdict(info) for info in infos),
+            values={
+                info.entry_name: _entry_value_preview(cache, info.entry_name)
+                for info in infos
+                if info.written_at is not None
+            },
+        )
+    )
 
 
 def caches_payload(workflow):
-    return {"caches": [cache_card_payload(cache) for cache in all_caches(workflow)]}
+    return asdict(
+        CachesPayload(
+            caches=tuple(cache_card_payload(cache) for cache in all_caches(workflow))
+        )
+    )
+
+
+def _unrendered_cache_value(cache, entry_name, state, error):
+    """The view of an entry with no value to render: cold, or a loader runs
+    right now."""
+    return asdict(
+        CacheValueView(
+            cache_name=cache.get_name(),
+            entry_name=entry_name,
+            state=state,
+            encoding=None,
+            rendered=None,
+            summary=None,
+            written_at=None,
+            error=error,
+        )
+    )
 
 
 def cache_value_payload(cache, entry_name):
@@ -312,61 +360,51 @@ def cache_value_payload(cache, entry_name):
     error = asdict(info.error) if info.error is not None else None
     record = cache.peek(entry_name)
     if record is MISSING:
-        return {
-            "cache_name": cache.get_name(),
-            "entry_name": entry_name,
-            "state": EntryState.COLD.value,
-            "encoding": None,
-            "rendered": None,
-            "summary": None,
-            "written_at": None,
-            "error": error,
-        }
+        return _unrendered_cache_value(cache, entry_name, EntryState.COLD.value, error)
     if record is EntryState.COMPUTING:
-        return {
-            "cache_name": cache.get_name(),
-            "entry_name": entry_name,
-            "state": EntryState.COMPUTING.value,
-            "encoding": None,
-            "rendered": None,
-            "summary": None,
-            "written_at": None,
-            "error": error,
-        }
+        return _unrendered_cache_value(
+            cache, entry_name, EntryState.COMPUTING.value, error
+        )
     display_style = declared_entries(type(cache))[entry_name].display_style
     rendered, summary, encoding = render_value(
         record.value, resolve_snapshot_cap(type(cache)), display_style
     )
-    return {
-        "cache_name": cache.get_name(),
-        "entry_name": entry_name,
-        "state": info.state.value,
-        "encoding": encoding.value,
-        "rendered": rendered,
-        "summary": summary,
-        "written_at": record.written_at,
-        "error": error,
-    }
+    return asdict(
+        CacheValueView(
+            cache_name=cache.get_name(),
+            entry_name=entry_name,
+            state=info.state.value,
+            encoding=encoding.value,
+            rendered=rendered,
+            summary=summary,
+            written_at=record.written_at,
+            error=error,
+        )
+    )
 
 
 def session_params_payload(workflow):
     """settings_snapshot plus the resolved workflow_config values (see
     WorkflowParams, the local modal with the same content)."""
-    return {
-        "settings": workflow.settings_snapshot,
-        "workflow_config": {
-            name: workflow.config_meta[name].format_value(
-                getattr(workflow.workflow_config, name, None)
-            )
-            for name in workflow.config_option_names
-        },
-    }
+    return asdict(
+        SessionParams(
+            settings=workflow.settings_snapshot,
+            workflow_config={
+                name: workflow.config_meta[name].format_value(
+                    getattr(workflow.workflow_config, name, None)
+                )
+                for name in workflow.config_option_names
+            },
+        )
+    )
 
 
 def manifest_row(manifest):
-    return {
-        "session_id": manifest.session_id,
-        "workflow_class": manifest.workflow_class,
-        "orchestrator_overrides": manifest.orchestrator_overrides,
-        "workflow_values": manifest.workflow_values,
-    }
+    return asdict(
+        ManifestRow(
+            session_id=manifest.session_id,
+            workflow_class=manifest.workflow_class,
+            orchestrator_overrides=manifest.orchestrator_overrides,
+            workflow_values=manifest.workflow_values,
+        )
+    )
