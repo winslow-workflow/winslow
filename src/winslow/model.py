@@ -601,6 +601,9 @@ class SessionRow:
     started_at: float
     elapsed: float
     task_status_summary: TaskStatusSummary
+    # The project root of the serving process. A client shortens the server
+    # source paths with it (see TaskDetailRenderContext.root_dir).
+    root_dir: str | None = None
 
     @classmethod
     def from_session(cls, session):
@@ -618,6 +621,7 @@ class SessionRow:
             task_status_summary=TaskStatusSummary(
                 completed=completed, problematic=problematic, total=total
             ),
+            root_dir=workflow.root_dir,
         )
 
 

@@ -276,9 +276,10 @@ class HistoryPane(QuerySearchMixin, Widget):
 
     search_input_id = "record-search"
 
-    def __init__(self, client, infos_by_key, *args, **kwargs):
+    def __init__(self, client, infos_by_key, root_dir=None, *args, **kwargs):
         self.client = client
         self._infos_by_key = infos_by_key
+        self._root_dir = root_dir
         self._rows: dict[tuple, RecordRow] = {}
         self._cards: dict[str, BatchCard] = {}
         self._init_search()
@@ -401,6 +402,7 @@ class HistoryPane(QuerySearchMixin, Widget):
                 logs=self.client.log_tail(row.batch_uuid, row.key),
                 transient_snapshots=detail.transient_snapshots,
                 cache_snapshots=detail.cache_snapshots,
+                root_dir=self._root_dir,
             )
         )
 
@@ -464,4 +466,5 @@ class HistoryPlugin(UIPlugin):
         return HistoryPane(
             client=context.client,
             infos_by_key={info.key: info for info in context.roster},
+            root_dir=context.session.root_dir,
         )

@@ -67,6 +67,9 @@ class TaskDetailRenderContext(RenderContext):
     # {phase name: tuple[CacheReadSnapshot]}. Same scoping rules as
     # transient_snapshots.
     cache_snapshots: dict | None = None
+    # The project root of the serving process, for the source-path display
+    # (see SessionRow.root_dir).
+    root_dir: str | None = None
 
 
 @dataclass

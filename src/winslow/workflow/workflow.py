@@ -170,6 +170,12 @@ class Workflow(_ConfigBase):
         return self.batch_options.disable_concurrency
 
     @property
+    def root_dir(self):
+        """The project root of the process (see Orchestrator.directory). The
+        orchestrator stamps it onto the config; a bare test config has none."""
+        return getattr(self.orchestrator_config, "directory", None)
+
+    @property
     def session(self):
         return self._session
 

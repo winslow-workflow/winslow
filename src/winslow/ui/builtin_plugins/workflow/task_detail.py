@@ -207,6 +207,7 @@ class TaskDetailWidget(Widget):
         task_key=None,
         transient_snapshots=None,
         cache_snapshots=None,
+        root_dir=None,
         *args,
         **kwargs,
     ):
@@ -216,14 +217,8 @@ class TaskDetailWidget(Widget):
         self._task_key = task_key
         self._transient_snapshots = transient_snapshots
         self._cache_snapshots = cache_snapshots
+        self._root_dir = root_dir
         super().__init__(*args, **kwargs)
-
-    @property
-    def _root_dir(self):
-        # A local-only display aid: the root dir shortens the source paths.
-        # A client process without an orchestrator shows full paths.
-        orchestrator = getattr(self.app, "orchestrator", None)
-        return orchestrator.directory if orchestrator is not None else None
 
     def compose(self):
         root_dir = self._root_dir
@@ -336,4 +331,5 @@ class TaskDetailPlugin(UIPlugin):
             task_key=context.task_key,
             transient_snapshots=context.transient_snapshots,
             cache_snapshots=context.cache_snapshots,
+            root_dir=context.root_dir,
         )

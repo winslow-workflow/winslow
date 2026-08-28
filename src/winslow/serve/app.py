@@ -550,12 +550,6 @@ class Connection:
         handler = self._request_handlers[envelope.kind]
         await handler(self, envelope)
 
-    def _root_dir(self):
-        return (
-            getattr(self.app.orchestrator.orchestrator_config, "directory", None)
-            if self.app.orchestrator is not None
-            else None
-        )
 
     @request_handler(Requests.DESCRIPTORS)
     async def _request_descriptors(self, envelope):
@@ -641,7 +635,7 @@ class Connection:
             task,
             full=True,
             evaluate=True,
-            root_dir=self._root_dir(),
+            root_dir=session.workflow.root_dir,
         )
         self.result(envelope, info=asdict(info))
 

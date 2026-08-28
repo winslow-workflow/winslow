@@ -86,13 +86,6 @@ class LocalAppClient(AppClient):
                 "this client keeps no session state - pass a state store."
             )
 
-    def _root_dir(self):
-        return (
-            getattr(self.orchestrator.orchestrator_config, "directory", None)
-            if self.orchestrator is not None
-            else None
-        )
-
     def sessions(self):
         return tuple(
             SessionRow.from_session(session)
@@ -161,9 +154,7 @@ class LocalAppClient(AppClient):
         return SessionRow.from_session(session)
 
     def session(self, session_id):
-        return LocalSessionClient(
-            self.registry.resolve(session_id), root_dir=self._root_dir()
-        )
+        return LocalSessionClient(self.registry.resolve(session_id))
 
 
 class LocalSessionClient(SessionClient):
@@ -171,9 +162,8 @@ class LocalSessionClient(SessionClient):
     the serve handlers serialize. A subscription handler runs on the thread
     that publishes, like a bus subscriber."""
 
-    def __init__(self, session, root_dir=None):
+    def __init__(self, session):
         self.session = session
-        self.root_dir = root_dir
         # One teardown callable per active subscription; close() drains it.
         self._teardowns = {}
 
@@ -197,7 +187,7 @@ class LocalSessionClient(SessionClient):
     def task_detail(self, key):
         task = self._workflow.task_index.resolve(key)
         return self._workflow.task_info(
-            task, full=True, evaluate=True, root_dir=self.root_dir
+            task, full=True, evaluate=True, root_dir=self._workflow.root_dir
         )
 
     def record_detail(self, batch_uuid, key):

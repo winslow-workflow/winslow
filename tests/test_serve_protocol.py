@@ -337,6 +337,7 @@ def test_snapshot_session_rows_carry_display_and_progress_fields(e2e_repo):
         assert row["instance_name"] == workflow.instance_name
         assert row["started_at"] == session.start
         assert row["task_status_summary"]["total"] > 0
+        assert row["root_dir"] == workflow.root_dir
 
 
 # --- batch options ---------------------------------------------------------------

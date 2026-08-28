@@ -118,6 +118,9 @@ versions may include breaking changes).
   `WorkflowConfirmationRenderContext.workflow` is the workflow name; it carried the class as
   `workflow_kls`. `TaskDetailRenderContext` carries `client` and `task_key` for the live log stream
   (`log_key` is gone), and its `transient_snapshots` and `cache_snapshots` key by phase name strings.
+  `SessionRow` and `TaskDetailRenderContext` carry `root_dir`, the project root of the serving
+  process, so the source-path display works over a wire client; the task detail widget reads it from
+  its context instead of the app orchestrator.
 - Breaking for plugin authors: the task overview widget is `TaskInfoPane`; it was `TaskInfo`, which
   shadowed the `TaskInfo` value class.
 - Breaking for plugin authors: the workflow screen messages carry values only. `ExecutionStatusChanged`

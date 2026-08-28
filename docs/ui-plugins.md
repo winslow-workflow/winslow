@@ -22,7 +22,7 @@ session port client and value shapes (see [the payload rule](#the-payload-rule))
 | --- | --- | --- |
 | Dashboard | `DashboardRenderContext` | `client` (the `AppClient`), `descriptors` |
 | Workflow | `WorkflowRenderContext` | `client` (the `SessionClient`), `session`, `snapshot`, `roster`, `task_statuses` |
-| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs`, `client`, `task_key` |
+| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs`, `client`, `task_key`, `root_dir` |
 | Confirmation modal | `WorkflowConfirmationRenderContext` | `workflow` (the workflow name), `form_values` |
 
 The workflow context attributes:

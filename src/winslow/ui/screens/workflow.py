@@ -355,6 +355,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
                 registry=self.plugin_registry,
                 client=self.client,
                 task_key=key,
+                root_dir=self.session_row.root_dir,
             )
         )
 

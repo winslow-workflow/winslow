@@ -15,6 +15,7 @@ class TaskDetail(BaseModal):
         task_key=None,
         transient_snapshots=None,
         cache_snapshots=None,
+        root_dir=None,
         *args,
         **kwargs,
     ):
@@ -25,6 +26,7 @@ class TaskDetail(BaseModal):
         self._task_key = task_key
         self._transient_snapshots = transient_snapshots
         self._cache_snapshots = cache_snapshots
+        self._root_dir = root_dir
         super().__init__(*args, **kwargs)
 
     @property
@@ -39,5 +41,6 @@ class TaskDetail(BaseModal):
             task_key=self._task_key,
             transient_snapshots=self._transient_snapshots,
             cache_snapshots=self._cache_snapshots,
+            root_dir=self._root_dir,
         )
         yield from self.registry.compose_slot(SLOT, context)

@@ -100,6 +100,9 @@ def test_sessions_serves_a_row_per_live_session(e2e_repo):
     assert row.status == "ACTIVE"
     assert row.display_name == workflow.get_display_name()
     assert row.instance_name == workflow.instance_name
+    # The server root travels with the row, so a client shortens the
+    # server source paths (see TaskDetailRenderContext.root_dir).
+    assert row.root_dir == str(e2e_repo)
     completed, problematic, total = session.task_status_summary
     assert row.task_status_summary.total == total
     assert row.task_status_summary.completed == completed
