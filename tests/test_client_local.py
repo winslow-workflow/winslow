@@ -409,6 +409,11 @@ def test_session_log_lane_emits_the_logger_lines(e2e_repo):
         lambda: any("hello from the session logger" in e.line for e in lines),
         "no session log event",
     )
+    # A full log view carries the timestamped format: a timestamp prefixes
+    # the level and the message (see INTERACTIVE_FORMATTER).
+    line = next(e.line for e in lines if "hello from the session logger" in e.line)
+    assert line.endswith("WARNING - hello from the session logger")
+    assert line != "WARNING - hello from the session logger"
     client.unsubscribe(SessionLogEvent, lines.append)
     seen = len(lines)
     workflow.logger.warning("after the unsubscribe")
@@ -463,10 +468,13 @@ def test_task_log_lane_serves_backlog_then_live_lines(e2e_repo, monkeypatch):
     run_to_completion(workflow, client, alpha)
     assert len(events) == seen
 
-    # A fresh subscribe now serves the buffered lines as its backlog.
+    # A fresh subscribe now serves the buffered lines as its backlog, in the
+    # same timestamped format as the live lane.
     late = []
     backlog = client.subscribe_task_log(alpha.identity_key, late.append)
-    assert any("alpha task-log hello" in line for line in backlog)
+    line = next(line for line in backlog if "alpha task-log hello" in line)
+    assert line.endswith("WARNING - alpha task-log hello")
+    assert line != "WARNING - alpha task-log hello"
 
 
 def test_close_disconnects_every_subscription(e2e_repo):

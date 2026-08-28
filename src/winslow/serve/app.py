@@ -18,7 +18,7 @@ from winslow.cache import declared_entries
 from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
 from winslow.filter.builtin import enforce_builtin_only
-from winslow.logger import INLINE_FORMATTER, LOGGER, get_task_dispatcher
+from winslow.logger import INTERACTIVE_FORMATTER, LOGGER, get_task_dispatcher
 from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.wire import (
@@ -510,7 +510,7 @@ class Connection:
                 "type": FrameTypes.TASK_LOG_BACKLOG,
                 "session_id": session.session_id,
                 "task_key": task_key,
-                "lines": [INLINE_FORMATTER.format(record) for record in backlog],
+                "lines": [INTERACTIVE_FORMATTER.format(record) for record in backlog],
             }
         )
 

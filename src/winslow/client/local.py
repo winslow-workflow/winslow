@@ -9,7 +9,11 @@ from winslow.cache import declared_entries
 from winslow.client.base import AppClient, SessionClient
 from winslow.exceptions import MisconfigurationError
 from winslow.filter.builtin import enforce_builtin_only
-from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
+from winslow.logger import (
+    INTERACTIVE_FORMATTER,
+    InteractiveLogHandler,
+    get_task_dispatcher,
+)
 from winslow.model import (
     CachesPayload,
     CacheUpdatedEvent,
@@ -260,9 +264,9 @@ class LocalSessionClient(SessionClient):
             workflow.add_cache_listener(listener)
             teardown = partial(workflow.remove_cache_listener, listener)
         elif topic is SessionLogEvent:
-            log_handler = InteractiveLogHandler(
-                partial(_emit_session_log, handler), formatter=INLINE_FORMATTER
-            )
+            # The default formatter is INTERACTIVE: a full log view carries
+            # timestamps; only an inline cell uses the short form.
+            log_handler = InteractiveLogHandler(partial(_emit_session_log, handler))
             workflow.logger.addHandler(log_handler)
             teardown = partial(workflow.logger.removeHandler, log_handler)
         else:
@@ -280,10 +284,7 @@ class LocalSessionClient(SessionClient):
         if key in self._teardowns:
             return self._backlog(task_key)
         task = self._workflow.task_index.resolve(task_key)
-        log_handler = InteractiveLogHandler(
-            partial(_emit_task_log, handler, task_key),
-            formatter=INLINE_FORMATTER,
-        )
+        log_handler = InteractiveLogHandler(partial(_emit_task_log, handler, task_key))
         dispatcher = get_task_dispatcher()
         # The listener attaches before the backlog read, so a line in that
         # window duplicates rather than disappears.
@@ -296,7 +297,7 @@ class LocalSessionClient(SessionClient):
     def _backlog(self, task_key):
         task = self._workflow.task_index.resolve(task_key)
         backlog = get_task_dispatcher().buffered(task.log_key)
-        return tuple(INLINE_FORMATTER.format(record) for record in backlog)
+        return tuple(INTERACTIVE_FORMATTER.format(record) for record in backlog)
 
     def unsubscribe_task_log(self, task_key, handler):
         teardown = self._teardowns.pop((TaskLogEvent, task_key, handler), None)

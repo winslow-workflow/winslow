@@ -27,7 +27,7 @@ from winslow.events import (
     SessionEndedEvent,
     TaskStatusEvent,
 )
-from winslow.logger import INLINE_FORMATTER, InteractiveLogHandler, get_task_dispatcher
+from winslow.logger import InteractiveLogHandler, get_task_dispatcher
 from winslow.model import (
     CacheUpdatedEvent,
     SessionLogEvent,
@@ -91,9 +91,9 @@ class EventBridge:
         )
         # The session_log lane (see _on_session_log_line): a second handler,
         # not a bus subscription, because workflow.logger is a plain logger.
-        self._session_log_handler = InteractiveLogHandler(
-            self._on_session_log_line, formatter=INLINE_FORMATTER
-        )
+        # The default INTERACTIVE format matches the local adapter, so both
+        # transports emit identical lines (the parity rule).
+        self._session_log_handler = InteractiveLogHandler(self._on_session_log_line)
         # task_key -> {"log_key": str, "handler": InteractiveLogHandler,
         # "refcount": int}. More than one connection can subscribe to the
         # same task; the bridge keeps one dispatcher listener per task and
@@ -133,9 +133,7 @@ class EventBridge:
         if entry is not None:
             entry["refcount"] += 1
             return
-        handler = InteractiveLogHandler(
-            partial(self._on_task_log_line, task_key), formatter=INLINE_FORMATTER
-        )
+        handler = InteractiveLogHandler(partial(self._on_task_log_line, task_key))
         get_task_dispatcher().add_listener(log_key, handler)
         self._task_log_listeners[task_key] = {
             "log_key": log_key,

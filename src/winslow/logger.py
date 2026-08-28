@@ -97,7 +97,9 @@ class SessionLogBuffer(logging.Handler):
 
     def __init__(self, maxlen=200):
         super().__init__()
-        self.setFormatter(INLINE_FORMATTER)
+        # The backlog feeds the same view as the live session log lane, so
+        # both use the timestamped format (see INTERACTIVE_FORMATTER).
+        self.setFormatter(INTERACTIVE_FORMATTER)
         self.lines = collections.deque(maxlen=maxlen)
 
     def emit(self, record):
