@@ -13,7 +13,6 @@ from logging.handlers import QueueHandler, QueueListener
 
 from winslow.settings import config
 from winslow.util import safe_repr
-from rich.logging import RichHandler
 
 
 LOGGER = logging.getLogger("winslow")
@@ -55,31 +54,44 @@ if LOG_UTC:
 INLINE_FORMATTER = logging.Formatter("%(levelname)s - %(message)s")
 
 
+def _console_handler():
+    """The console handler: rich when a terminal shows the output and the
+    package is installed, a plain stream handler otherwise (a pipe, a pod,
+    a headless install without rich)."""
+    if sys.stdout.isatty():
+        try:
+            from rich.logging import RichHandler
+        except ImportError:
+            pass
+        else:
+            formatter = logging.Formatter(
+                "%(asctime)s  %(message)s", datefmt=LOG_DATEFMT
+            )
+            if LOG_UTC:
+                formatter.converter = time.gmtime
+            handler = RichHandler(rich_tracebacks=True, show_time=False)
+            handler.setFormatter(formatter)
+            return handler
+    handler = logging.StreamHandler()
+    handler.setFormatter(INTERACTIVE_FORMATTER)
+    return handler
+
+
 def initialize_logging(debug_mode: bool):
     """Initialize the logging for the given debug mode."""
     logging_level = logging.DEBUG if debug_mode else logging.INFO
 
-    if sys.stdout.isatty():
-        formatter = logging.Formatter("%(asctime)s  %(message)s", datefmt=LOG_DATEFMT)
-        if LOG_UTC:
-            formatter.converter = time.gmtime
-        handler = RichHandler(rich_tracebacks=True, show_time=False)
-        handler.setFormatter(formatter)
-    else:
-        handler = logging.StreamHandler()
-        handler.setFormatter(INTERACTIVE_FORMATTER)
-
     logging.basicConfig(
         level=logging_level,
-        handlers=[handler],
+        handlers=[_console_handler()],
     )
 
     LOGGER.setLevel(logging_level)
 
 
-class InteractiveLogHandler(RichHandler):
+class InteractiveLogHandler(logging.Handler):
     def __init__(self, log_method=None, formatter=None):
-        logging.Handler.__init__(self)
+        super().__init__()
         self.log_method = log_method
         self.formatter = formatter or INTERACTIVE_FORMATTER
 
