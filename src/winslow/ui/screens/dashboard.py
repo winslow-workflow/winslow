@@ -11,8 +11,10 @@ from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
-from winslow.ui.reads import port_read
+from winslow.ui.reads import READ_FAILURES, port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
+
+SESSION_ADOPTION_INTERVAL = 2
 
 
 class DashboardScreen(SlottedScreen):
@@ -49,6 +51,9 @@ class DashboardScreen(SlottedScreen):
 
         await self._populate_restorable()
 
+        await self._adopt_sessions()
+        self.set_interval(SESSION_ADOPTION_INTERVAL, self._schedule_session_adoption)
+
         # Start each auto_init workflow without a form: create_session fills
         # every value from the parsed base of the workflow. auto_init is the
         # duty of the session owner, so a wire client starts none (see
@@ -62,6 +67,36 @@ class DashboardScreen(SlottedScreen):
                     workflow_name=descriptor.workflow,
                     form_values=FormValues(),
                 )
+
+    def _schedule_session_adoption(self):
+        # exclusive: a new poll replaces a slow one instead of queueing.
+        self.run_worker(
+            self._adopt_sessions(), exclusive=True, group="session-adoption"
+        )
+
+    async def _adopt_sessions(self):
+        """Give this client a row and a screen for every live session it does
+        not show: another client of the serve process created them. A session
+        this client creates enters through _start_session instead."""
+        rows = await asyncio.to_thread(
+            port_read, self, self.client.sessions, quiet=True
+        )
+        if rows is None:
+            return
+        widgets = list(self.query(SessionRow).results())
+        if any(widget.session_id is None for widget in widgets):
+            # A create of this client is in flight; the next poll adopts.
+            return
+        known = {widget.session_id for widget in widgets}
+        for row in rows:
+            if row.session_id in known or row.status in ("ENDED", "ERROR"):
+                continue
+            try:
+                await self.app.adopt_session(row)
+            except READ_FAILURES:
+                # The session ended between the read and the adoption; the
+                # poll reads again.
+                continue
 
     @on(OptionList.OptionSelected, "#workflow-selector")
     def on_workflow_selected(self, event):

@@ -141,6 +141,16 @@ class Winslow(App):
         row_widget.complete(session_row)
         self._connect_session(session_row)
 
+    async def adopt_session(self, session_row):
+        """One live session another client created: give this client its
+        installed screen and dashboard row, from the SessionRow value alone.
+        The screen installs first, so a failed read leaves no orphan row."""
+        self._connect_session(session_row)
+        row_widget = await self.dashboard.add_pending_session(
+            session_row.instance_name
+        )
+        row_widget.complete(session_row)
+
     def _connect_session(self, session_row):
         """Install the workflow screen over one SessionClient and wire the
         session-ended lane that moves the dashboard row to the history. The
