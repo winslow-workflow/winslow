@@ -737,9 +737,7 @@ class Orchestrator(_ConfigBase):
         self.logger.info(f"Connected to {config.url}")
 
         setup_run_logging()
-        self.app = Winslow(
-            orchestrator_config=config, orchestrator=self, client=client
-        )
+        self.app = Winslow(client=client, logger=self.logger, owns_sessions=False)
         try:
             self.app.run()
         finally:
@@ -766,9 +764,19 @@ class Orchestrator(_ConfigBase):
         # headless run keeps the console output.
         setup_run_logging()
 
-        self.app = Winslow(
-            orchestrator_config=self.orchestrator_config,
+        from winslow.client import LocalAppClient
+        from winslow.session import SessionRegistry
+        from winslow.state import create_state_store
+
+        # The composition root of the local TUI: this process owns the registry
+        # and the durable store (see winslow.state); the app consumes the port.
+        local_client = LocalAppClient(
+            SessionRegistry(),
             orchestrator=self,
+            state_store=create_state_store(self.orchestrator_config),
+        )
+        self.app = Winslow(
+            client=local_client, logger=self.logger, owns_sessions=True
         )
 
         # app.run() blocks until the TUI stops. Then flush and stop the

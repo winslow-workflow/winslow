@@ -10,10 +10,7 @@ from textual.widgets import Footer, Header, Button
 from winslow.ui import screens
 from winslow.ui.store_adapter import SessionLifecycleEvent
 from winslow.actions import EndSession
-from winslow.client import LocalAppClient
 from winslow.events import SessionEndedEvent
-from winslow.session import SessionRegistry
-from winslow.state import create_state_store
 
 
 def session_screen_name(session_id):
@@ -21,11 +18,10 @@ def session_screen_name(session_id):
 
 
 class Winslow(App):
-    """The TUI app: the composition root. Every screen consumes the port
-    surface alone (see winslow.client). Locally the app owns the session
-    registry and the state store and builds the LocalAppClient over them;
-    `winslow connect` passes the wire client instead, and the app touches
-    no local session state."""
+    """The TUI app: a consumer of the session port. Every screen reads,
+    subscribes and acts through the AppClient (see winslow.client). The
+    orchestrator handlers compose the transport and pass it in (see
+    Orchestrator._handle_interactive_run and _handle_connect)."""
 
     BINDINGS = [
         ("ctrl+d", "switch_mode('dashboard')", "Dashboard"),
@@ -44,25 +40,16 @@ class Winslow(App):
         "styles/modals.tcss",
     ]
 
-    def __init__(self, orchestrator, orchestrator_config, client=None):
-        self.orchestrator = orchestrator
-
-        if client is None:
-            self.sessions = SessionRegistry()
-            # One durable store for every session of the app: manifests, task
-            # snapshots and batch records live here (see winslow.state).
-            self.state_store = create_state_store(orchestrator_config)
-            # The session port of this process. Every screen reads, subscribes
-            # and acts through it (see winslow.client).
-            client = LocalAppClient(
-                self.sessions, orchestrator=orchestrator, state_store=self.state_store
-            )
-        else:
-            # A wire client: the serve process owns the registry and the store.
-            self.sessions = None
-            self.state_store = None
+    def __init__(self, client, logger, owns_sessions):
+        # The session port of this process. Every screen reads, subscribes
+        # and acts through it (see winslow.client).
         self.client = client
-
+        # The name is w_logger, to prevent a clash with the _logger of the
+        # Textual App.
+        self.w_logger = logger
+        # True for the local TUI, which runs in the process that owns the
+        # sessions. auto_init falls to that process (see DashboardScreen).
+        self.owns_sessions = owns_sessions
         super().__init__()
 
     def clear_selection(self):
@@ -73,13 +60,7 @@ class Winslow(App):
 
     @property
     def logger(self):
-        return self.orchestrator.logger
-
-    @property
-    def owns_sessions(self):
-        """True for the local TUI, which owns the session registry. A wire
-        client leaves auto_init to the serve process."""
-        return self.sessions is not None
+        return self.w_logger
 
     def compose(self):
         """Create the child widgets of the app."""
