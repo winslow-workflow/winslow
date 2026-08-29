@@ -45,8 +45,6 @@ class Winslow(App):
     ]
 
     def __init__(self, orchestrator, orchestrator_config, client=None):
-        # A private name, to prevent a clash if Textual adds a config object.
-        self._winslow_config = orchestrator_config
         self.orchestrator = orchestrator
 
         if client is None:
@@ -76,6 +74,12 @@ class Winslow(App):
     @property
     def logger(self):
         return self.orchestrator.logger
+
+    @property
+    def owns_sessions(self):
+        """True for the local TUI, which owns the session registry. A wire
+        client leaves auto_init to the serve process."""
+        return self.sessions is not None
 
     def compose(self):
         """Create the child widgets of the app."""

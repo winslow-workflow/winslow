@@ -6,7 +6,8 @@ import pytest
 from winslow.constants import Mode
 from winslow.events import TaskStatusEvent
 from winslow.exceptions import RegistrationError
-from winslow.session import Session
+from winslow.orchestrator import Orchestrator, OrchestratorConfig
+from winslow.session import Session, SessionRegistry
 from winslow.state import StaleSweeper
 
 from harness import build_workflow
@@ -123,3 +124,27 @@ def test_an_end_persistence_failure_does_not_break_the_end(
     monkeypatch.setattr(state_store, "mark_ended", _explode)
     session.end()
     assert session.has_ended
+
+
+def test_serve_startup_creates_the_auto_init_sessions(
+    e2e_repo, state_store, monkeypatch
+):
+    """auto_init is the duty of the session owner: the serve startup creates
+    the session, so a connecting client never starts a second one."""
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["serve"], namespace=OrchestratorConfig()
+    )
+    orchestrator = Orchestrator(config, directory=e2e_repo, unknown_args=unknown)
+    orchestrator.workflow_registry.collect_classes(e2e_repo)
+    monkeypatch.setattr(
+        orchestrator.workflow_registry["my-workflow"], "auto_init", True
+    )
+    registry = SessionRegistry()
+
+    orchestrator._auto_init_sessions(registry, state_store)
+
+    (session,) = registry.sessions()
+    assert session.workflow.instance_name == "my-workflow"
+    assert session.status.name == "ACTIVE"
+    (manifest,) = state_store.list_open_manifests()
+    assert manifest.session_id == session.session_id

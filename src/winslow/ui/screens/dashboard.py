@@ -50,7 +50,11 @@ class DashboardScreen(SlottedScreen):
         await self._populate_restorable()
 
         # Start each auto_init workflow without a form: create_session fills
-        # every value from the parsed base of the workflow.
+        # every value from the parsed base of the workflow. auto_init is the
+        # duty of the session owner, so a wire client starts none (see
+        # Orchestrator._auto_init_sessions).
+        if not self.app.owns_sessions:
+            return
         for descriptor in self.descriptors.workflows:
             if descriptor.auto_init:
                 self.logger.info(f"auto_init: initializing {descriptor.workflow}")

@@ -684,16 +684,40 @@ class Orchestrator(_ConfigBase):
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
+        registry = SessionRegistry()
+        state_store = create_state_store(config)
+        self._auto_init_sessions(registry, state_store)
         app = create_app(
-            SessionRegistry(),
+            registry,
             Credentials.from_env(config.host),
             orchestrator=self,
-            state_store=create_state_store(config),
+            state_store=state_store,
             ws=not config.no_ws,
             mcp=config.mcp,
             base_url=f"http://{config.host}:{config.port}",
         )
         uvicorn.run(app, host=config.host, port=config.port)
+
+    def _auto_init_sessions(self, registry, state_store):
+        """One session per auto_init workflow: the process that owns the
+        sessions runs auto_init, so a connecting client starts none. A
+        failed initialization logs and skips; the process serves on."""
+        from winslow.session import create_session
+
+        for name in self.workflow_registry.names:
+            workflow_kls = self.workflow_registry[name]
+            if not workflow_kls.auto_init:
+                continue
+            if not workflow_kls.should_be_initialized(self.orchestrator_config):
+                continue
+            self.logger.info(f"auto_init: initializing {name}")
+            try:
+                create_session(self, state_store, registry, name)
+            except Exception:
+                self.logger.error(
+                    f"auto_init: the initialization of '{name}' failed.",
+                    exc_info=True,
+                )
 
     def _handle_connect(self):
         """The remote TUI: the same app over the wire transport of the
