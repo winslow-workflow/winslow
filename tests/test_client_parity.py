@@ -66,18 +66,19 @@ TIME_KEYS = frozenset(
 LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC")
 BATCH_UUID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
 ADDRESS = re.compile(r"0x[0-9a-f]+")
-DECIMAL = re.compile(r"\d+\.\d+")
+# Duration shapes only: a bare decimal is data and must compare exactly.
+DURATION = re.compile(r"\d+\.\d+s\b")
 
 
 def normalize_text(text, names):
     """One string with every run-specific identifier replaced: the named ids
-    first, then the generic timestamp, uuid, address and decimal shapes."""
+    first, then the generic timestamp, uuid, address and duration shapes."""
     for real, placeholder in names.items():
         text = text.replace(real, placeholder)
     text = LOG_TIMESTAMP.sub("<ts>", text)
     text = BATCH_UUID.sub("<uuid>", text)
     text = ADDRESS.sub("<addr>", text)
-    return DECIMAL.sub("<n>", text)
+    return DURATION.sub("<n>s", text)
 
 
 def canonical(value, names, key=None):
@@ -149,7 +150,7 @@ class StreamRecorder:
         except RequestError as exc:
             self.reads[name] = (type(exc).__name__, str(exc))
         else:
-            self.reads[name] = ("no refusal", None)
+            raise AssertionError(f"{name} did not refuse")
 
     def gist_refusal(self, name, call):
         """The refusal record for a reason the transports word differently:
@@ -159,7 +160,7 @@ class StreamRecorder:
         except RequestError as exc:
             self.reads[name] = (type(exc).__name__, "has ended" in str(exc))
         else:
-            self.reads[name] = ("no refusal", None)
+            raise AssertionError(f"{name} did not refuse")
 
     # --- the deterministic scenario checkpoints --------------------------------
 
@@ -219,7 +220,7 @@ def drive_scenario(app, registry, monkeypatch):
     client = app.session(row.session_id)
     workflow = registry.get(row.session_id).workflow
     # The cache lines are info level; the session log lane must carry them.
-    workflow.logger.setLevel(logging.INFO)
+    monkeypatch.setattr(workflow.logger, "level", logging.INFO)
     gate_refresh(workflow, monkeypatch)
 
     roster = client.roster()
@@ -305,9 +306,21 @@ def drive_scenario(app, registry, monkeypatch):
     recorder.read(
         "apply_filter_history", client.apply_filter("refresh", scope="history")
     )
+    recorder.read(
+        "log_tail_after_end", client.log_tail(gated_ack.batch_uuid, refresh_key)
+    )
+    recorder.read(
+        "record_detail_after_end",
+        client.record_detail(gated_ack.batch_uuid, refresh_key),
+    )
+    recorder.read("batch_options_after_end", client.batch_options())
+    recorder.read("session_params_after_end", client.session_params())
     recorder.refusal("roster_after_end", lambda: client.roster())
     recorder.refusal("task_detail_after_end", lambda: client.task_detail(refresh_key))
     recorder.gist_refusal("caches_after_end", lambda: client.caches())
+    recorder.gist_refusal(
+        "cache_value_after_end", lambda: client.cache_value("weather", "forecast")
+    )
     recorder.read("run_after_end_ack", client.submit(RunTasks(keys=(refresh_key,))))
 
     client.close()
