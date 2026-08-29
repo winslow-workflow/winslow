@@ -171,6 +171,9 @@ class CachesPane(SearchFlowMixin, Widget):
         self._cards = {}
         # The latest CacheCard per name, for the overview pane selection.
         self._card_values = {}
+        # The cache the overview shows: every refresh pushes its fresh card
+        # (see _apply).
+        self._selected_cache = None
         self._search = ""
         self._init_search()
         self._scope = _SCOPE_ALL
@@ -270,6 +273,10 @@ class CachesPane(SearchFlowMixin, Widget):
                     row.error = info.error
                     row.log_line = card.values.get(info.entry_name) or ""
         self._apply_visibility()
+        # The card reactives of the overview skip an unchanged value, so a
+        # quiet tick repaints nothing there.
+        if card := self._card_values.get(self._selected_cache):
+            self.screen.refresh_cache_detail(card)
 
     # --- filters ----------------------------------------------------------
 
@@ -328,6 +335,7 @@ class CachesPane(SearchFlowMixin, Widget):
 
     def _select_cache(self, cache_name):
         if card := self._card_values.get(cache_name):
+            self._selected_cache = cache_name
             self.screen.show_cache_detail(card)
 
     @on(CacheCardWidget.Selected)

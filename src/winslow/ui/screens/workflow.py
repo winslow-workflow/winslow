@@ -301,8 +301,13 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.activate_plugin_tab(TaskOverviewPlugin)
 
     def show_cache_detail(self, card):
-        self._dispatch_to_slot(Slots.TASK_OVERVIEW, CacheSelected(card))
+        self.refresh_cache_detail(card)
         self.activate_plugin_tab(CacheOverviewPlugin)
+
+    def refresh_cache_detail(self, card):
+        """Update the overview without bringing its tab forward: the caches
+        refresh pushes fresh state into an already-open detail."""
+        self._dispatch_to_slot(Slots.TASK_OVERVIEW, CacheSelected(card))
 
     @on(TaskRow.Selected)
     async def handle_task_selection(self, event):

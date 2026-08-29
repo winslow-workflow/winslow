@@ -75,5 +75,34 @@ WorkflowScreen {
                 height: auto;
             }
         }
+
+        CacheDependencies {
+            height: auto;
+            padding: 0 1 1 1;
+
+            .cache-dependencies {
+                height: auto;
+            }
+
+            .entry-name {
+                margin-top: 1;
+                color: $text-muted;
+            }
+
+            CacheDependencyRow {
+                height: 1;
+                padding-left: 2;
+
+                .icon {
+                    width: 2;
+                }
+
+                &.warm .icon      { color: $success; }
+                &.stale .icon     { color: $warning; }
+                &.computing .icon { color: $primary-lighten-2; }
+                &.errored .icon   { color: $error; }
+                &.cold .icon      { color: $text-muted; }
+            }
+        }
     }
 }

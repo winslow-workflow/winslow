@@ -29,7 +29,7 @@ CachesPane {
     }
 }
 
-CacheCard {
+CacheCardWidget {
     height: auto;
     border: round $primary-lighten-3;
     margin: 1 1 0 1;

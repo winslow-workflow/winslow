@@ -1,10 +1,10 @@
 import inspect
 
 from textual import on
-from textual.reactive import reactive
+from textual.reactive import reactive, var
 from textual.widget import Widget
 from textual.widgets import Label, Rule
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.caches import CachesPanePlugin
@@ -52,6 +52,66 @@ class CacheSummary(Widget):
         yield Vertical(classes="cache-attributes")
 
 
+class CacheDependencyRow(Widget):
+    """One declared dependency of one entry: the state dot of the dependency
+    and its name (compare TaskDependencyRow)."""
+
+    def __init__(self, name, state, *args, **kwargs):
+        # The names carry a w_ prefix, to prevent a clash with the _name and
+        # state attributes of Textual widgets.
+        self.w_name = name
+        self.w_state = state
+        super().__init__(*args, **kwargs)
+
+    def on_mount(self):
+        if self.w_state is not None:
+            self.add_class(str(self.w_state))
+
+    def compose(self):
+        with Horizontal(classes="dependency-row"):
+            yield Label("●", classes="icon")
+            yield Label(self.w_name, classes="name")
+
+
+class CacheDependencies(Widget):
+    """The entry dependencies of the selected cache, grouped per entry: one
+    row per declared dependency, with the state of the dependency."""
+
+    card = var(None)
+
+    async def on_mount(self):
+        self.border_title = "dependencies"
+
+    async def watch_card(self, card):
+        """Await the removal before the mount, like CacheSummary: a rapid
+        reselection must not interleave the rows of two caches."""
+        if card is None:
+            return
+        container = self.query_one(".cache-dependencies")
+        await container.remove_children()
+        states = {info.entry_name: info.state for info in card.info}
+        edges = [
+            info
+            for info in sorted(card.info, key=lambda info: info.entry_name)
+            if info.depends_on
+        ]
+        if not edges:
+            self.add_class("hidden")
+            return
+        self.remove_class("hidden")
+        widgets = []
+        for info in edges:
+            widgets.append(Label(info.entry_name, classes="entry-name"))
+            widgets.extend(
+                CacheDependencyRow(name, states.get(name))
+                for name in info.depends_on
+            )
+        await container.mount(*widgets)
+
+    def compose(self):
+        yield Vertical(classes="cache-dependencies")
+
+
 class CacheOverview(Widget):
     card = reactive(None)
 
@@ -65,12 +125,14 @@ class CacheOverview(Widget):
         self.query("#cache-overview-placeholder").add_class("hidden")
         self.query(".cache-overview").remove_class("hidden")
         self.query_one(CacheSummary).card = card
+        self.query_one(CacheDependencies).card = card
 
     def compose(self):
         with Vertical(classes="round centered", id="cache-overview-placeholder"):
             yield Label("Select a cache to see the details.")
         with VerticalScroll(classes="cache-overview hidden"):
             yield CacheSummary(classes="round")
+            yield CacheDependencies(classes="round hidden")
 
 
 class CacheOverviewPlugin(UIPlugin):
