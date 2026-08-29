@@ -158,12 +158,13 @@ class Winslow(App):
 
     def _connect_session(self, session_row):
         """Install the workflow screen over one SessionClient and wire the
-        session-ended lane that moves the dashboard row to the history."""
+        session-ended lane that moves the dashboard row to the history. The
+        screen subscribes itself at its first mount (see WorkflowScreen.connect):
+        an unmounted screen cannot receive a post from a worker thread."""
         session_id = session_row.session_id
         client = self.client.session(session_id)
         screen = screens.WorkflowScreen(client, session_row)
         self.install_screen(screen, name=session_screen_name(session_id))
-        screen.connect()
 
         # The end event moves the dashboard row to the history. The bus
         # close at session end disconnects the lane.

@@ -1,14 +1,16 @@
 """The Textual messages of the workflow screen. Every payload is a value
 from the session port: an identity key, a status, a model dataclass (see
-docs/ui-plugins.md). A pane never receives a live core object."""
+docs/ui-plugins.md). A pane never receives a live core object.
+
+Every message is addressed to its pane directly (see _dispatch_to_slot), so
+none bubbles: a bubbling message reaches every ancestor pump, and Textual
+dispatches by handler name there."""
 
 from textual.message import Message
 
 
-class TaskStatusChanged(Message):
+class TaskStatusChanged(Message, bubble=False):
     """Carries the identity key of the task (see docs/ui-plugins.md)."""
-
-    BUBBLE = False
 
     def __init__(self, key, status):
         self.key = key
@@ -16,29 +18,23 @@ class TaskStatusChanged(Message):
         super().__init__()
 
 
-class BatchCreated(Message):
+class BatchCreated(Message, bubble=False):
     """Carries the BatchInfo value of the created batch."""
 
-    BUBBLE = False
-
     def __init__(self, info):
         self.info = info
         super().__init__()
 
 
-class BatchCompleted(Message):
+class BatchCompleted(Message, bubble=False):
     """Carries the BatchInfo value of the completed batch."""
 
-    BUBBLE = False
-
     def __init__(self, info):
         self.info = info
         super().__init__()
 
 
-class ExecutionStatusChanged(Message):
-    BUBBLE = False
-
+class ExecutionStatusChanged(Message, bubble=False):
     def __init__(self, batch_uuid, task_key, status):
         self.batch_uuid = batch_uuid
         self.task_key = task_key
@@ -46,9 +42,7 @@ class ExecutionStatusChanged(Message):
         super().__init__()
 
 
-class TaskLogUpdated(Message):
-    BUBBLE = False
-
+class TaskLogUpdated(Message, bubble=False):
     def __init__(self, batch_uuid, task_key, line):
         self.batch_uuid = batch_uuid
         self.task_key = task_key
@@ -56,32 +50,24 @@ class TaskLogUpdated(Message):
         super().__init__()
 
 
-class TaskSelected(Message):
-    BUBBLE = False
-
+class TaskSelected(Message, bubble=False):
     def __init__(self, task_info):
         self.task_info = task_info
         super().__init__()
 
 
-class SessionEnded(Message):
+class SessionEnded(Message, bubble=False):
     """The session archived. A pane stops its live machinery, for example a
     refresh timer."""
 
-    BUBBLE = False
 
-
-class CacheUpdated(Message):
+class CacheUpdated(Message, bubble=False):
     """Any cache event. The pane repaints from a fresh caches read, so the
     message carries nothing."""
 
-    BUBBLE = False
 
-
-class CacheSelected(Message):
+class CacheSelected(Message, bubble=False):
     """Carries the CacheCard value of the selected cache."""
-
-    BUBBLE = False
 
     def __init__(self, card):
         self.card = card

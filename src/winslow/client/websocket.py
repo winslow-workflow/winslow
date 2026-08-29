@@ -357,7 +357,16 @@ class Wire:
             except ValueError:
                 continue
             if isinstance(frame, dict):
-                self._route(frame)
+                # A raising handler must not kill the receiver: a dead
+                # receiver blocks every read until its timeout.
+                try:
+                    self._route(frame)
+                except Exception:
+                    LOGGER.error(
+                        f"A handler failed on a {frame.get('type')!r} frame - "
+                        f"the frame is dropped.",
+                        exc_info=True,
+                    )
 
     def _reconnect(self):
         """Reopen the socket with backoff, then resubscribe every lane. A
@@ -782,8 +791,16 @@ class RemoteSessionClient(SessionClient):
         else:
             with self._lock:
                 handlers = tuple(self._handlers.get(type(event), ()))
+        # The same isolation as the session bus: an observer must not break
+        # the operation it observes (see SessionBus).
         for handler in handlers:
-            handler(event)
+            try:
+                handler(event)
+            except Exception:
+                LOGGER.error(
+                    f"Subscriber {handler!r} failed on {type(event).__name__}.",
+                    exc_info=True,
+                )
 
 
 def _payload_of_snapshot(frame):

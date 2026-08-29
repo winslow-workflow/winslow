@@ -7,7 +7,7 @@ from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
 
 class TaskBar(Widget):
     """The header controls of the Tasks pane. The checkboxes start from the
-    live batch option values of the port (see SessionClient.batch_options)."""
+    batch options mirror of the screen (see WorkflowScreen.batch_options)."""
 
     def __init__(self, options, *args, **kwargs):
         self._options = options

@@ -13,7 +13,9 @@ class TasksPaneWidget(Widget):
     DEFAULT_CSS = package_css(__package__, "_pane_header.tcss", "tasks_pane.tcss")
 
     def __init__(self, context, *args, **kwargs):
-        self._context = context
+        # The name is w_context, to prevent a clash with the _context
+        # context manager of the Textual message pump.
+        self.w_context = context
         self._rows_by_key: dict = {}
         super().__init__(*args, **kwargs)
 
@@ -36,9 +38,11 @@ class TasksPaneWidget(Widget):
             row.log_line = event.line
 
     def compose(self):
-        context = self._context
+        context = self.w_context
+        # The screen keeps the batch options of this client (see
+        # WorkflowScreen.batch_options), so the compose needs no port read.
         yield TaskBar(
-            options=context.client.batch_options(),
+            options=self.screen.batch_options,
             classes="task-bar round pane-header",
         )
         yield TaskList(

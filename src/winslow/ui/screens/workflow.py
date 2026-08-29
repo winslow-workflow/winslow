@@ -32,6 +32,7 @@ from winslow.ui.workflow_events import (
 )
 
 from winslow.actions import CheckTasks, RunTasks
+from winslow.exceptions import RegistrationError
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
@@ -132,21 +133,31 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     # --- port subscriptions ---------------------------------------------------
 
     def connect(self):
-        """Wire the screen onto the session events of the port, once, right
-        after the install. The bus close at session end disconnects every
-        lane except the cache lane (see _on_session_ended)."""
-        for topic, method in (
-            (TaskStatusEvent, self._on_task_status),
-            (ExecutionStatusEvent, self._on_execution_status),
-            (BatchCreatedEvent, self._on_batch_created),
-            (BatchCompletedEvent, self._on_batch_completed),
-            (LogLineEvent, self._on_log_line),
-            (SessionEndedEvent, self._on_session_ended),
-            (CacheUpdatedEvent, self._on_cache_updated),
-        ):
-            handler = partial(self._relay, method)
-            self._port_handlers[topic] = handler
-            self.client.subscribe(topic, handler)
+        """Wire the screen onto the session events of the port, once, at the
+        first mount: only a mounted screen can receive a post from a worker
+        thread. The bus close at session end disconnects every lane except
+        the cache lane (see _port_session_ended)."""
+        if self._port_handlers:
+            return
+        try:
+            # The methods carry a _port_ prefix on purpose: an _on_ name is a
+            # Textual handler name, and a message dispatch would call it.
+            for topic, method in (
+                (TaskStatusEvent, self._port_task_status),
+                (ExecutionStatusEvent, self._port_execution_status),
+                (BatchCreatedEvent, self._port_batch_created),
+                (BatchCompletedEvent, self._port_batch_completed),
+                (LogLineEvent, self._port_log_line),
+                (SessionEndedEvent, self._port_session_ended),
+                (CacheUpdatedEvent, self._port_cache_updated),
+            ):
+                handler = partial(self._relay, method)
+                self._port_handlers[topic] = handler
+                self.client.subscribe(topic, handler)
+        except RegistrationError:
+            # The session ended before the first view: the screen renders the
+            # read-only history and needs no live lanes.
+            self._port_handlers.clear()
 
     def _relay(self, method, event):
         """A port handler body: move the event to the UI thread. The publish
@@ -167,36 +178,36 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     def handle_store_event(self, event):
         event.apply()
 
-    def _on_task_status(self, event):
+    def _port_task_status(self, event):
         self.propagate_task_status(event.key, event.status)
 
-    def _on_execution_status(self, event):
+    def _port_execution_status(self, event):
         self._dispatch_to_slot(
             Slots.TASKS_PANE,
             ExecutionStatusChanged(event.batch_uuid, event.task_key, event.status),
         )
 
-    def _on_batch_created(self, event):
+    def _port_batch_created(self, event):
         if verb := self._pending_bulk.pop(event.info.uuid, None):
             count = event.info.task_count
             self.notify(f"{verb} {count} task{'s' if count != 1 else ''}")
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCreated(event.info))
 
-    def _on_batch_completed(self, event):
+    def _port_batch_completed(self, event):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(event.info))
 
-    def _on_log_line(self, event):
+    def _port_log_line(self, event):
         self._dispatch_to_slot(
             Slots.TASKS_PANE,
             TaskLogUpdated(event.batch_uuid, event.task_key, event.line),
         )
 
-    def _on_session_ended(self, event):
+    def _port_session_ended(self, event):
         self.session_status = "ENDED"
         self._disconnect_topic(CacheUpdatedEvent)
         self._dispatch_to_slot(Slots.TASKS_PANE, SessionEnded())
 
-    def _on_cache_updated(self, event):
+    def _port_cache_updated(self, event):
         self._dispatch_to_slot(Slots.TASKS_PANE, CacheUpdated())
 
     # --- lifecycle --------------------------------------------------------------
@@ -213,6 +224,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             self.propagate_task_status(key, TaskStatus[name])
 
     async def on_mount(self):
+        self.connect()
         await self._refresh_from_snapshot()
 
     async def on_screen_resume(self):
@@ -336,7 +348,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         if not ack.accepted:
             return
         # The batch_created event carries the admitted count. The toast waits
-        # for it (see _on_batch_created).
+        # for it (see _port_batch_created).
         self._pending_bulk[ack.batch_uuid] = verb
 
     async def _handle_bulk_run(self):
