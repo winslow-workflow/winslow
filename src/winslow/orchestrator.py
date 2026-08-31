@@ -710,7 +710,10 @@ class Orchestrator(_ConfigBase):
             base_url=f"http://{config.host}:{config.port}",
         )
         try:
-            uvicorn.run(app, host=config.host, port=config.port)
+            # log_config=None: uvicorn's loggers propagate to the root
+            # handler, so its lines share the winslow format - JSON under
+            # WINSLOW_LOG_JSON (see _console_handler).
+            uvicorn.run(app, host=config.host, port=config.port, log_config=None)
         finally:
             shutdown_run_logging()
 

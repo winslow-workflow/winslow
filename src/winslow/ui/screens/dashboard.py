@@ -49,7 +49,8 @@ class DashboardScreen(SlottedScreen):
     async def on_mount(self):
         self.logger.info(f"{len(self.descriptors.workflows)} workflow classes loaded.")
 
-        await self._populate_restorable()
+        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
+        await self._refresh_restorable(manifests or ())
 
         await self._adopt_sessions()
         self.set_interval(SESSION_ADOPTION_INTERVAL, self._schedule_session_adoption)
@@ -98,6 +99,11 @@ class DashboardScreen(SlottedScreen):
                 # The session ended between the read and the adoption; the
                 # poll reads again.
                 continue
+        manifests = await asyncio.to_thread(
+            port_read, self, self.client.manifests, quiet=True
+        )
+        if manifests is not None:
+            await self._refresh_restorable(manifests)
 
     @on(OptionList.OptionSelected, "#workflow-selector")
     def on_workflow_selected(self, event):
@@ -208,17 +214,26 @@ class DashboardScreen(SlottedScreen):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
         self.app.push_screen(ErrorDetail(row.error))
 
-    async def _populate_restorable(self):
-        """Fill the Restore pane with the open manifests of the state store.
+    async def _refresh_restorable(self, manifests):
+        """Reconcile the Restore pane with the open manifests: another client
+        can restore or create one at any time, so the poll calls this again.
         With nothing to restore the pane stays hidden."""
         try:
             widget = self.query_one(RestorableWidget)
         except NoMatches:
             return
-        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
+        current = {
+            row.manifest.session_id for row in self.query(RestorableRow).results()
+        }
+        if current == {manifest.session_id for manifest in manifests}:
+            return
+        for row in list(self.query(RestorableRow).results()):
+            await row.remove()
+        await self.query("#restore-all").remove()
         if not manifests:
             widget.display = False
             return
+        widget.display = True
         self.query("#restorable-list-placeholder").add_class("hidden")
         restore_list = self.query_one("#restorable-list")
         restore_list.remove_class("hidden")
