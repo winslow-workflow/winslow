@@ -131,11 +131,7 @@ def test_serve_startup_creates_the_auto_init_sessions(
 ):
     """auto_init is the duty of the session owner: the serve startup creates
     the session, so a connecting client never starts a second one."""
-    config, unknown = Orchestrator.get_base_parser().parse_known_args(
-        ["serve"], namespace=OrchestratorConfig()
-    )
-    orchestrator = Orchestrator(config, directory=e2e_repo, unknown_args=unknown)
-    orchestrator.workflow_registry.collect_classes(e2e_repo)
+    orchestrator = _serve_orchestrator(e2e_repo)
     monkeypatch.setattr(
         orchestrator.workflow_registry["my-workflow"], "auto_init", True
     )
@@ -148,3 +144,50 @@ def test_serve_startup_creates_the_auto_init_sessions(
     assert session.status.name == "ACTIVE"
     (manifest,) = state_store.list_open_manifests()
     assert manifest.session_id == session.session_id
+
+
+def _serve_orchestrator(e2e_repo):
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["serve"], namespace=OrchestratorConfig()
+    )
+    orchestrator = Orchestrator(config, directory=e2e_repo, unknown_args=unknown)
+    orchestrator.workflow_registry.collect_classes(e2e_repo)
+    return orchestrator
+
+
+def test_serve_startup_restores_the_open_manifests(e2e_repo, state_store):
+    """The sessions of a dead serve process come back at the next startup,
+    the way a local user's restore brings them back."""
+    from winslow.client import LocalAppClient
+
+    orchestrator = _serve_orchestrator(e2e_repo)
+    dead = LocalAppClient(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    )
+    row = dead.create_session("my-workflow")
+
+    registry = SessionRegistry()
+    orchestrator._restore_sessions(registry, state_store)
+
+    (session,) = registry.sessions()
+    assert session.session_id == row.session_id
+
+
+def test_a_restored_session_satisfies_auto_init(e2e_repo, state_store, monkeypatch):
+    from winslow.client import LocalAppClient
+
+    orchestrator = _serve_orchestrator(e2e_repo)
+    monkeypatch.setattr(
+        orchestrator.workflow_registry["my-workflow"], "auto_init", True
+    )
+    dead = LocalAppClient(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    )
+    row = dead.create_session("my-workflow")
+
+    registry = SessionRegistry()
+    orchestrator._restore_sessions(registry, state_store)
+    orchestrator._auto_init_sessions(registry, state_store)
+
+    (session,) = registry.sessions()
+    assert session.session_id == row.session_id

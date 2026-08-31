@@ -696,6 +696,7 @@ class Orchestrator(_ConfigBase):
         setup_run_logging(sinks=[stdout_json_sink()] if LOG_JSON else None)
         registry = SessionRegistry()
         state_store = create_state_store(config)
+        self._restore_sessions(registry, state_store)
         self._auto_init_sessions(registry, state_store)
         app = create_app(
             registry,
@@ -711,15 +712,34 @@ class Orchestrator(_ConfigBase):
         finally:
             shutdown_run_logging()
 
+    def _restore_sessions(self, registry, state_store):
+        """Rebuild every open manifest at serve startup: the sessions of a
+        dead process come back without a client, the way a local user's
+        restore brings them back. A failed rebuild logs and skips."""
+        from winslow.client import LocalAppClient
+
+        port = LocalAppClient(registry, orchestrator=self, state_store=state_store)
+        for manifest in port.manifests():
+            self.logger.info(f"restore: rebuilding {manifest.session_id}")
+            try:
+                port.restore_session(manifest.session_id)
+            except Exception:
+                self.logger.error(
+                    f"restore: the rebuild of '{manifest.session_id}' failed.",
+                    exc_info=True,
+                )
+
     def _auto_init_sessions(self, registry, state_store):
         """One session per auto_init workflow: the process that owns the
         sessions runs auto_init, so a connecting client starts none. A
         failed initialization logs and skips; the process serves on."""
         from winslow.session import create_session
 
+        # A restored session satisfies auto_init: the workflow already runs.
+        live = {session.workflow.instance_name for session in registry.sessions()}
         for name in self.workflow_registry.names:
             workflow_kls = self.workflow_registry[name]
-            if not workflow_kls.auto_init:
+            if not workflow_kls.auto_init or name in live:
                 continue
             if not workflow_kls.should_be_initialized(self.orchestrator_config):
                 continue
