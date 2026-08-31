@@ -6,7 +6,13 @@ import time
 from argparse import Namespace
 
 from winslow.cache import WorkflowCache, entry
-from winslow.serve.wire import cache_card_payload
+from dataclasses import asdict
+
+from winslow.model import CacheCard
+
+
+def cache_card_payload(cache):
+    return asdict(CacheCard.from_cache(cache))
 
 
 class FlakyCache(WorkflowCache):

@@ -77,13 +77,13 @@ class LocalAppClient(AppClient):
     def _require_orchestrator(self):
         if self.orchestrator is None:
             raise MisconfigurationError(
-                "this client serves no workflows - pass an orchestrator."
+                "this process serves no workflows - pass an orchestrator."
             )
 
     def _require_state_store(self):
         if self.state_store is None:
             raise MisconfigurationError(
-                "this client keeps no session state - pass a state store."
+                "this process keeps no session state - pass a state store."
             )
 
     def sessions(self):
@@ -143,7 +143,7 @@ class LocalAppClient(AppClient):
         if manifest.workflow_class not in self.orchestrator.workflow_registry.names:
             raise RequestError(
                 f"the manifest names workflow {manifest.workflow_class!r}, "
-                f"which this client does not collect."
+                f"which this process does not collect."
             )
         session = create_session(
             self.orchestrator,
@@ -229,8 +229,9 @@ class LocalSessionClient(SessionClient):
             for batch in runner.batches
         )
 
-    def log_tail(self, batch_uuid, key, limit=200):
-        return self._record(batch_uuid, key).log_tail(limit)
+    def log_tail(self, batch_uuid, key, limit=None):
+        # None arrives from an omitted wire field; the default lives here.
+        return self._record(batch_uuid, key).log_tail(200 if limit is None else limit)
 
     def _record(self, batch_uuid, key):
         store = self._workflow.runner.record_store(batch_uuid)

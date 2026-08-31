@@ -5,7 +5,7 @@ data. Blocking work runs on worker threads. Requires the [mcp] extra."""
 
 import asyncio
 import hmac
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -21,8 +21,9 @@ from winslow.actions import (
     RunTasks,
     StopBatch,
 )
-from winslow.client import LocalAppClient, LocalSessionClient
-from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.client import LocalSessionClient
+from winslow.exceptions import MisconfigurationError
+from winslow.serve.wire import READ_REFUSALS, refusal_reason, result_payload
 
 
 class BearerTokenVerifier(TokenVerifier):
@@ -45,26 +46,6 @@ def tool(method):
     return method
 
 
-def _shape(value):
-    """The tool form of one read result: a dataclass becomes a dict, a
-    tuple of dataclasses a list, a scalar passes through."""
-    if is_dataclass(value):
-        return asdict(value)
-    if isinstance(value, (tuple, list)):
-        return [_shape(item) for item in value]
-    return value
-
-
-def _reason(exc):
-    return str(exc.args[0] if exc.args else exc)
-
-
-# The refusals of a port read: an unknown session id (KeyError with
-# direction, see SessionRegistry.resolve), a served refusal, and a server
-# without workflows or a store (see LocalAppClient).
-READ_REFUSALS = (KeyError, RequestError, MisconfigurationError)
-
-
 class McpEndpoint:
     """The MCPServer of one serve process. The tools resolve sessions on the
     registry of the ServeApp and submit through submit_guarded, so a broken
@@ -73,13 +54,8 @@ class McpEndpoint:
     def __init__(self, serve_app, base_url):
         self.serve_app = serve_app
         self._base_url = base_url
-        # The same port surface the local TUI consumes: every tool reads and
-        # acts through it, so the three doors serve the same values.
-        self.client = LocalAppClient(
-            serve_app.registry,
-            orchestrator=serve_app.orchestrator,
-            state_store=serve_app.state_store,
-        )
+        # The shared port surface of the serve process (see ServeApp.port).
+        self.client = serve_app.port
         self.server = MCPServer(
             name="winslow",
             instructions=(
@@ -143,9 +119,9 @@ class McpEndpoint:
         """One app-scope port read as a tool result. A refusal answers
         {'error': reason}, so an agent reads it as data."""
         try:
-            return _shape(await asyncio.to_thread(read, *args, **kwargs))
+            return result_payload(await asyncio.to_thread(read, *args, **kwargs))
         except READ_REFUSALS as exc:
-            return {"error": _reason(exc)}
+            return {"error": refusal_reason(exc)}
 
     def _resolved_read(self, session_id, read_method, *args, **kwargs):
         """Resolve the session and read, on the worker thread: the resolve
@@ -156,13 +132,13 @@ class McpEndpoint:
         """One session-scope port read as a tool result. read_method is the
         unbound LocalSessionClient method."""
         try:
-            return _shape(
+            return result_payload(
                 await asyncio.to_thread(
                     self._resolved_read, session_id, read_method, *args, **kwargs
                 )
             )
         except READ_REFUSALS as exc:
-            return {"error": _reason(exc)}
+            return {"error": refusal_reason(exc)}
 
     def _register_tools(self):
         for name, member in type(self).__dict__.items():
@@ -247,7 +223,7 @@ class McpEndpoint:
                 self.client.create_session, workflow, overrides, values
             )
         except Exception as exc:
-            return {"error": _reason(exc)}
+            return {"error": refusal_reason(exc)}
         return asdict(row)
 
     @tool
@@ -256,7 +232,7 @@ class McpEndpoint:
         try:
             row = await asyncio.to_thread(self.client.restore_session, session_id)
         except Exception as exc:
-            return {"error": _reason(exc)}
+            return {"error": refusal_reason(exc)}
         return asdict(row)
 
     @tool

@@ -4,17 +4,16 @@ credential policy, the bridges), Connection owns one socket after its hello
 jobs). create_app builds the ASGI app from a ServeApp."""
 
 import asyncio
-import functools
 import json
 import traceback
 from contextlib import asynccontextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 
 from starlette.applications import Starlette
 from starlette.routing import Mount, WebSocketRoute
 from starlette.websockets import WebSocketDisconnect
 
-from winslow.cache import declared_entries
+from winslow.client import LocalAppClient, LocalSessionClient
 from winslow.codec import CODEC, ValidationError
 from winslow.exceptions import MisconfigurationError
 from winslow.logger import INTERACTIVE_FORMATTER, LOGGER, get_task_dispatcher
@@ -22,22 +21,15 @@ from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
 from winslow.serve.bridge import EventBridge, Subscription
 from winslow.serve.wire import (
     INBOUND_FRAME_TYPES,
+    READ_REFUSALS,
     REQUEST_CLASSES,
     FrameTypes,
     Requests,
     build_action,
-    cache_value_payload,
-    caches_payload,
-    descriptor_rows,
-    history_rows,
-    manifest_row,
-    record_detail_payload,
-    roster_payload,
-    session_params_payload,
+    refusal_reason,
+    result_payload,
     session_row,
-    session_snapshot,
 )
-from winslow.session import create_session
 
 PROTOCOL_VERSION = 1
 
@@ -64,41 +56,59 @@ def request_handler(kind):
     return wrap
 
 
-def requires_session(method):
-    """Resolve the session before the method body runs, and pass it as a
-    third argument. A session that does not resolve already answered the
-    error frame (see Connection.resolve_for); the body never runs."""
+@dataclass(frozen=True)
+class PortRead:
+    """One wire request served by a port read: the envelope fields that
+    feed the call, and the frame key that carries the result (see
+    Connection._run_read)."""
 
-    @functools.wraps(method)
-    async def wrapper(self, envelope):
-        session = self.resolve_for(envelope)
-        if session is not None:
-            await method(self, envelope, session)
-
-    return wrapper
+    method: object
+    args: tuple = ()
+    key: str = None
+    echo: tuple = ()
+    scope: str = "session"
 
 
-def requires_live_session(method):
-    """requires_session, plus a refusal once the session has ended: its
-    tasks and workflow cache are released (see Workflow.release_tasks), so
-    a read past that point fails inside the handler with no direction.
-    history, log_tail, record_detail, batch_options and session_params use
-    requires_session instead - they read state that survives the release."""
-
-    @requires_session
-    async def guarded(self, envelope, session):
-        if session.has_ended:
-            self.request_error(
-                envelope.request_id,
-                f"{session.session_id} has ended - its live task and cache "
-                f"state is released.",
-            )
-            return
-        await method(self, envelope, session)
-
-    # requires_session already wraps guarded with functools.wraps(guarded);
-    # re-wrap with the real handler so a traceback names it, not "guarded".
-    return functools.wraps(method)(guarded)
+# The read surface of the wire: every row delegates to the port client the
+# local TUI consumes, so the doors cannot drift (see winslow.client). The
+# refusals of a read travel as error frames (see READ_REFUSALS).
+_PORT_READS = {
+    Requests.SESSIONS: PortRead(
+        LocalAppClient.sessions, key="sessions", scope="app"
+    ),
+    Requests.MANIFESTS: PortRead(
+        LocalAppClient.manifests, key="manifests", scope="app"
+    ),
+    Requests.DESCRIPTORS: PortRead(LocalAppClient.descriptors, scope="app"),
+    Requests.SNAPSHOT: PortRead(LocalSessionClient.snapshot),
+    Requests.ROSTER: PortRead(LocalSessionClient.roster, key="tasks"),
+    Requests.HISTORY: PortRead(LocalSessionClient.history, key="batches"),
+    Requests.TASK_DETAIL: PortRead(
+        LocalSessionClient.task_detail, args=("task_key",), key="info"
+    ),
+    Requests.RECORD_DETAIL: PortRead(
+        LocalSessionClient.record_detail, args=("batch_uuid", "task_key")
+    ),
+    Requests.LOG_TAIL: PortRead(
+        LocalSessionClient.log_tail,
+        args=("batch_uuid", "task_key", "limit"),
+        key="lines",
+        echo=("task_key", "batch_uuid"),
+    ),
+    Requests.CACHES: PortRead(LocalSessionClient.caches, key="caches"),
+    Requests.CACHE_VALUE: PortRead(
+        LocalSessionClient.cache_value, args=("cache_name", "entry_name")
+    ),
+    Requests.APPLY_FILTER: PortRead(
+        LocalSessionClient.apply_filter,
+        args=("query", "builtin_only", "scope"),
+        key="keys",
+    ),
+    Requests.BATCH_OPTIONS: PortRead(
+        LocalSessionClient.batch_options, key="options"
+    ),
+    Requests.SESSION_PARAMS: PortRead(LocalSessionClient.session_params),
+}
 
 
 class Bridges:
@@ -157,6 +167,11 @@ class ServeApp:
         self.qsize = qsize
         self.orchestrator = orchestrator
         self.state_store = state_store
+        # The port surface every door serves: the same implementation the
+        # local TUI consumes, so the doors cannot drift (see winslow.client).
+        self.port = LocalAppClient(
+            registry, orchestrator=orchestrator, state_store=state_store
+        )
         self.bridges = Bridges(qsize)
         self.ws_enabled = ws
         self.base_url = base_url
@@ -546,278 +561,70 @@ class Connection:
         )
 
     async def run_request(self, envelope):
-        # dispatch_request already resolved the kind to this envelope's
-        # class, and every request class maps to a handler below.
+        # A read serves from the port table; the specials below keep their
+        # own handlers (create and restore carry a traceback detail).
+        read = _PORT_READS.get(envelope.kind)
+        if read is not None:
+            await self._run_read(envelope, read)
+            return
         handler = self._request_handlers[envelope.kind]
         await handler(self, envelope)
 
+    def _port_call(self, envelope, read, args):
+        """Runs on the worker thread: the session resolve can refuse there,
+        never on the event loop."""
+        if read.scope == "app":
+            return read.method(self.app.port, *args)
+        return read.method(self.app.port.session(envelope.session_id), *args)
 
-    @request_handler(Requests.DESCRIPTORS)
-    async def _request_descriptors(self, envelope):
-        if self.app.orchestrator is None:
-            self.request_error(envelope.request_id, "this server serves no workflows")
+    async def _run_read(self, envelope, read):
+        args = tuple(getattr(envelope, name) for name in read.args)
+        try:
+            result = await asyncio.to_thread(self._port_call, envelope, read, args)
+        except READ_REFUSALS as exc:
+            self.request_error(envelope.request_id, refusal_reason(exc))
             return
-        self.result(envelope, **descriptor_rows(self.app.orchestrator))
+        payload = result_payload(result)
+        echoed = {name: getattr(envelope, name) for name in read.echo}
+        if read.key is None:
+            self.result(envelope, **echoed, **payload)
+        else:
+            self.result(envelope, **echoed, **{read.key: payload})
+
 
     @request_handler(Requests.CREATE_SESSION)
     async def _request_create_session(self, envelope):
-        if self.app.orchestrator is None or self.app.state_store is None:
-            self.request_error(envelope.request_id, "this server creates no sessions")
-            return
-        try:
-            session = await asyncio.to_thread(
-                create_session,
-                self.app.orchestrator,
-                self.app.state_store,
-                self.app.registry,
-                envelope.workflow,
-                envelope.overrides,
-                envelope.values,
-            )
-        except Exception as exc:
-            self.reply(
-                {
-                    "type": FrameTypes.ERROR,
-                    "request_id": envelope.request_id,
-                    "reason": str(exc.args[0] if exc.args else exc),
-                    "detail": traceback.format_exc(),
-                }
-            )
-            return
-        self.result(envelope, **session_row(session))
-
-    @request_handler(Requests.SESSIONS)
-    async def _request_sessions(self, envelope):
-        self.result(
+        await self._create_read(
             envelope,
-            sessions=[session_row(s) for s in self.app.registry.sessions()],
-        )
-
-    @request_handler(Requests.SNAPSHOT)
-    @requires_session
-    async def _request_snapshot(self, envelope, session):
-        self.result(envelope, **session_snapshot(session))
-
-    @request_handler(Requests.HISTORY)
-    @requires_session
-    async def _request_history(self, envelope, session):
-        self.result(envelope, batches=history_rows(session))
-
-    @request_handler(Requests.LOG_TAIL)
-    @requires_session
-    async def _request_log_tail(self, envelope, session):
-        store = session.workflow.runner.record_store(envelope.batch_uuid)
-        if store is None:
-            self.request_error(
-                envelope.request_id,
-                f"batch {envelope.batch_uuid!r} keeps no records in this "
-                f"session.",
-            )
-            return
-        try:
-            record = store.get_record(envelope.task_key)
-        except KeyError:
-            self.request_error(
-                envelope.request_id,
-                f"task {envelope.task_key!r} is not in the roster of "
-                f"batch {envelope.batch_uuid!r}.",
-            )
-            return
-        limit = envelope.limit or 200
-        self.result(
-            envelope,
-            task_key=envelope.task_key,
-            batch_uuid=envelope.batch_uuid,
-            lines=record.log_tail(limit),
-        )
-
-    @request_handler(Requests.TASK_DETAIL)
-    @requires_live_session
-    async def _request_task_detail(self, envelope, session):
-        try:
-            task = session.workflow.task_index.resolve(envelope.task_key)
-        except KeyError as exc:
-            self.request_error(envelope.request_id, exc.args[0])
-            return
-        # The full capture evaluates user code: a worker thread runs it. The
-        # session's task_info fills checked_at and effective_ttl from the
-        # snapshots and evaluates cold descriptors, matching the local TUI
-        # detail view.
-        info = await asyncio.to_thread(
-            session.workflow.task_info,
-            task,
-            full=True,
-            evaluate=True,
-            root_dir=session.workflow.root_dir,
-        )
-        self.result(envelope, info=asdict(info))
-
-    @request_handler(Requests.ROSTER)
-    @requires_live_session
-    async def _request_roster(self, envelope, session):
-        payload = await asyncio.to_thread(roster_payload, session.workflow)
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.CACHES)
-    @requires_live_session
-    async def _request_caches(self, envelope, session):
-        # A session end can land between the live guard and this read; the
-        # refusal then answers a frame (see Workflow.caches).
-        try:
-            payload = await asyncio.to_thread(caches_payload, session.workflow)
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.CACHE_VALUE)
-    @requires_live_session
-    async def _request_cache_value(self, envelope, session):
-        # The same end race as the caches request (see Workflow.caches).
-        try:
-            cache = session.workflow.get_cache(envelope.cache_name)
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        if cache is None:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.cache_name!r} names no cache of this session.",
-            )
-            return
-        if envelope.entry_name not in declared_entries(type(cache)):
-            self.request_error(
-                envelope.request_id,
-                f"{cache} has no entry {envelope.entry_name!r}.",
-            )
-            return
-        payload = await asyncio.to_thread(
-            cache_value_payload, cache, envelope.entry_name
-        )
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.RECORD_DETAIL)
-    @requires_session
-    async def _request_record_detail(self, envelope, session):
-        store = session.workflow.runner.record_store(envelope.batch_uuid)
-        if store is None:
-            self.request_error(
-                envelope.request_id,
-                f"batch {envelope.batch_uuid!r} keeps no records in this "
-                f"session.",
-            )
-            return
-        try:
-            record = store.get_record(envelope.task_key)
-        except KeyError:
-            self.request_error(
-                envelope.request_id,
-                f"task {envelope.task_key!r} is not in the roster of "
-                f"batch {envelope.batch_uuid!r}.",
-            )
-            return
-        self.result(envelope, **record_detail_payload(record))
-
-    @request_handler(Requests.BATCH_OPTIONS)
-    @requires_session
-    async def _request_batch_options(self, envelope, session):
-        self.result(envelope, options=asdict(session.workflow.batch_options))
-
-    @request_handler(Requests.SESSION_PARAMS)
-    @requires_session
-    async def _request_session_params(self, envelope, session):
-        self.result(envelope, **session_params_payload(session.workflow))
-
-    @request_handler(Requests.APPLY_FILTER)
-    @requires_session
-    async def _request_apply_filter(self, envelope, session):
-        # A project filter can run arbitrary code, so a worker thread applies
-        # the query. The history scope also serves an ended session (see
-        # Workflow.filter_keys).
-        try:
-            keys = await asyncio.to_thread(
-                session.workflow.filter_keys,
-                envelope.query,
-                envelope.scope,
-                envelope.builtin_only,
-            )
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        self.result(envelope, keys=list(keys))
-
-    @request_handler(Requests.MANIFESTS)
-    async def _request_manifests(self, envelope):
-        if self.app.state_store is None:
-            self.request_error(
-                envelope.request_id, "this server keeps no session state"
-            )
-            return
-        manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
-        self.result(
-            envelope,
-            manifests=[
-                manifest_row(m)
-                for m in manifests
-                if m.session_id not in self.app.registry
-            ],
+            self.app.port.create_session,
+            envelope.workflow,
+            envelope.overrides,
+            envelope.values,
         )
 
     @request_handler(Requests.RESTORE_SESSION)
     async def _request_restore_session(self, envelope):
-        if self.app.orchestrator is None or self.app.state_store is None:
-            self.request_error(envelope.request_id, "this server creates no sessions")
-            return
-        if envelope.session_id in self.app.registry:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.session_id!r} is already a live session.",
-            )
-            return
-        manifest = next(
-            (
-                m
-                for m in self.app.state_store.list_open_manifests()
-                if m.session_id == envelope.session_id
-            ),
-            None,
+        await self._create_read(
+            envelope, self.app.port.restore_session, envelope.session_id
         )
-        if manifest is None:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.session_id!r} names no open manifest to restore.",
-            )
-            return
-        if manifest.workflow_class not in self.app.orchestrator.workflow_registry.names:
-            self.request_error(
-                envelope.request_id,
-                f"the manifest names workflow {manifest.workflow_class!r}, "
-                f"which this server does not collect.",
-            )
-            return
+
+    async def _create_read(self, envelope, create, *args):
+        """create_session and restore_session run project init code: a broad
+        catch answers the error frame, and detail carries the traceback for
+        the error modal of a client (see RequestError.detail)."""
         try:
-            session = await asyncio.to_thread(
-                create_session,
-                self.app.orchestrator,
-                self.app.state_store,
-                self.app.registry,
-                manifest.workflow_class,
-                manifest.orchestrator_overrides or {},
-                manifest.workflow_values or {},
-                manifest.session_id,
-                True,
-            )
+            row = await asyncio.to_thread(create, *args)
         except Exception as exc:
             self.reply(
                 {
                     "type": FrameTypes.ERROR,
                     "request_id": envelope.request_id,
-                    "reason": str(exc.args[0] if exc.args else exc),
+                    "reason": refusal_reason(exc),
                     "detail": traceback.format_exc(),
                 }
             )
             return
-        self.result(envelope, **session_row(session))
+        self.result(envelope, **asdict(row))
 
 
 # The dispatch table of run_request, built once from every method

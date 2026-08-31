@@ -347,7 +347,7 @@ def test_requests_without_an_orchestrator_answer_an_error(e2e_repo):
             "workflow": "whatever",
         }
     )
-    assert "creates no sessions" in frames_until(ws, "error")["reason"]
+    assert "serves no workflows" in frames_until(ws, "error")["reason"]
     ws.close()
 
 

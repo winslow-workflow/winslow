@@ -2,7 +2,9 @@
 builder and the row shapes of sessions, descriptors, caches, and history.
 Both the websocket layer and the MCP tools read these."""
 
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
+
+from winslow.exceptions import MisconfigurationError, RequestError
 
 from winslow.actions import (
     CheckTasks,
@@ -165,15 +167,25 @@ def session_row(session):
     return asdict(SessionRow.from_session(session))
 
 
-def session_snapshot(session):
-    return asdict(SessionSnapshot.from_session(session))
+# The refusals of a port read: an unknown session id (KeyError with
+# direction, see SessionRegistry.resolve), a served refusal, and a server
+# without workflows or a store (see LocalAppClient). Both doors map them to
+# their transport's error shape.
+READ_REFUSALS = (KeyError, RequestError, MisconfigurationError)
 
 
-def roster_payload(workflow):
-    """The stub TaskInfo of every task, in launch-filter order. roster_tasks
-    can run project filter code and task_info builds one stub per task, so a
-    caller runs this off the event loop (see Connection._request_roster)."""
-    return {"tasks": [asdict(workflow.task_info(t)) for t in workflow.roster_tasks()]}
+def refusal_reason(exc):
+    return str(exc.args[0] if exc.args else exc)
+
+
+def result_payload(value):
+    """The wire form of one port read result: a dataclass becomes a dict, a
+    tuple of dataclasses a list, a scalar passes through."""
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, (tuple, list)):
+        return [result_payload(item) for item in value]
+    return value
 
 
 def build_action(name, fields):
@@ -197,35 +209,3 @@ def build_action(name, fields):
 
 def descriptor_rows(orchestrator):
     return asdict(Descriptors.from_orchestrator(orchestrator))
-
-
-def history_rows(session):
-    runner = session.workflow.runner
-    return [
-        asdict(HistoryRow.from_batch(batch, runner.record_store(batch.uuid)))
-        for batch in runner.batches
-    ]
-
-
-def record_detail_payload(record):
-    return asdict(RecordDetail.from_record(record))
-
-
-def cache_card_payload(cache):
-    return asdict(CacheCard.from_cache(cache))
-
-
-def caches_payload(workflow):
-    return asdict(CachesPayload.from_workflow(workflow))
-
-
-def cache_value_payload(cache, entry_name):
-    return asdict(CacheValueView.from_entry(cache, entry_name))
-
-
-def session_params_payload(workflow):
-    return asdict(SessionParams.from_workflow(workflow))
-
-
-def manifest_row(manifest):
-    return asdict(ManifestRow.from_manifest(manifest))
