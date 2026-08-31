@@ -17,27 +17,19 @@ from winslow.actions import (
 from winslow.model import (
     ApplyFilterRequest,
     BatchOptionsRequest,
-    CacheCard,
-    CachesPayload,
     CachesRequest,
     CacheValueRequest,
-    CacheValueView,
     CreateSessionRequest,
     Descriptors,
     DescriptorsRequest,
     HistoryRequest,
-    HistoryRow,
     LogTailRequest,
-    ManifestRow,
     ManifestsRequest,
-    RecordDetail,
     RecordDetailRequest,
     RestoreSessionRequest,
     RosterRequest,
-    SessionParams,
     SessionParamsRequest,
     SessionRow,
-    SessionSnapshot,
     SessionsRequest,
     SnapshotRequest,
     TaskDetailRequest,
@@ -167,10 +159,8 @@ def session_row(session):
     return asdict(SessionRow.from_session(session))
 
 
-# The refusals of a port read: an unknown session id (KeyError with
-# direction, see SessionRegistry.resolve), a served refusal, and a server
-# without workflows or a store (see LocalAppClient). Both doors map them to
-# their transport's error shape.
+# The refusals of a port read: an unknown session id, a served refusal, a
+# missing orchestrator or store. Each door maps them to its error shape.
 READ_REFUSALS = (KeyError, RequestError, MisconfigurationError)
 
 

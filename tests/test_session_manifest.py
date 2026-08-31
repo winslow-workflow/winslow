@@ -90,7 +90,7 @@ def test_a_registration_failure_leaves_no_open_manifest(
     # its failure must undo the adapter and leave no restore candidate.
     monkeypatch.setattr(StaleSweeper, "__init__", _explode)
     workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI)
-    session = Session(workflow)
+    Session(workflow)
     workflow.init_state(state_store, origin="tui")
 
     assert state_store.list_open_manifests() == []

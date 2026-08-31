@@ -47,9 +47,9 @@ def tool(method):
 
 
 class McpEndpoint:
-    """The MCPServer of one serve process. The tools resolve sessions on the
-    registry of the ServeApp and submit through submit_guarded, so a broken
-    action reaches the agent as a refused ack, never as a raise."""
+    """The MCPServer of one serve process. The tools read through the port
+    of the ServeApp and submit through submit_guarded, so a broken action
+    reaches the agent as a refused ack, never as a raise."""
 
     def __init__(self, serve_app, base_url):
         self.serve_app = serve_app

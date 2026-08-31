@@ -59,9 +59,8 @@ LOG_JSON = config("WINSLOW_LOG_JSON", default=False, cast=bool)
 
 
 def _console_handler():
-    """The console handler: JSON lines under WINSLOW_LOG_JSON, rich when a
-    terminal shows the output and the package is installed, a plain stream
-    handler otherwise (a pipe, a pod, a headless install without rich)."""
+    """The console handler. WINSLOW_LOG_JSON selects JSON lines; a terminal
+    with rich installed gets rich; everything else gets plain lines."""
     if LOG_JSON:
         handler = logging.StreamHandler()
         handler.setFormatter(StructuredFormatter())
@@ -277,9 +276,9 @@ def get_task_dispatcher():
 
 
 class StructuredFormatter(logging.Formatter):
-    """Render a stamped record as one JSON object. This is the shared shape. The
-    file sink reads it now; the console emits it under WINSLOW_LOG_JSON, so a
-    log store gets one queryable entry per record, traceback included."""
+    """Render a stamped record as one JSON object: the shared shape of the
+    file sink and the WINSLOW_LOG_JSON console. A log store reads one
+    queryable entry per record, with the traceback as a field."""
 
     def __init__(self):
         super().__init__(datefmt=LOG_DATEFMT)

@@ -64,7 +64,7 @@ class PortRead:
 
     method: object
     args: tuple = ()
-    key: str = None
+    key: str | None = None
     echo: tuple = ()
     scope: str = "session"
 
@@ -167,8 +167,7 @@ class ServeApp:
         self.qsize = qsize
         self.orchestrator = orchestrator
         self.state_store = state_store
-        # The port surface every door serves: the same implementation the
-        # local TUI consumes, so the doors cannot drift (see winslow.client).
+        # The port surface every door serves (see _PORT_READS and mcp.py).
         self.port = LocalAppClient(
             registry, orchestrator=orchestrator, state_store=state_store
         )
@@ -591,7 +590,6 @@ class Connection:
         else:
             self.result(envelope, **echoed, **{read.key: payload})
 
-
     @request_handler(Requests.CREATE_SESSION)
     async def _request_create_session(self, envelope):
         await self._create_read(
@@ -609,9 +607,9 @@ class Connection:
         )
 
     async def _create_read(self, envelope, create, *args):
-        """create_session and restore_session run project init code: a broad
-        catch answers the error frame, and detail carries the traceback for
-        the error modal of a client (see RequestError.detail)."""
+        """create_session and restore_session run project init code, so a
+        broad catch answers the error frame. detail carries the traceback
+        for the error modal of a client (see RequestError.detail)."""
         try:
             row = await asyncio.to_thread(create, *args)
         except Exception as exc:
@@ -628,8 +626,8 @@ class Connection:
 
 
 # The dispatch table of run_request, built once from every method
-# @request_handler tagged: adding a request means one method, tagged where
-# it is declared, and nothing to keep in sync elsewhere.
+# @request_handler tagged. A read joins as a _PORT_READS row instead; only
+# a request with a special reply shape needs a tagged method.
 Connection._request_handlers = {
     method._request_kind: method
     for method in vars(Connection).values()

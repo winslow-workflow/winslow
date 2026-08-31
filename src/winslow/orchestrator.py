@@ -690,10 +690,9 @@ class Orchestrator(_ConfigBase):
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
-        # The run-log boundary must exist before the first session logs (see
-        # setup_run_logging). Under WINSLOW_LOG_JSON the run lane goes to
-        # stdout for the log store of a pod; the default keeps the session
-        # files, like the local TUI.
+        # The boundary must exist before the first session logs (see
+        # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
+        # for the log store of a pod; the default keeps the session files.
         setup_run_logging(sinks=[stdout_json_sink()] if LOG_JSON else None)
         registry = SessionRegistry()
         state_store = create_state_store(config)
@@ -750,9 +749,8 @@ class Orchestrator(_ConfigBase):
         client.connect()
         self.logger.info(f"Connected to {config.url}")
 
-        # No run-log wiring here: the tasks run on the serve process, so no
-        # record ever reaches this process. The connect TUI writes no local
-        # log file and creates no log directory.
+        # The tasks run on the serve process, so no run record reaches this
+        # one: run-log wiring here would only create an empty log directory.
         self.app = Winslow(client=client, logger=self.logger, owns_sessions=False)
         try:
             self.app.run()
