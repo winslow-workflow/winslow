@@ -1,11 +1,11 @@
-"""The MCP endpoint: the tool layer over ActionHandler (serve-spec section
-5). One tool per action; the acks travel as tool results, so an agent reads
-the refusal reason as data. Blocking work runs on worker threads. Requires
-the [mcp] extra."""
+"""The MCP endpoint: one tool per port read and action, over the same
+LocalAppClient the local TUI consumes (see winslow.client). The acks and
+the refusals travel as tool results, so an agent reads every reason as
+data. Blocking work runs on worker threads. Requires the [mcp] extra."""
 
 import asyncio
 import hmac
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
 
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
@@ -15,14 +15,14 @@ from pydantic import AnyHttpUrl
 
 from winslow.actions import (
     CheckTasks,
+    ClearCacheEntries,
     EndSession,
+    LoadCacheEntries,
     RunTasks,
     StopBatch,
 )
-from winslow.exceptions import MisconfigurationError
-from winslow.session import create_session
-from winslow.serve.wire import descriptor_rows, history_rows, session_row
-from winslow.model import TaskInfo
+from winslow.client import LocalAppClient, LocalSessionClient
+from winslow.exceptions import MisconfigurationError, RequestError
 
 
 class BearerTokenVerifier(TokenVerifier):
@@ -45,6 +45,26 @@ def tool(method):
     return method
 
 
+def _shape(value):
+    """The tool form of one read result: a dataclass becomes a dict, a
+    tuple of dataclasses a list, a scalar passes through."""
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, (tuple, list)):
+        return [_shape(item) for item in value]
+    return value
+
+
+def _reason(exc):
+    return str(exc.args[0] if exc.args else exc)
+
+
+# The refusals of a port read: an unknown session id (KeyError with
+# direction, see SessionRegistry.resolve), a served refusal, and a server
+# without workflows or a store (see LocalAppClient).
+READ_REFUSALS = (KeyError, RequestError, MisconfigurationError)
+
+
 class McpEndpoint:
     """The MCPServer of one serve process. The tools resolve sessions on the
     registry of the ServeApp and submit through submit_guarded, so a broken
@@ -53,11 +73,19 @@ class McpEndpoint:
     def __init__(self, serve_app, base_url):
         self.serve_app = serve_app
         self._base_url = base_url
+        # The same port surface the local TUI consumes: every tool reads and
+        # acts through it, so the three doors serve the same values.
+        self.client = LocalAppClient(
+            serve_app.registry,
+            orchestrator=serve_app.orchestrator,
+            state_store=serve_app.state_store,
+        )
         self.server = MCPServer(
             name="winslow",
             instructions=(
                 "The live winslow sessions of this server. list_sessions and "
-                "descriptors show what runs and what can run; the action tools "
+                "descriptors show what runs and what can run; the read tools "
+                "serve snapshots, history, logs and caches; the action tools "
                 "answer with an ack: accepted, or refused with the reason."
             ),
             **self._auth_settings(base_url),
@@ -111,6 +139,31 @@ class McpEndpoint:
         ack = await asyncio.to_thread(session.actions.submit_guarded, action)
         return asdict(ack)
 
+    async def _read(self, read, *args, **kwargs):
+        """One app-scope port read as a tool result. A refusal answers
+        {'error': reason}, so an agent reads it as data."""
+        try:
+            return _shape(await asyncio.to_thread(read, *args, **kwargs))
+        except READ_REFUSALS as exc:
+            return {"error": _reason(exc)}
+
+    def _resolved_read(self, session_id, read_method, *args, **kwargs):
+        """Resolve the session and read, on the worker thread: the resolve
+        of an unknown id refuses there, never on the event loop."""
+        return read_method(self.client.session(session_id), *args, **kwargs)
+
+    async def _session_read(self, session_id, read_method, *args, **kwargs):
+        """One session-scope port read as a tool result. read_method is the
+        unbound LocalSessionClient method."""
+        try:
+            return _shape(
+                await asyncio.to_thread(
+                    self._resolved_read, session_id, read_method, *args, **kwargs
+                )
+            )
+        except READ_REFUSALS as exc:
+            return {"error": _reason(exc)}
+
     def _register_tools(self):
         for name, member in type(self).__dict__.items():
             if getattr(member, "_mcp_tool", False):
@@ -119,7 +172,7 @@ class McpEndpoint:
     @tool
     async def list_sessions(self) -> list:
         """The live sessions of this server."""
-        return [session_row(s) for s in self.serve_app.registry.sessions()]
+        return await self._read(self.client.sessions)
 
     @tool
     async def run_tasks(
@@ -153,62 +206,136 @@ class McpEndpoint:
         return await self._submit(session_id, EndSession(force=force))
 
     @tool
+    async def load_cache_entries(self, session_id: str, entries: list) -> dict:
+        """Load the given cache entries; each entry is a
+        [cache_name, entry_name] pair (see caches)."""
+        return await self._submit(
+            session_id,
+            LoadCacheEntries(entries=tuple(tuple(pair) for pair in entries)),
+        )
+
+    @tool
+    async def clear_cache_entries(self, session_id: str, entries: list) -> dict:
+        """Clear the given cache entries; entries works as in
+        load_cache_entries."""
+        return await self._submit(
+            session_id,
+            ClearCacheEntries(entries=tuple(tuple(pair) for pair in entries)),
+        )
+
+    @tool
     async def descriptors(self) -> dict:
         """The workflows this server can start (their options fill the
         `values` of start_session) and the orchestrator overrides."""
-        if self.serve_app.orchestrator is None:
-            return {"error": "this server serves no workflows"}
-        return descriptor_rows(self.serve_app.orchestrator)
+        return await self._read(self.client.descriptors)
+
+    @tool
+    async def manifests(self) -> list:
+        """The open manifests of dead sessions; restore_session rebuilds
+        one under its stored session id."""
+        return await self._read(self.client.manifests)
 
     @tool
     async def start_session(
         self, workflow: str, overrides: dict | None = None, values: dict | None = None
     ) -> dict:
         """Create one live session of the named workflow."""
-        serve_app = self.serve_app
-        if serve_app.orchestrator is None or serve_app.state_store is None:
-            return {"error": "this server creates no sessions"}
+        # A broad catch: an init failure of project code must reach the
+        # agent as data, like every other refusal.
         try:
-            session = await asyncio.to_thread(
-                create_session,
-                serve_app.orchestrator,
-                serve_app.state_store,
-                serve_app.registry,
-                workflow,
-                overrides,
-                values,
+            row = await asyncio.to_thread(
+                self.client.create_session, workflow, overrides, values
             )
         except Exception as exc:
-            return {"error": str(exc.args[0] if exc.args else exc)}
-        return session_row(session)
+            return {"error": _reason(exc)}
+        return asdict(row)
 
     @tool
-    async def tasks(self, session_id: str) -> dict:
-        """The tasks of the session: {identity key: status}. The keys feed
-        run_tasks and check_tasks."""
-        session = self.serve_app.registry.get(session_id)
-        if session is None:
-            return {"error": f"session id {session_id!r} does not resolve"}
-        store = session.workflow.store
-        return {"tasks": {key: status.name for key, status in store.items()}}
+    async def restore_session(self, session_id: str) -> dict:
+        """Rebuild one dead session from its open manifest (see manifests)."""
+        try:
+            row = await asyncio.to_thread(self.client.restore_session, session_id)
+        except Exception as exc:
+            return {"error": _reason(exc)}
+        return asdict(row)
 
     @tool
-    async def history(self, session_id: str) -> dict:
-        """The batches of the session with their per-task outcomes."""
-        session = self.serve_app.registry.get(session_id)
-        if session is None:
-            return {"error": f"session id {session_id!r} does not resolve"}
-        return {"batches": history_rows(session)}
+    async def snapshot(self, session_id: str) -> dict:
+        """The current state of the session: `tasks` maps each identity key
+        to its status (the keys feed run_tasks and check_tasks), plus the
+        batches and the session log backlog."""
+        return await self._session_read(session_id, LocalSessionClient.snapshot)
+
+    @tool
+    async def roster(self, session_id: str) -> list:
+        """One stub task capture per task, in launch order."""
+        return await self._session_read(session_id, LocalSessionClient.roster)
 
     @tool
     async def task_detail(self, session_id: str, task_key: str) -> dict:
         """The full capture of one task: attributes, docs, source."""
-        session = self.serve_app.registry.get(session_id)
-        if session is None:
-            return {"error": f"session id {session_id!r} does not resolve"}
-        try:
-            task = session.workflow.task_index.resolve(task_key)
-        except KeyError as exc:
-            return {"error": exc.args[0]}
-        info = await asyncio.to_thread(TaskInfo.from_task, task, full=True)
-        return asdict(info)
+        return await self._session_read(
+            session_id, LocalSessionClient.task_detail, task_key
+        )
+
+    @tool
+    async def history(self, session_id: str) -> list:
+        """The batches of the session with their per-task outcomes."""
+        return await self._session_read(session_id, LocalSessionClient.history)
+
+    @tool
+    async def record_detail(self, session_id: str, batch_uuid: str, task_key: str) -> dict:
+        """The execution record of one task in one batch: the task capture
+        after the run, its phases, and its snapshots."""
+        return await self._session_read(
+            session_id, LocalSessionClient.record_detail, batch_uuid, task_key
+        )
+
+    @tool
+    async def log_tail(
+        self, session_id: str, batch_uuid: str, task_key: str, limit: int = 200
+    ) -> list:
+        """The stored log lines of one task in one batch."""
+        return await self._session_read(
+            session_id, LocalSessionClient.log_tail, batch_uuid, task_key, limit
+        )
+
+    @tool
+    async def caches(self, session_id: str) -> list:
+        """The caches of the session: entry states and value previews. The
+        names feed load_cache_entries, clear_cache_entries and cache_value."""
+        return await self._session_read(session_id, LocalSessionClient.caches)
+
+    @tool
+    async def cache_value(
+        self, session_id: str, cache_name: str, entry_name: str
+    ) -> dict:
+        """The rendered value of one cache entry."""
+        return await self._session_read(
+            session_id, LocalSessionClient.cache_value, cache_name, entry_name
+        )
+
+    @tool
+    async def apply_filter(
+        self, session_id: str, query: str, scope: str = "tasks"
+    ) -> list:
+        """The identity keys the filter query matches; scope is 'tasks' for
+        the roster or 'history' for the executed records."""
+        return await self._session_read(
+            session_id, LocalSessionClient.apply_filter, query, scope=scope
+        )
+
+    @tool
+    async def batch_options(self, session_id: str) -> dict:
+        """The batch option baseline of the session; a run_tasks `options`
+        dict overrides it per submit."""
+        return await self._session_read(
+            session_id, LocalSessionClient.batch_options
+        )
+
+    @tool
+    async def session_params(self, session_id: str) -> dict:
+        """The configuration values the session runs with."""
+        return await self._session_read(
+            session_id, LocalSessionClient.session_params
+        )

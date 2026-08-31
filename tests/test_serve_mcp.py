@@ -129,7 +129,7 @@ def test_history_and_task_detail_serve_reads(e2e_repo):
     )
     wait_for_status(workflow, alpha, S.COMPLETED)
     # A fresh app: the SDK session manager runs once per process lifespan.
-    history, detail = call_tools(
+    history, detail, logs, record = call_tools(
         mcp_app(registry),
         [
             ("history", {"session_id": session.session_id}),
@@ -137,12 +137,31 @@ def test_history_and_task_detail_serve_reads(e2e_repo):
                 "task_detail",
                 {"session_id": session.session_id, "task_key": alpha.identity_key},
             ),
+            (
+                "log_tail",
+                {
+                    "session_id": session.session_id,
+                    "batch_uuid": ack["batch_uuid"],
+                    "task_key": alpha.identity_key,
+                },
+            ),
+            (
+                "record_detail",
+                {
+                    "session_id": session.session_id,
+                    "batch_uuid": ack["batch_uuid"],
+                    "task_key": alpha.identity_key,
+                },
+            ),
         ],
     )
-    (batch,) = history["batches"]
+    # A one-element list return unwraps to its single item (see unwrap).
+    batch = history[0] if isinstance(history, list) else history
     assert batch["uuid"] == ack["batch_uuid"]
     assert batch["tasks"][alpha.identity_key]["status"] == "COMPLETED"
     assert detail["key"] == alpha.identity_key
+    assert isinstance(logs, list)
+    assert record["info"]["key"] == alpha.identity_key
 
 
 def test_a_loopback_bind_serves_mcp_without_auth(e2e_repo):
@@ -180,14 +199,15 @@ def test_the_cli_parses_the_door_flags():
     assert args.no_ws is True
 
 
-def test_the_tasks_tool_serves_the_keys_for_run_tasks(e2e_repo):
+def test_the_snapshot_tool_serves_the_keys_for_run_tasks(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     (result,) = call_tools(
-        mcp_app(registry), [("tasks", {"session_id": session.session_id})]
+        mcp_app(registry), [("snapshot", {"session_id": session.session_id})]
     )
     assert result["tasks"] == {
         key: status.name for key, status in workflow.store.current.items()
     }
+    assert result["session_id"] == session.session_id
 
 
 def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
@@ -207,3 +227,62 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
     # The MCP result round-trips through JSON, so tuples arrive as lists.
     assert result == json.loads(json.dumps(descriptor_rows(orchestrator)))
     assert {"workflows", "overrides"} <= set(result)
+
+
+def test_the_cache_tools_serve_and_act(e2e_repo):
+    workflow = build_workflow(e2e_repo, "my-cache", Mode.TUI)
+    session = Session(workflow)
+    workflow.check_pipeline_eligibility()
+    registry = SessionRegistry()
+    registry.register(session)
+
+    cards, ack, value = call_tools(
+        mcp_app(registry),
+        [
+            ("caches", {"session_id": session.session_id}),
+            (
+                "load_cache_entries",
+                {
+                    "session_id": session.session_id,
+                    "entries": [["weather", "forecast"]],
+                },
+            ),
+            (
+                "cache_value",
+                {
+                    "session_id": session.session_id,
+                    "cache_name": "weather",
+                    "entry_name": "cities",
+                },
+            ),
+        ],
+    )
+    card = cards[0] if isinstance(cards, list) else cards
+    assert card["name"] == "weather"
+    assert {entry["name"] for entry in card["entries"]} >= {"cities", "forecast"}
+    assert ack["accepted"] is True
+    assert value["cache_name"] == "weather"
+    assert value["state"] == "warm"
+
+
+def test_a_read_refuses_an_unknown_session_as_data(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    result, options = call_tools(
+        mcp_app(registry),
+        [
+            ("snapshot", {"session_id": "gone"}),
+            ("batch_options", {"session_id": session.session_id}),
+        ],
+    )
+    assert "does not resolve" in result["error"]
+    assert options["dry_run"] is False
+
+
+def test_app_reads_without_their_dependencies_refuse_as_data(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    manifests, restored = call_tools(
+        mcp_app(registry),
+        [("manifests", {}), ("restore_session", {"session_id": "gone"})],
+    )
+    assert "state store" in manifests["error"]
+    assert "orchestrator" in restored["error"]
