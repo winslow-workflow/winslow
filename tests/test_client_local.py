@@ -239,6 +239,11 @@ def test_snapshot_equals_the_core_state(e2e_repo):
     assert batch_row.uuid == batch.uuid
     assert batch_row.status == batch.status.name
     assert batch_row.task_count == 1
+    # The snapshot batch is a full BatchInfo: the reconnect heal re-emits it
+    # as the created event (see RemoteSessionClient._on_snapshot).
+    (key,) = batch_row.tasks
+    assert batch_row.tasks[key]
+    assert batch_row.options is not None
 
 
 def test_roster_hands_the_core_built_stubs_through_in_order(e2e_repo):

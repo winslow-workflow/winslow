@@ -509,7 +509,7 @@ class RecordingWire:
         pass
 
 
-def _snapshot_frame(seq, tasks, status="ACTIVE"):
+def _snapshot_frame(seq, tasks, status="ACTIVE", batches=()):
     return {
         "type": "snapshot",
         "seq": seq,
@@ -518,8 +518,23 @@ def _snapshot_frame(seq, tasks, status="ACTIVE"):
         "status": status,
         "tasks": tasks,
         "session_log_backlog": [],
-        "batches": [],
+        "batches": list(batches),
         "cache_names": [],
+    }
+
+
+def _batch_payload(uuid, completed_at=None):
+    return {
+        "uuid": uuid,
+        "action": "RUN",
+        "status": "FINISHED" if completed_at else "RUNNING",
+        "task_count": 1,
+        "tasks": {"k": "K"},
+        "options": None,
+        "created_at": 1.0,
+        "started_at": 1.0,
+        "completed_at": completed_at,
+        "error": None,
     }
 
 
@@ -559,6 +574,35 @@ def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
     # The stream continues from the snapshot's sequence.
     lane.on_frame(_status_frame(13, "k", "FAILED"))
     assert events[-1].status is TaskStatus.FAILED
+
+
+def test_a_recovery_snapshot_re_emits_its_batches():
+    """The events of the gap are gone; the created and completed events of
+    the snapshot batches rebuild the history of a live subscriber."""
+    wire = RecordingWire()
+    lane = RemoteSessionClient(wire, "s-1")
+    created, completed = [], []
+    lane.subscribe(BatchCreatedEvent, created.append)
+    lane.subscribe(BatchCompletedEvent, completed.append)
+
+    # The first snapshot heals nothing: no batch events re-emit.
+    lane.on_frame(_snapshot_frame(5, {}, batches=[_batch_payload("b-1")]))
+    assert created == []
+
+    lane.on_frame(_status_frame(9, "k", "RUNNING"))  # the gap
+    lane.on_frame(
+        _snapshot_frame(
+            12,
+            {},
+            batches=[
+                _batch_payload("b-1", completed_at=2.0),
+                _batch_payload("b-2"),
+            ],
+        )
+    )
+    assert [info.uuid for info in (e.info for e in created)] == ["b-1", "b-2"]
+    assert [e.info.uuid for e in completed] == ["b-1"]
+    assert created[0].info.tasks == {"k": "K"}
 
 
 def test_a_recovery_snapshot_of_an_ended_session_emits_the_end():

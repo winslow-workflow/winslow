@@ -477,12 +477,28 @@ class BatchInfo:
 
     @classmethod
     def from_batch(cls, batch, tasks):
+        return cls._build(batch, {task.identity_key: str(task) for task in tasks})
+
+    @classmethod
+    def from_stored(cls, batch, store):
+        """The info of a stored batch: the labels come from its records, so
+        a snapshot carries the value the created event carried. The
+        reconnect heal re-emits it (see RemoteSessionClient._on_snapshot)."""
+        labels = (
+            {key: store.get_record(key).info.label for key, _ in store.items()}
+            if store is not None
+            else {}
+        )
+        return cls._build(batch, labels)
+
+    @classmethod
+    def _build(cls, batch, tasks):
         return cls(
             uuid=batch.uuid,
             action=batch.action.name,
             status=batch.status.name,
             task_count=batch.task_count,
-            tasks={task.identity_key: str(task) for task in tasks},
+            tasks=tasks,
             options=_batch_options(batch),
             created_at=batch.created_at.timestamp(),
             started_at=(
@@ -492,32 +508,6 @@ class BatchInfo:
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
             error=batch.error,
-        )
-
-
-@dataclass(frozen=True)
-class BatchRow:
-    """One batch of a session snapshot: the identity and the lifecycle
-    stamps. HistoryRow is the row that adds the per-task outcomes."""
-
-    uuid: str
-    action: str
-    status: str
-    task_count: int
-    created_at: float
-    completed_at: float | None
-
-    @classmethod
-    def from_batch(cls, batch):
-        return cls(
-            uuid=batch.uuid,
-            action=batch.action.name,
-            status=batch.status.name,
-            task_count=batch.task_count,
-            created_at=batch.created_at.timestamp(),
-            completed_at=(
-                batch.completed_at.timestamp() if batch.completed_at else None
-            ),
         )
 
 
@@ -655,7 +645,7 @@ class SessionSnapshot:
     status: str
     tasks: dict[str, str]  # {identity key: TaskStatus name}
     session_log_backlog: tuple[str, ...]
-    batches: tuple[BatchRow, ...]
+    batches: tuple[BatchInfo, ...]
     # The cache names of the session, so a client can decide whether to show
     # a caches pane before the first caches read. None once the session has
     # ended and released its caches; an empty tuple means no registered caches.
@@ -683,7 +673,8 @@ class SessionSnapshot:
                 else ()
             ),
             batches=tuple(
-                BatchRow.from_batch(batch) for batch in workflow.runner.batches
+                BatchInfo.from_stored(batch, workflow.runner.record_store(batch.uuid))
+                for batch in workflow.runner.batches
             ),
             cache_names=cls._cache_names(workflow),
         )

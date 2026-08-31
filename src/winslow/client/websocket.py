@@ -732,6 +732,13 @@ class RemoteSessionClient(SessionClient):
         # The events of the gap are gone; the snapshot carries the state
         # they produced. Re-emit it, so a live subscriber repaints.
         snapshot = CODEC.decode(SessionSnapshot, _payload_of_snapshot(frame))
+        # The batches first, matching the live order: a created event
+        # precedes the statuses of its tasks. A batch the subscriber knows
+        # deduplicates by uuid (see HistoryPane.on_batch_created).
+        for info in snapshot.batches:
+            self._dispatch(BatchCreatedEvent(info=info))
+            if info.completed_at is not None:
+                self._dispatch(BatchCompletedEvent(info=info))
         for key, name in snapshot.tasks.items():
             self._dispatch(
                 TaskStatusEvent(key=key, status=TaskStatus[name], origin=Origin.RUN)

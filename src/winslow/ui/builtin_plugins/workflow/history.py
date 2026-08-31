@@ -406,6 +406,10 @@ class HistoryPane(QuerySearchMixin, Widget):
 
     @on(BatchCreated)
     async def on_batch_created(self, event):
+        if event.info.uuid in self._cards:
+            # A recovery snapshot re-emits known batches; the completed lane
+            # refreshes them (see RemoteSessionClient._on_snapshot).
+            return
         scroll = self.query_one(VerticalScroll)
         card = BatchCard(BatchView.from_batch_info(event.info), self._infos_by_key)
         await scroll.mount(card, before=0)
