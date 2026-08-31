@@ -21,7 +21,13 @@ from winslow.exceptions import (
     InitializationError,
     EligibilityError,
 )
-from winslow.logger import LOGGER, setup_run_logging, shutdown_run_logging
+from winslow.logger import (
+    LOG_JSON,
+    LOGGER,
+    setup_run_logging,
+    shutdown_run_logging,
+    stdout_json_sink,
+)
 from winslow.telemetry import (
     TelemetryRegistry,
     activate_telemetry_configurations,
@@ -684,6 +690,11 @@ class Orchestrator(_ConfigBase):
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
+        # The run-log boundary must exist before the first session logs (see
+        # setup_run_logging). Under WINSLOW_LOG_JSON the run lane goes to
+        # stdout for the log store of a pod; the default keeps the session
+        # files, like the local TUI.
+        setup_run_logging(sinks=[stdout_json_sink()] if LOG_JSON else None)
         registry = SessionRegistry()
         state_store = create_state_store(config)
         self._auto_init_sessions(registry, state_store)
@@ -696,7 +707,10 @@ class Orchestrator(_ConfigBase):
             mcp=config.mcp,
             base_url=f"http://{config.host}:{config.port}",
         )
-        uvicorn.run(app, host=config.host, port=config.port)
+        try:
+            uvicorn.run(app, host=config.host, port=config.port)
+        finally:
+            shutdown_run_logging()
 
     def _auto_init_sessions(self, registry, state_store):
         """One session per auto_init workflow: the process that owns the
@@ -736,13 +750,14 @@ class Orchestrator(_ConfigBase):
         client.connect()
         self.logger.info(f"Connected to {config.url}")
 
-        setup_run_logging()
+        # No run-log wiring here: the tasks run on the serve process, so no
+        # record ever reaches this process. The connect TUI writes no local
+        # log file and creates no log directory.
         self.app = Winslow(client=client, logger=self.logger, owns_sessions=False)
         try:
             self.app.run()
         finally:
             client.close()
-            shutdown_run_logging()
 
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")

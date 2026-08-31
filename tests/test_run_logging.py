@@ -78,3 +78,47 @@ def test_task_errors_reach_the_session_log(e2e_repo, mode, log_sink):
         assert record["message"].startswith(message)
         assert "Traceback (most recent call last)" in record["message"]
         assert "tasks/errors.py" in record["message"]
+
+
+def _record(**kwargs):
+    return logging.LogRecord(
+        name="winslow", level=logging.ERROR, pathname=__file__, lineno=1,
+        msg="boom happened", args=(), **kwargs,
+    )
+
+
+def test_the_structured_formatter_carries_the_traceback():
+    try:
+        raise ValueError("boom")
+    except ValueError:
+        import sys
+
+        record = _record(exc_info=sys.exc_info())
+    payload = json.loads(StructuredFormatter().format(record))
+    assert "ValueError: boom" in payload["traceback"]
+    assert payload["message"] == "boom happened"
+
+    plain = json.loads(StructuredFormatter().format(_record(exc_info=None)))
+    assert plain["traceback"] is None
+
+
+def test_the_console_emits_json_under_the_env_switch(monkeypatch):
+    import winslow.logger as logger_module
+
+    monkeypatch.setattr(logger_module, "LOG_JSON", True)
+    handler = logger_module._console_handler()
+    assert isinstance(handler.formatter, StructuredFormatter)
+
+    monkeypatch.setattr(logger_module, "LOG_JSON", False)
+    handler = logger_module._console_handler()
+    assert not isinstance(handler.formatter, StructuredFormatter)
+
+
+def test_the_stdout_json_sink_shares_the_structured_shape():
+    import sys
+
+    from winslow.logger import stdout_json_sink
+
+    sink = stdout_json_sink()
+    assert isinstance(sink.formatter, StructuredFormatter)
+    assert sink.stream is sys.stdout
