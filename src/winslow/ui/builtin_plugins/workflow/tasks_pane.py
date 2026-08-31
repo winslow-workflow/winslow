@@ -55,5 +55,10 @@ class TasksPanePlugin(UIPlugin):
     label = "Tasks"
     priority = 5
 
+    @classmethod
+    def should_render(cls, context):
+        # An ended session serves no live tasks: only the History stays.
+        return context.snapshot.status not in ("ENDED", "ERROR")
+
     def create_widget(self, context: RenderContext):
         return TasksPaneWidget(context)

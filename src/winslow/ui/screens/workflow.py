@@ -98,7 +98,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
         self.snapshot = client.snapshot()
         self.session_status = self.snapshot.status
-        self.roster = client.roster()
+        # The roster of an ended session is released; the history rows then
+        # label by identity key (see RecordRow).
+        self.roster = () if self._has_ended else client.roster()
         # The toggles of this client: view state, seeded from the session
         # baseline and sent with every submit (see RunTasks.options).
         self.batch_options = dict(client.batch_options())
@@ -125,6 +127,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     @property
     def logger(self):
         return self.app.logger
+
+    @property
+    def _has_ended(self):
+        return self.session_status in ("ENDED", "ERROR")
 
     @property
     def task_rows(self):
@@ -224,7 +230,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             self.propagate_task_status(key, TaskStatus[name])
 
     async def on_mount(self):
-        self.connect()
+        # An ended session has no live lanes to subscribe to: the screen is
+        # a read-only history from the start.
+        if not self._has_ended:
+            self.connect()
         await self._refresh_from_snapshot()
 
     async def on_screen_resume(self):

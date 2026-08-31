@@ -75,9 +75,10 @@ class DashboardScreen(SlottedScreen):
         )
 
     async def _adopt_sessions(self):
-        """Give this client a row and a screen for every live session it does
-        not show: another client of the serve process created them. A session
-        this client creates enters through _start_session instead."""
+        """Give this client a row and a screen for every session it does not
+        show: another client of the serve process created them. A live one
+        joins the session list, an ended one the history; a session this
+        client creates enters through _start_session instead."""
         rows = await asyncio.to_thread(
             port_read, self, self.client.sessions, quiet=True
         )
@@ -89,7 +90,7 @@ class DashboardScreen(SlottedScreen):
             return
         known = {widget.session_id for widget in widgets}
         for row in rows:
-            if row.session_id in known or row.status in ("ENDED", "ERROR"):
+            if row.session_id in known or row.status == "ERROR":
                 continue
             try:
                 await self.app.adopt_session(row)

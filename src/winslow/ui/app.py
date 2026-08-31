@@ -142,10 +142,13 @@ class Winslow(App):
         self._connect_session(session_row)
 
     async def adopt_session(self, session_row):
-        """One live session another client created: give this client its
+        """One session another client created: give this client its
         installed screen and dashboard row, from the SessionRow value alone.
         The screen installs first, so a failed read leaves no orphan row."""
         self._connect_session(session_row)
+        if session_row.status in ("ENDED", "ERROR"):
+            await self.dashboard.add_history_session(session_row)
+            return
         row_widget = await self.dashboard.add_pending_session(
             session_row.instance_name
         )
@@ -162,10 +165,12 @@ class Winslow(App):
         self.install_screen(screen, name=session_screen_name(session_id))
 
         # The end event moves the dashboard row to the history. The bus
-        # close at session end disconnects the lane.
-        client.subscribe(
-            SessionEndedEvent, partial(self._relay_session_ended, session_id)
-        )
+        # close at session end disconnects the lane. An adopted session that
+        # already ended has no end to relay.
+        if session_row.status not in ("ENDED", "ERROR"):
+            client.subscribe(
+                SessionEndedEvent, partial(self._relay_session_ended, session_id)
+            )
 
     def _relay_session_ended(self, session_id, event):
         self.post_message(

@@ -464,6 +464,15 @@ class Connection:
         session = self.resolve_for(envelope)
         if session is None:
             return
+        if session.has_ended:
+            # The bus of an ended session is closed: a new bridge cannot
+            # attach. The refusal reaches the lane (see on_subscribe_refused).
+            self.request_error(
+                envelope.request_id,
+                f"{session.session_id} has ended and emits no more events - "
+                f"request its history instead of subscribing.",
+            )
+            return
         session_id = session.session_id
         bridge = self.app.bridges.get_or_create(session)
         subscription = self.subscriptions.get(session_id)

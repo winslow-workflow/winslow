@@ -161,8 +161,9 @@ class RecordRow(TaskRowBase):
         if outcome is not None:
             self.status = TaskStatus[outcome.status]
             self.log_line = outcome.last_log
-        else:
-            self.watch_status(self.status)
+        # The watcher fires under the mount, where is_mounted is still
+        # False: paint once more after the refresh.
+        self.call_after_refresh(self.watch_status, self.status)
 
     def update_outcome(self, outcome):
         self._outcome = outcome

@@ -223,3 +223,39 @@ def test_the_bridge_retires_when_its_session_ends(e2e_repo):
                 break
             time.sleep(0.01)
         assert serve_app.bridges.get(session.session_id) is None
+
+
+def test_a_subscribe_to_an_ended_session_answers_a_refusal(e2e_repo):
+    """The bus of an ended session is closed: the subscribe must answer an
+    error frame, never raise into the socket loop. The client lane turns the
+    refusal into the end event (see on_subscribe_refused)."""
+    workflow, session = live_session(e2e_repo)
+    registry = SessionRegistry()
+    registry.register(session)
+    session.end()
+
+    client, ws = connect(registry)
+    ws.send_json(
+        {
+            "type": "subscribe",
+            "session_id": session.session_id,
+            "request_id": "c-1",
+        }
+    )
+    frame = ws.receive_json()
+    assert frame["type"] == "error"
+    assert frame["request_id"] == "c-1"
+    assert "has ended" in frame["reason"]
+
+    # The connection survives: the history of the ended session still serves.
+    ws.send_json(
+        {
+            "type": "request",
+            "kind": "history",
+            "session_id": session.session_id,
+            "request_id": "c-2",
+        }
+    )
+    result = ws.receive_json()
+    assert result["type"] == "result"
+    assert result["kind"] == "history"
