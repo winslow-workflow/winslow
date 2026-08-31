@@ -94,7 +94,7 @@ class BaseStore(ReactiveDict):
 
     def __init__(self, bus, items: list = None) -> None:
         if not self.item_class or not self.status_class:
-            raise ValueError("Child classes must define item_class and status_class.")
+            raise ValueError("a Store subclass must define item_class and status_class.")
 
         items = items or []
 

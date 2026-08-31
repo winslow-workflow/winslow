@@ -51,7 +51,8 @@ class Registry(_Base):
         if key in target:
             if value is not target[key]:
                 raise RegistrationError(
-                    f"Cannot register {key} - Existing value found already: {target[key]}"
+                    f"cannot register {key!r}: {target[key]} already holds that name - "
+                    f"rename one of the two classes."
                 )
             else:
                 LOGGER.info(

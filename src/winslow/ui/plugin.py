@@ -141,7 +141,7 @@ class UIPluginRegistry(BaseRegistry):
             qname = cls._qualified_name(source)
             raise PluginError(
                 f"Plugin {qname} declares replace={cls.replace!r} but has autoload=False "
-                f"and is not in enabled_tui_plugins — target would be evicted with nothing replacing it"
+                f"and is not in enabled_tui_plugins - the target would be evicted with nothing replacing it"
             )
         super()._register(cls, source)
 

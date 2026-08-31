@@ -175,7 +175,11 @@ class ActionHandler:
             return self._refuse(action, str(exc))
         if batch is None:
             # The admission filtered every task out (see _open_batch).
-            return self._refuse(action, "The batch contains no eligible tasks.")
+            return self._refuse(action, (
+                "no requested task is eligible for this action right now - "
+                "the current statuses exclude all of them; the task list "
+                "shows each status."
+            ))
         return BatchAck(accepted=True, batch_uuid=batch.uuid)
 
     def stop_batch(self, action):

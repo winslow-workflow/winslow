@@ -106,7 +106,10 @@ class Session:
         with an error."""
         with self._lifecycle_lock:
             if self.is_ending or self.has_ended:
-                raise SessionEndingError(f"{self.session_id} no longer accepts batches")
+                raise SessionEndingError(
+                    f"{self.session_id} is ending and accepts no new batches "
+                    f"- the running batches drain first."
+                )
             yield
 
     def end(self):

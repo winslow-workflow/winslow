@@ -247,7 +247,8 @@ class Task(_ParameterizationBase):
 
         if not cls._is_parameterized:
             raise ValueError(
-                "There is no point trying to get parameters for non-parameterized tasks."
+                f"{cls.__name__} declares no parameters - get_parameters "
+                f"applies only to parameterized tasks."
             )
 
         raise _GetParametersNotImplemented(
@@ -306,7 +307,8 @@ class Task(_ParameterizationBase):
         calculate it."""
         if self._priority is None:
             raise MisconfigurationError(
-                f"{self} priority read before the graph assigned it."
+                f"{self} priority read before the graph assigned it - read it "
+                f"after initialize_tasks."
             )
         return self._priority
 

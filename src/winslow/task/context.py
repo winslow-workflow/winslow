@@ -60,7 +60,8 @@ def set_execution_context(context: Optional[TaskExecutionContext]):
 def scoped_execution_context(context: TaskExecutionContext):
     if get_execution_context() is not None:
         raise RuntimeError(
-            "Nested execution contexts are not allowed in the current context"
+            "a batch already runs on this thread - a nested execution "
+            "context is not supported."
         )
     token = _task_execution.set(context)
     try:

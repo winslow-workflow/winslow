@@ -593,7 +593,7 @@ class Orchestrator(_ConfigBase):
         if workflow_name not in self.workflow_registry:
             raise MisconfigurationError(
                 f"{workflow_name} not found in the workflow registry"
-                f" - (available workflows: {self.workflow_registry.names})"
+                f" - the available workflows are {self.workflow_registry.names}."
             )
 
         workflow_kls = self.workflow_registry[workflow_name]
@@ -601,7 +601,7 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_kls.should_be_initialized(self.orchestrator_config):
             raise InitializationError(
-                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+                f"Cannot initialize workflow {workflow_kls} - its should_be_initialized answered False for this configuration."
             )
 
         workflow = workflow_kls(self.orchestrator_config, workflow_args)
@@ -635,13 +635,15 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_name:
             raise MisconfigurationError(
-                "Need to provide workflow name via --workflow parameter."
+                f"a headless run initializes one workflow - pass --workflow "
+                f"<name>; the collected workflows are "
+                f"{self.workflow_registry.names}."
             )
 
         if workflow_name not in self.workflow_registry:
             raise MisconfigurationError(
                 f"{workflow_name} not found in the workflow registry"
-                f" - (available workflows: {self.workflow_registry.names})"
+                f" - the available workflows are {self.workflow_registry.names}."
             )
 
         workflow_kls = self.workflow_registry[workflow_name]
@@ -649,7 +651,7 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_kls.should_be_initialized(self.orchestrator_config):
             error = InitializationError(
-                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+                f"Cannot initialize workflow {workflow_kls} - its should_be_initialized answered False for this configuration."
             )
             emit_unscoped_error(
                 error, workflow_name=workflow_name, workflow_class=workflow_kls.__name__

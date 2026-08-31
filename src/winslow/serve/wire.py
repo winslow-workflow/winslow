@@ -2,7 +2,7 @@
 builder and the row shapes of sessions, descriptors, caches, and history.
 Both the websocket layer and the MCP tools read these."""
 
-from dataclasses import asdict, is_dataclass
+from dataclasses import asdict, fields as dataclass_fields, is_dataclass
 
 from winslow.exceptions import MisconfigurationError, RequestError
 
@@ -194,7 +194,10 @@ def build_action(name, fields):
     try:
         return action_class(**fields)
     except TypeError as exc:
-        raise ValueError(f"bad fields for {name}: {exc}") from None
+        raise ValueError(
+            f"bad fields for {name}: {exc} - the fields of {name} are "
+            f"{[f.name for f in dataclass_fields(action_class)]}."
+        ) from None
 
 
 def descriptor_rows(orchestrator):

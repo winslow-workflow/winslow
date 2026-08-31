@@ -184,7 +184,9 @@ def _check_hashability(task_kls, field_name, value):
         hash(value)
     except TypeError:
         raise ParameterizationError(
-            f"Unhashable value generated for parameter: {field_name}. ({value})",
+            f"{task_kls.__name__}.{field_name}: the parameter value "
+            f"{safe_repr(value)} is not hashable - a parameter value feeds "
+            f"the identity key, so it must hash and stay stable.",
             task_kls=task_kls,
         )
 
@@ -297,7 +299,9 @@ def _validate_sequential_value_lengths(task_kls, sequential_ctx):
         ]
 
         raise ParameterizationError(
-            f"Sequential parametrization values with different lengths were generated {', '.join(ctx_readable)}",
+            f"{task_kls.__name__}: sequential parameters must have the same "
+            f"number of values, got {', '.join(ctx_readable)} - align the "
+            f"value lists.",
             task_kls=task_kls,
         )
 
@@ -537,8 +541,9 @@ def _generate_context_from_params(task_kls, workflow_config):
     if not axes:
         raise ParameterizationError(
             (
-                "Empty parameterization context was generated."
-                " - please check value generation functions if you are using any."
+                "the parameterization produced no parameter sets - a value "
+                "generation function answered nothing; a parameterized task "
+                "needs at least one set."
             ),
             task_kls=task_kls,
         )

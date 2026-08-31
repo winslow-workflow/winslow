@@ -122,14 +122,15 @@ class Graph(_Base):
                 # a class name in string form.
                 if not task_classes:
                     raise MisconfigurationError(
-                        f"No matching task classes found in the registry for the dependency: {dep}",
-                        "Make sure you don't have stale dependencies set in string form.",
+                        f"{task}: the dependency {dep!r} matches no registered "
+                        f"task class - fix the name, or register the class."
                     )
             elif isinstance(dep, type) and issubclass(dep, Task):
                 task_classes = [dep]
             else:
                 raise MisconfigurationError(
-                    f"Invalid dependency value ({dep}, {type(dep)}), it can either be a task class or a string."
+                    f"{task}: {dep!r} ({type(dep).__name__}) is not a dependency - "
+                    f"declare a task class or its name as a string."
                 )
 
             dependency_classes.extend(task_classes)

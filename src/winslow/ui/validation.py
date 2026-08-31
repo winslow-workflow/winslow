@@ -64,7 +64,11 @@ class WorkflowFormValidator:
             return not widget.value
         elif row.action == "store_const":
             return row.const if widget.value else None
-        raise ValueError(f"Invalid action for Switch - {widget.name} - {row.action}")
+        raise ValueError(
+            f"option {widget.name!r} declares {row.action!r}, which is not a "
+            f"switch action - the switch actions are store_true, store_false "
+            f"and store_const."
+        )
 
     def _collect_radio_set_value(self, widget, row):
         for radio_button in widget.query(RadioButton):
