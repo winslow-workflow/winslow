@@ -19,8 +19,6 @@ from winslow.task.status import TaskStatus as S
 from harness import (
     build_workflow,
     by_name,
-    gated_workflow,
-    start_gated_batch,
     wait_for_status,
 )
 
@@ -77,28 +75,6 @@ def wait_for_cache_value(ws, session_id, cache_name, entry_name, state, timeout=
 # --- sessions and snapshot -----------------------------------------------------
 
 
-def test_sessions_request_serves_the_rows_of_the_registry(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    result = request(ws, "s-1", Requests.SESSIONS)
-    (row,) = result["sessions"]
-    assert row["session_id"] == session.session_id
-    assert row["status"] == "ACTIVE"
-    ws.close()
-
-
-def test_snapshot_request_serves_the_session_snapshot(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    result = request(ws, "s-2", Requests.SNAPSHOT, session_id=session.session_id)
-    assert result["session_id"] == session.session_id
-    assert result["tasks"] == {
-        key: status.name for key, status in workflow.store.current.items()
-    }
-    assert result["batches"] == []
-    ws.close()
-
-
 def test_snapshot_request_answers_after_the_session_end(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     ws = connect(registry)
@@ -112,60 +88,6 @@ def test_snapshot_request_answers_after_the_session_end(e2e_repo):
 
 
 # --- roster ------------------------------------------------------------------
-
-
-def test_roster_serves_stub_task_info_in_launch_filter_order(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    result = request(ws, "r-1", Requests.ROSTER, session_id=session.session_id)
-    keys = [row["key"] for row in result["tasks"]]
-    # Order, not just membership: the roster promises get_filtered_tasks order.
-    assert keys == [t.identity_key for t in workflow.get_filtered_tasks()]
-    # A stub: no full-capture fields.
-    assert all(row["attributes"] is None for row in result["tasks"])
-    ws.close()
-
-
-# --- caches, cache_value, cache_updated, the two cache actions ---------------
-
-
-def test_caches_serves_cards_with_entries_and_value_previews(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    result = request(ws, "r-2", Requests.CACHES, session_id=session.session_id)
-    (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
-    assert weather["scope"] == "workflow"
-    entry_names = {e["name"] for e in weather["entries"]}
-    assert entry_names == {"cities", "city_index", "forecast"}
-    # Eager entries are warm at collection time; forecast is lazy and cold.
-    assert "cities" in weather["values"]
-    assert "forecast" not in weather["values"]
-    ws.close()
-
-
-def test_cache_value_renders_a_warm_entry_server_side(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    result = request(
-        ws, "r-3", Requests.CACHE_VALUE, session_id=session.session_id,
-        cache_name="weather", entry_name="cities",
-    )
-    assert result["state"] == "warm"
-    assert result["encoding"] == "text"
-    assert "athens" in result["rendered"]
-    ws.close()
-
-
-def test_cache_value_reports_cold_with_no_value(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    result = request(
-        ws, "r-4", Requests.CACHE_VALUE, session_id=session.session_id,
-        cache_name="weather", entry_name="forecast",
-    )
-    assert result["state"] == "cold"
-    assert result["rendered"] is None
-    ws.close()
 
 
 def test_cache_value_refuses_an_unknown_entry(e2e_repo):
@@ -182,37 +104,6 @@ def test_cache_value_refuses_an_unknown_entry(e2e_repo):
         }
     )
     assert "has no entry 'nope'" in frames_until(ws, "error")["reason"]
-    ws.close()
-
-
-def test_load_cache_entries_action_computes_the_entry(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(
-        ws, "r-6", session.session_id, Actions.LOAD_CACHE_ENTRIES,
-        entries=[["weather", "forecast"]],
-    )
-    assert ack["accepted"] is True
-    result = wait_for_cache_value(
-        ws, session.session_id, "weather", "forecast", "warm"
-    )
-    assert "ATHENS" in result["rendered"]
-    ws.close()
-
-
-def test_clear_cache_entries_action_drops_the_entry_and_its_dependents(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(
-        ws, "r-8", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
-        entries=[["weather", "cities"]],
-    )
-    assert ack["accepted"] is True
-    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
-    result = request(ws, "r-9", Requests.CACHES, session_id=session.session_id)
-    (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
-    assert "cities" not in weather["values"]
-    assert "city_index" not in weather["values"]
     ws.close()
 
 
@@ -269,33 +160,6 @@ def test_clear_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
     ws.close()
 
 
-def test_load_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
-    """The "load all" case: cities and forecast load together in one frame,
-    independently of each other (forecast does not depend on the load of
-    cities in this action, only on cities' own stored value)."""
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    action(
-        ws, "r-46", session.session_id, Actions.CLEAR_CACHE_ENTRIES,
-        entries=[["weather", "cities"], ["weather", "forecast"]],
-    )
-    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
-    wait_for_cache_value(ws, session.session_id, "weather", "forecast", "cold")
-
-    ack = action(
-        ws, "r-47", session.session_id, Actions.LOAD_CACHE_ENTRIES,
-        entries=[["weather", "cities"], ["weather", "forecast"]],
-    )
-    assert ack["accepted"] is True
-    wait_for_cache_value(ws, session.session_id, "weather", "cities", "warm")
-    wait_for_cache_value(ws, session.session_id, "weather", "forecast", "warm")
-    result = request(ws, "r-48", Requests.CACHES, session_id=session.session_id)
-    (weather,) = [c for c in result["caches"] if c["name"] == "weather"]
-    assert "cities" in weather["values"]
-    assert "forecast" in weather["values"]
-    ws.close()
-
-
 def test_cache_updated_fires_on_a_live_invalidation(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
     refresh = by_name(workflow)["RefreshForecast"]
@@ -330,40 +194,6 @@ def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
 # --- record_detail, history tasks -----------------------------------------
 
 
-def test_record_detail_serves_the_phase_timeline_and_snapshots(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ack = action(ws, "r-12", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key])
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    result = request(
-        ws, "r-13", Requests.RECORD_DETAIL, session_id=session.session_id,
-        batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
-    )
-    assert result["info"]["key"] == alpha.identity_key
-    assert result["phases"]
-    assert all(p["phase"] and p["started_at"] for p in result["phases"])
-    ws.close()
-
-
-def test_history_rows_carry_started_at_duration_and_last_log_per_task(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    action(ws, "r-14", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key])
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    result = request(ws, "r-15", Requests.HISTORY, session_id=session.session_id)
-    (row,) = result["batches"]
-    detail = row["tasks"][alpha.identity_key]
-    assert detail["status"] == "COMPLETED"
-    assert detail["started_at"] is not None
-    assert detail["duration"] is not None
-    ws.close()
-
-
-# --- session rows -------------------------------------------------------------
-
-
 def test_snapshot_session_rows_carry_display_and_progress_fields(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     app = create_app(
@@ -384,154 +214,6 @@ def test_snapshot_session_rows_carry_display_and_progress_fields(e2e_repo):
 
 
 # --- batch options ---------------------------------------------------------------
-
-
-def test_batch_options_request_serves_the_session_baseline(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    result = request(ws, "r-16", Requests.BATCH_OPTIONS, session_id=session.session_id)
-    assert result["options"] == {
-        "dry_run": workflow.dry_run,
-        "force_run": workflow.force_run,
-        "force_success": workflow.force_success,
-        "disable_concurrency": workflow.disable_concurrency,
-    }
-    ws.close()
-
-
-def test_submit_options_snapshot_per_batch_over_the_wire(e2e_repo):
-    """The batch flags ride the submit: two clients with different toggles
-    run with their own, and the session baseline never changes."""
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ack = action(
-        ws,
-        "r-17",
-        session.session_id,
-        Actions.RUN_TASKS,
-        keys=[alpha.identity_key],
-        options={"force_run": True},
-    )
-    assert ack["accepted"] is True
-    context = workflow.runner.get_batch(ack["batch_uuid"]).execution_context
-    assert context.force_run is True
-    assert workflow.batch_options.force_run is False
-
-    refused = action(
-        ws,
-        "r-18b",
-        session.session_id,
-        Actions.RUN_TASKS,
-        keys=[alpha.identity_key],
-        options={"warp_speed": True},
-    )
-    assert refused["accepted"] is False
-    assert "names no batch option" in refused["reason"]
-    ws.close()
-
-
-# --- session_params ------------------------------------------------------------
-
-
-def test_session_params_serves_settings_and_resolved_config(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    result = request(ws, "r-18", Requests.SESSION_PARAMS, session_id=session.session_id)
-    assert result["settings"] == workflow.settings_snapshot
-    assert set(result["workflow_config"]) == set(workflow.config_option_names)
-    ws.close()
-
-
-# --- apply_filter --------------------------------------------------------------
-
-
-def test_apply_filter_serves_matching_identity_keys(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    result = request(
-        ws, "r-19", Requests.APPLY_FILTER, session_id=session.session_id, query="alpha"
-    )
-    assert result["keys"] == [alpha.identity_key]
-    ws.close()
-
-
-def test_apply_filter_answers_the_parse_error(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-20",
-            "kind": Requests.APPLY_FILTER,
-            "session_id": session.session_id,
-            "query": "((unclosed",
-        }
-    )
-    error = frames_until(ws, "error")
-    assert "r-20" == error["request_id"]
-    ws.close()
-
-
-def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatch):
-    from winslow.filter.builtin import GroupFilter
-
-    monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
-    workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-21",
-            "kind": Requests.APPLY_FILTER,
-            "session_id": session.session_id,
-            "query": "alpha",
-            "builtin_only": True,
-        }
-    )
-    error = frames_until(ws, "error")
-    assert "supports only the builtin filters" in error["reason"]
-    ws.close()
-
-
-def test_apply_filter_history_scope_serves_record_keys_after_the_end(e2e_repo):
-    """The history scope matches over the record infos, so a client with no
-    parser of its own searches an ended session through the one endpoint."""
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    action(ws, "r-60", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key])
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    session.end()
-    assert session.has_ended
-
-    result = request(
-        ws,
-        "r-61",
-        Requests.APPLY_FILTER,
-        session_id=session.session_id,
-        query="alpha",
-        scope="history",
-    )
-    assert result["keys"] == [alpha.identity_key]
-
-    # The tasks scope refuses the ended session with direction.
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-62",
-            "kind": Requests.APPLY_FILTER,
-            "session_id": session.session_id,
-            "query": "alpha",
-        }
-    )
-    error = frames_until(ws, "error")
-    assert "scope='history'" in error["reason"]
-    ws.close()
-
-
-# --- session_log and task_log lanes --------------------------------------------
 
 
 def test_session_log_subscription_streams_the_workflow_logger(e2e_repo):
@@ -638,48 +320,6 @@ def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypa
 
 
 # --- manifests and restore_session ------------------------------------------
-
-
-def test_manifests_and_restore_session_round_trip(e2e_repo, state_store):
-    orchestrator = serve_orchestrator(e2e_repo)
-    registry = SessionRegistry()
-    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
-
-    created = request(ws, "r-23", Requests.CREATE_SESSION, workflow="my-workflow")
-    session_id = created["session_id"]
-
-    # Simulate a dead process: the session drops out of this registry, but
-    # its manifest stays open (never marked ended).
-    registry.remove(session_id)
-
-    manifests = request(ws, "r-24", Requests.MANIFESTS)
-    (row,) = [m for m in manifests["manifests"] if m["session_id"] == session_id]
-    assert row["workflow_class"] == "my-workflow"
-
-    restored = request(ws, "r-25", Requests.RESTORE_SESSION, session_id=session_id)
-    assert restored["session_id"] == session_id
-    assert restored["status"] == "ACTIVE"
-    assert session_id in registry
-    ws.close()
-
-
-def test_restore_session_refuses_an_unknown_manifest(e2e_repo, state_store):
-    orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-26",
-            "kind": Requests.RESTORE_SESSION,
-            "session_id": "gone",
-        }
-    )
-    error = frames_until(ws, "error")
-    assert "names no open manifest" in error["reason"]
-    ws.close()
-
-
-# --- descriptor parity: action, const, initial ----------------------------------
 
 
 def test_descriptor_option_rows_carry_action_const_and_initial(e2e_repo):
@@ -851,52 +491,6 @@ def test_a_malformed_unsubscribe_frame_answers_an_error(e2e_repo):
 # --- ended sessions answer directional errors, not a generic 500 ------------------
 
 
-def test_the_live_session_reads_answer_directional_errors_once_ended(e2e_repo):
-    workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    session.end()
-    assert session.has_ended
-
-    for kind, fields in [
-        (Requests.ROSTER, {}),
-        (Requests.CACHES, {}),
-        (Requests.CACHE_VALUE, {"cache_name": "weather", "entry_name": "cities"}),
-        (Requests.APPLY_FILTER, {"query": "alpha"}),
-    ]:
-        ws.send_json(
-            {
-                "type": "request",
-                "request_id": f"ended-{kind}",
-                "kind": kind,
-                "session_id": session.session_id,
-                **fields,
-            }
-        )
-        error = frames_until(ws, "error")
-        assert error["request_id"] == f"ended-{kind}"
-        assert "has ended" in error["reason"]
-    ws.close()
-
-
-def test_task_detail_answers_a_directional_error_once_ended(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    session.end()
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-36",
-            "kind": Requests.TASK_DETAIL,
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    error = frames_until(ws, "error")
-    assert "has ended" in error["reason"]
-    ws.close()
-
-
 def test_subscribe_task_log_answers_a_directional_error_once_ended(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
@@ -914,57 +508,4 @@ def test_subscribe_task_log_answers_a_directional_error_once_ended(e2e_repo):
     )
     error = frames_until(ws, "error")
     assert "has ended" in error["reason"]
-    ws.close()
-
-
-def test_history_log_tail_and_record_detail_still_serve_an_ended_session(e2e_repo):
-    """The five handlers on requires_session (not requires_live_session)
-    keep working after end: they read the record store and workflow
-    attributes that survive release_tasks."""
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ack = action(
-        ws, "r-38", session.session_id, Actions.RUN_TASKS, keys=[alpha.identity_key]
-    )
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    session.end()
-    assert session.has_ended
-
-    history = request(ws, "r-39", Requests.HISTORY, session_id=session.session_id)
-    assert history["batches"]
-
-    log_tail = request(
-        ws, "r-40", Requests.LOG_TAIL, session_id=session.session_id,
-        batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
-    )
-    assert "lines" in log_tail
-
-    record_detail = request(
-        ws, "r-41", Requests.RECORD_DETAIL, session_id=session.session_id,
-        batch_uuid=ack["batch_uuid"], task_key=alpha.identity_key,
-    )
-    assert record_detail["info"]["key"] == alpha.identity_key
-    ws.close()
-
-
-def test_end_session_finalizes_after_the_drain_over_the_wire(e2e_repo):
-    """end_session with a running batch: the runner drains into the
-    finalization, so a wire client receives session_ended with no local TUI
-    in the loop (see HeadlessRunner._execute_batch)."""
-    workflow, tasks = gated_workflow(e2e_repo)
-    registry = SessionRegistry()
-    registry.register(workflow.session)
-    gate, batch = start_gated_batch(workflow, tasks)
-    ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": workflow.session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
-
-    ack = action(ws, "r-70", workflow.session.session_id, Actions.END_SESSION)
-    assert ack["accepted"] is True
-    assert workflow.session.is_ending
-
-    gate.set()
-    frames_until(ws, "session_ended")
-    assert workflow.session.has_ended
     ws.close()

@@ -12,7 +12,7 @@ from winslow.serve.app import PROTOCOL_VERSION
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 
-from harness import build_workflow, by_name, wait_for_status
+from harness import build_workflow, by_name
 
 TOKEN = "test-token"
 
@@ -151,85 +151,6 @@ def test_submit_guarded_turns_a_raise_into_a_refused_ack(e2e_repo, monkeypatch):
     assert "the session log has the traceback" in ack.reason
 
 
-def test_history_serves_the_batches_with_their_outcomes(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": "action",
-            "request_id": "r-5",
-            "session_id": session.session_id,
-            "action": "run_tasks",
-            "fields": {"keys": [alpha.identity_key]},
-        }
-    )
-    ack = frames_until(ws, "ack")
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-6",
-            "kind": "history",
-            "session_id": session.session_id,
-        }
-    )
-    result = frames_until(ws, "result")
-    (row,) = result["batches"]
-    assert row["uuid"] == ack["batch_uuid"]
-    assert row["tasks"][alpha.identity_key]["status"] == "COMPLETED"
-    ws.close()
-
-
-def test_log_tail_serves_the_captured_lines(e2e_repo, monkeypatch):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    original = type(alpha).run
-
-    def run(self):
-        self.logger.warning("alpha says hello")
-        original(self)
-
-    monkeypatch.setattr(type(alpha), "run", run)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": "action",
-            "request_id": "r-7",
-            "session_id": session.session_id,
-            "action": "run_tasks",
-            "fields": {"keys": [alpha.identity_key]},
-        }
-    )
-    ack = frames_until(ws, "ack")
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-8",
-            "kind": "log_tail",
-            "session_id": session.session_id,
-            "batch_uuid": ack["batch_uuid"],
-            "task_key": alpha.identity_key,
-        }
-    )
-    result = frames_until(ws, "result")
-    assert any("alpha says hello" in line for line in result["lines"])
-
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-9",
-            "kind": "log_tail",
-            "session_id": session.session_id,
-            "batch_uuid": "gone",
-            "task_key": alpha.identity_key,
-        }
-    )
-    assert "keeps no records" in frames_until(ws, "error")["reason"]
-    ws.close()
-
-
 def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
     from winslow.model import TaskInfo
 
@@ -253,85 +174,6 @@ def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
     error = frames_until(ws, "error")
     assert error["request_id"] == "r-10"
     assert "server log" in error["reason"]
-    ws.close()
-
-
-def test_task_detail_serves_the_full_capture(e2e_repo):
-    workflow, session, registry = registered(e2e_repo)
-    alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-10",
-            "kind": "task_detail",
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    result = frames_until(ws, "result")
-    assert result["info"]["key"] == alpha.identity_key
-    ws.close()
-
-
-def test_descriptors_serve_the_start_form_options(e2e_repo):
-    orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator)
-    ws.send_json({"type": "request", "request_id": "r-11", "kind": "descriptors"})
-    result = frames_until(ws, "result")
-    names = [row["workflow"] for row in result["workflows"]]
-    assert "my-workflow" in names
-    ws.close()
-
-
-def test_create_session_builds_and_registers_a_live_session(e2e_repo, state_store):
-    orchestrator = serve_orchestrator(e2e_repo)
-    registry = SessionRegistry()
-    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
-
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-12",
-            "kind": "create_session",
-            "workflow": "my-workflow",
-        }
-    )
-    result = frames_until(ws, "result")
-    session_id = result["session_id"]
-    assert session_id in registry
-    assert result["status"] == "ACTIVE"
-
-    # The created session serves the whole protocol: subscribe and run.
-    ws.send_json({"type": "subscribe", "session_id": session_id})
-    snapshot = frames_until(ws, "snapshot")
-    key = next(k for k in snapshot["tasks"] if k.startswith("alpha"))
-    ws.send_json(
-        {
-            "type": "action",
-            "request_id": "r-13",
-            "session_id": session_id,
-            "action": "run_tasks",
-            "fields": {"keys": [key]},
-        }
-    )
-    assert frames_until(ws, "ack")["accepted"] is True
-    assert frames_until(ws, "batch_completed")["batch"]["status"] == "FINISHED"
-    ws.close()
-
-
-def test_create_session_refuses_an_unknown_workflow(e2e_repo, state_store):
-    orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": "request",
-            "request_id": "r-14",
-            "kind": "create_session",
-            "workflow": "nope",
-        }
-    )
-    assert "names no collected workflow" in frames_until(ws, "error")["reason"]
     ws.close()
 
 

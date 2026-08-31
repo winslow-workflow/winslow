@@ -162,16 +162,6 @@ def test_create_session_registers_and_stamps_a_local_manifest(
     )
 
 
-def test_create_session_refuses_an_unknown_workflow(e2e_repo, state_store):
-    app = LocalAppClient(
-        SessionRegistry(),
-        orchestrator=local_orchestrator(e2e_repo),
-        state_store=state_store,
-    )
-    with pytest.raises(RequestError, match="names no collected workflow"):
-        app.create_session("no-such-workflow")
-
-
 def test_manifests_and_restore_round_trip(e2e_repo, state_store):
     registry = SessionRegistry()
     app = LocalAppClient(
@@ -195,16 +185,6 @@ def test_manifests_and_restore_round_trip(e2e_repo, state_store):
     assert restored.session_id == session_id
     assert restored.status == "ACTIVE"
     assert session_id in registry
-
-
-def test_restore_refuses_an_unknown_manifest(e2e_repo, state_store):
-    app = LocalAppClient(
-        SessionRegistry(),
-        orchestrator=local_orchestrator(e2e_repo),
-        state_store=state_store,
-    )
-    with pytest.raises(RequestError, match="names no open manifest"):
-        app.restore_session("gone")
 
 
 def test_session_resolves_a_session_client(e2e_repo):

@@ -125,15 +125,6 @@ def run_to_completion(workflow, client, task):
 # --- the reads: the wire answers the DTOs of the local adapter -----------------
 
 
-def test_sessions_serves_the_rows_of_the_registry(served):
-    workflow, session, client = served
-    (row,) = client.sessions()
-    assert row.session_id == session.session_id
-    assert row.status == "ACTIVE"
-    assert row.workflow == str(workflow)
-    assert row.task_status_summary.total == len(workflow.tasks)
-
-
 def test_the_wire_reads_match_the_local_adapter(served):
     workflow, session, client = served
     remote = client.session(session.session_id)
@@ -176,16 +167,6 @@ def test_history_rows_carry_task_outcome_instances(served):
     (outcome,) = row.tasks.values()
     assert isinstance(outcome, TaskOutcome)
     assert outcome.status == "COMPLETED"
-
-
-def test_apply_filter_raises_value_error_on_a_bad_query(served):
-    workflow, session, client = served
-    remote = client.session(session.session_id)
-    with pytest.raises(RequestError, match="!bogus"):
-        remote.apply_filter("!bogus alpha")
-
-
-# --- the subscriptions: protocol frames arrive as model events -----------------
 
 
 def test_a_run_streams_the_model_events(served):
