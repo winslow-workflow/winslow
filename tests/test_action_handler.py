@@ -11,7 +11,6 @@ from winslow.actions import (
     CheckTasks,
     EndSession,
     RunTasks,
-    SetBatchOptions,
     StopBatch,
 )
 from winslow.constants import Mode
@@ -111,7 +110,6 @@ def test_every_action_refuses_after_the_session_ends(e2e_repo):
         actions.submit(CheckTasks(keys=("k",))),
         actions.submit(StopBatch(batch_uuid="b")),
         actions.submit(EndSession()),
-        actions.submit(SetBatchOptions(dry_run=True)),
     ]
     for ack in refused:
         assert not ack.accepted
@@ -132,24 +130,44 @@ def test_end_session_force_stops_the_running_batch(e2e_repo):
     gate.set()
     batch.wait()
     assert batch.status is ExecutionStatus.STOPPED
-    # Before finalize: the end of the session releases the store.
-    for name in ("TailOne", "TailTwo"):
-        assert workflow.store[tasks[name]] is S.ABORTED
-    workflow.session.finalize_if_drained()
+    # The drain rule ran on the batch worker: the last completion finalized
+    # the end, with no caller outside the runner (see finalize_if_drained).
     assert workflow.session.has_ended
+    for name in ("TailOne", "TailTwo"):
+        assert workflow.store.history[tasks[name].identity_key][-1] is S.ABORTED
 
 
-def test_set_batch_options_changes_one_field_and_the_manifest(e2e_repo, state_store):
+def test_submit_options_ride_the_batch_and_leave_the_baseline_alone(e2e_repo):
+    """The batch flags are per submit: the batch snapshots the action's
+    options over the baseline, and the baseline never changes."""
     workflow = live_workflow(e2e_repo)
-    workflow.init_state(state_store, origin="test")
+    alpha = by_name(workflow)["Alpha"]
 
-    ack = workflow.session.actions.submit(SetBatchOptions(dry_run=True))
+    ack = submit_and_wait(
+        workflow, RunTasks(keys=(alpha.identity_key,), options={"dry_run": True})
+    )
 
-    assert ack == Ack(accepted=True)
-    assert workflow.batch_options.dry_run is True
-    assert workflow.batch_options.force_run is False  # None fields stay
-    manifest = state_store.load_manifest(workflow.session_id)
-    assert manifest.orchestrator_overrides["dry_run"] is True
+    assert ack.accepted
+    context = workflow.runner.get_batch(ack.batch_uuid).execution_context
+    assert context.dry_run is True
+    assert context.force_run is False  # an unsent flag keeps the baseline
+    assert workflow.batch_options.dry_run is False
+
+    # A submit without options uses the baseline.
+    ack = submit_and_wait(workflow, RunTasks(keys=(alpha.identity_key,)))
+    assert workflow.runner.get_batch(ack.batch_uuid).execution_context.dry_run is False
+
+
+def test_submit_refuses_an_unknown_batch_option(e2e_repo):
+    workflow = live_workflow(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+
+    ack = workflow.session.actions.submit(
+        RunTasks(keys=(alpha.identity_key,), options={"warp_speed": True})
+    )
+
+    assert not ack.accepted
+    assert "'warp_speed' names no batch option" in ack.reason
 
 
 def test_stop_batch_acknowledges_and_the_batch_drains(e2e_repo):

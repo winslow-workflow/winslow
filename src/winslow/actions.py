@@ -3,9 +3,13 @@ user input into one action dataclass and submits it to the ActionHandler of
 the session. Action fields are values only: identity keys, scalars (the
 payload rule, see winslow.events)."""
 
-from dataclasses import dataclass, fields
+import threading
+from dataclasses import asdict, dataclass, fields
 
+from winslow.cache import declared_entries
 from winslow.exceptions import SessionEndingError
+from winslow.task.context import BatchOptions
+from winslow.util import execute_in_threads
 
 
 @dataclass(frozen=True)
@@ -27,12 +31,20 @@ class BatchAck(Ack):
 
 @dataclass(frozen=True)
 class RunTasks:
+    """options carries the batch options of this submit: {name: bool},
+    over the session baseline. They are client view state, so each client
+    sends its own with every batch (see BatchOptions)."""
+
     keys: tuple
+    options: dict | None = None
 
 
 @dataclass(frozen=True)
 class CheckTasks:
+    """The check form of RunTasks; options works the same."""
+
     keys: tuple
+    options: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -46,14 +58,19 @@ class EndSession:
 
 
 @dataclass(frozen=True)
-class SetBatchOptions:
-    """A None field stays unchanged. The new values land in the stored
-    manifest, so a restore rebuilds the toggles."""
+class LoadCacheEntries:
+    """Bulk-only, like RunTasks: a single selection sends a one-pair list.
+    Each pair is (cache_name, entry_name)."""
 
-    dry_run: bool | None = None
-    force_run: bool | None = None
-    force_success: bool | None = None
-    disable_concurrency: bool | None = None
+    entries: tuple
+
+
+@dataclass(frozen=True)
+class ClearCacheEntries:
+    """Bulk-only, like LoadCacheEntries. "Clear" is the action verb on the
+    wire; the handler calls cache.invalidate internally."""
+
+    entries: tuple
 
 
 class ActionHandler:
@@ -89,6 +106,22 @@ class ActionHandler:
             )
         return method(self, action)
 
+    def submit_guarded(self, action):
+        """submit for a wire transport: an unexpected raise becomes a refused
+        ack with the traceback in the session log, so no exception crosses the
+        wire boundary. The TUI calls submit and keeps the real traceback."""
+        try:
+            return self.submit(action)
+        except Exception:
+            self._workflow.logger.error(
+                f"{type(action).__name__} failed inside the session.", exc_info=True
+            )
+            return self._refuse(
+                action,
+                f"{type(action).__name__} failed inside the session - "
+                f"the session log has the traceback.",
+            )
+
     @classmethod
     def _refuse(cls, action, reason):
         ack_class = BatchAck if isinstance(action, (RunTasks, CheckTasks)) else Ack
@@ -104,6 +137,20 @@ class ActionHandler:
             action, self._runner.submit_check_single, self._runner.submit_check
         )
 
+    def _batch_options_for(self, action):
+        """The BatchOptions of one submit: the session baseline with the
+        action's values on top, or (None, reason) on an unknown option."""
+        overrides = action.options or {}
+        known = {field.name for field in fields(BatchOptions)}
+        unknown = sorted(set(overrides) - known)
+        if unknown:
+            return None, (
+                f"{', '.join(repr(name) for name in unknown)} names no batch "
+                f"option - the options are {sorted(known)}."
+            )
+        baseline = asdict(self._workflow.batch_options)
+        return BatchOptions(**{**baseline, **overrides}), None
+
     def _submit_batch(self, action, submit_single, submit_bulk):
         keys = tuple(dict.fromkeys(action.keys))
         if len(keys) != len(action.keys):
@@ -112,15 +159,18 @@ class ActionHandler:
             self._workflow.logger.warning(
                 f"{type(action).__name__} repeats {dupes}; each task enters the batch once."
             )
+        options, reason = self._batch_options_for(action)
+        if reason is not None:
+            return self._refuse(action, reason)
         try:
             tasks = [self._workflow.task_index.resolve(key) for key in keys]
         except KeyError as exc:
             return self._refuse(action, exc.args[0])
         try:
             if len(tasks) == 1:
-                batch = submit_single(tasks[0])
+                batch = submit_single(tasks[0], options=options)
             else:
-                batch = submit_bulk(tasks)
+                batch = submit_bulk(tasks, options=options)
         except SessionEndingError as exc:
             return self._refuse(action, str(exc))
         if batch is None:
@@ -146,14 +196,62 @@ class ActionHandler:
             self.session.end()
         return Ack(accepted=True)
 
-    def set_batch_options(self, action):
-        options = self._workflow.batch_options
-        for field in fields(SetBatchOptions):
-            value = getattr(action, field.name)
-            if value is not None:
-                setattr(options, field.name, value)
-        self._workflow.record_batch_options()
+    def _resolve_cache_entries(self, action):
+        """(cache, entry_name) pairs for the wire pairs of the action, or a
+        refusal reason naming the first unknown cache or entry."""
+        caches_by_name = {
+            cache.get_name(): cache for cache in self._workflow.caches()
+        }
+        resolved = []
+        for cache_name, entry_name in action.entries:
+            cache = caches_by_name.get(cache_name)
+            if cache is None:
+                return None, f"{cache_name!r} names no cache of this session."
+            if entry_name not in declared_entries(type(cache)):
+                return None, f"{cache} has no entry {entry_name!r}."
+            resolved.append((cache, entry_name))
+        return resolved, None
+
+    def _load_cache_entry(self, cache, entry_name):
+        # A loader failure is data, not an action failure: the entry reports
+        # ERRORED and the session log carries the traceback (see
+        # BaseCache._entry_value). The ack still accepts.
+        try:
+            getattr(cache, entry_name)
+        except Exception:
+            self._workflow.logger.error(
+                f"Cache '{cache.get_name()}': the load of '{entry_name}' failed.",
+                exc_info=True,
+            )
+
+    def _clear_cache_entry(self, cache, entry_name):
+        cache.invalidate(entry_name)
+
+    def _run_cache_entries(self, work, resolved):
+        # A bare thread carries no LogContext. The scope routes the loader
+        # and invalidation lines to the session log (see Session.log_scope).
+        with self.session.log_scope():
+            execute_in_threads(work, resolved)
+
+    def _cache_entries_action(self, action, work):
+        if not action.entries:
+            return self._refuse(action, "the entries list is empty - nothing to do.")
+        resolved, reason = self._resolve_cache_entries(action)
+        if reason is not None:
+            return self._refuse(action, reason)
+        # The ack means "started", like RunTasks: execute_in_threads blocks
+        # until every entry finishes, so a background thread runs it and
+        # the caller does not wait. cache_updated events report progress.
+        threading.Thread(
+            target=self._run_cache_entries, args=(work, resolved), daemon=True
+        ).start()
         return Ack(accepted=True)
+
+    def load_cache_entries(self, action):
+        return self._cache_entries_action(action, self._load_cache_entry)
+
+    def clear_cache_entries(self, action):
+        return self._cache_entries_action(action, self._clear_cache_entry)
 
     # Adding an action means one dataclass and one method, registered here.
     _methods = {
@@ -161,5 +259,6 @@ class ActionHandler:
         CheckTasks: check_tasks,
         StopBatch: stop_batch,
         EndSession: end_session,
-        SetBatchOptions: set_batch_options,
+        LoadCacheEntries: load_cache_entries,
+        ClearCacheEntries: clear_cache_entries,
     }

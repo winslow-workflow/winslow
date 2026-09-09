@@ -16,11 +16,16 @@ class Greeter(UIPlugin):
     def create_widget(self, context):
         # Encode the context into the widget id - a public attribute readable
         # without mounting, so the test proves the wiring without rendering.
-        return Label("tasks", id=f"task-count-{len(context.workflow.tasks)}")
+        return Label("tasks", id=f"task-count-{len(context.roster)}")
 
 
 def test_create_widget_builds_from_context():
-    context = WorkflowRenderContext(workflow=SimpleNamespace(tasks=[1, 2, 3]))
+    context = WorkflowRenderContext(
+        client=SimpleNamespace(),
+        session=SimpleNamespace(),
+        snapshot=SimpleNamespace(),
+        roster=(1, 2, 3),
+    )
     widget = Greeter().create_widget(context)
 
     assert isinstance(widget, Label)

@@ -16,7 +16,7 @@ from winslow.exceptions import (
 )
 from winslow.logger import LOGGER
 from winslow.util import camel_to_snake, to_tuple
-from winslow.cache.inspection import (
+from winslow.model import (
     CacheEntryError,
     CacheEntryInfo,
     EntryState,

@@ -177,7 +177,10 @@ class TaskDependencies(Widget):
         yield Vertical(classes="task-dependencies")
 
 
-class TaskInfo(Widget):
+class TaskInfoPane(Widget):
+    """The overview pane of one task. It renders TaskInfo values; the name
+    differs from the value class, so an import cannot shadow the model."""
+
     task_info = reactive(None)
 
     def __init__(self, statuses, *args, **kwargs):

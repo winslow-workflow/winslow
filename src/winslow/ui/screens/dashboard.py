@@ -6,44 +6,56 @@ from textual.widgets import Button, OptionList
 
 import winslow.ui.builtin_plugins.dashboard as dashboard_plugins
 
-from winslow.session import SessionStatus
 from winslow.ui.plugin import DashboardRenderContext, Slots
 from winslow.ui.screens.base import SlottedScreen
-from winslow.ui.builtin_plugins.dashboard.session import (
-    RestorableRow,
-    SessionEnded,
-    SessionRow,
-)
+from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
+from winslow.ui.reads import port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
 
 
 class DashboardScreen(SlottedScreen):
+    """The dashboard, rendered from the app scope of the port: descriptors,
+    session rows and manifests come from the AppClient (see winslow.client)."""
+
     PLUGINS_MODULE = dashboard_plugins
+
+    def __init__(self, *args, **kwargs):
+        self._descriptors = None
+        super().__init__(*args, **kwargs)
 
     @property
     def logger(self):
-        return self.app.orchestrator.logger
+        return self.app.logger
 
     @property
-    def orchestrator(self):
-        return self.app.orchestrator
+    def client(self):
+        return self.app.client
+
+    @property
+    def descriptors(self):
+        if self._descriptors is None:
+            self._descriptors = self.client.descriptors()
+        return self._descriptors
+
+    def _descriptor(self, workflow_name):
+        return next(
+            d for d in self.descriptors.workflows if d.workflow == workflow_name
+        )
 
     async def on_mount(self):
-        self.logger.info(f"{len(self.app.workflow_context)} workflow classes loaded.")
+        self.logger.info(f"{len(self.descriptors.workflows)} workflow classes loaded.")
 
         await self._populate_restorable()
 
-        # Initialize each workflow that has Workflow.auto_init. The UI thus does
-        # not show the selector and the form, which helps a test. There is no
-        # value from a form: initialize_workflow starts from the parsed base of
-        # the workflow, which holds each default.
-        for workflow_kls in self.app.workflow_context:
-            if workflow_kls.auto_init:
-                self.logger.info(f"auto_init: initializing {workflow_kls.get_name()}")
+        # Start each auto_init workflow without a form: create_session fills
+        # every value from the parsed base of the workflow.
+        for descriptor in self.descriptors.workflows:
+            if descriptor.auto_init:
+                self.logger.info(f"auto_init: initializing {descriptor.workflow}")
                 await self.app._create_workflow(
-                    workflow_kls=workflow_kls,
+                    workflow_name=descriptor.workflow,
                     form_values=FormValues(),
                 )
 
@@ -59,8 +71,8 @@ class DashboardScreen(SlottedScreen):
 
     def compose(self):
         context = DashboardRenderContext(
-            orchestrator=self.app.orchestrator,
-            workflow_context=self.app.workflow_context,
+            client=self.client,
+            descriptors=self.descriptors,
         )
         top_slots = (
             Slots.DASHBOARD_WORKFLOWS,
@@ -75,56 +87,81 @@ class DashboardScreen(SlottedScreen):
     @on(Button.Pressed, ".workflow-start")
     async def start_session(self, event):
         workflow_name = event.button.name
-        workflow_kls = self.app.workflow_name_map[workflow_name]
+        descriptor = self._descriptor(workflow_name)
 
         validator = WorkflowFormValidator(logger=self.logger)
 
         workflow_form = self.query_one(f"#workflow-form-{workflow_name}")
         form_values, errors = validator.validate(
-            workflow_form, self.orchestrator.config_meta, workflow_kls.config_meta
+            workflow_form, self.descriptors.overrides, descriptor.options
         )
         validator.render_errors(workflow_form, errors)
         if errors:
             return
 
         modal = WorkflowConfirmation(
-            workflow_kls=workflow_kls,
+            workflow=workflow_name,
             form_values=form_values,
             registry=self.plugin_registry,
         )
         self.app.push_screen(modal)
 
+    def _session_status(self, session_id):
+        rows = port_read(self, self.client.sessions)
+        return next(
+            (row.status for row in rows or () if row.session_id == session_id),
+            None,
+        )
+
+    async def _push_force_end(self, session_id):
+        """Gather the modal's DTOs off the UI thread, then push it. An
+        outage skips the modal with a toast (see winslow.ui.reads)."""
+        client = self.client.session(session_id)
+        snapshot = await asyncio.to_thread(port_read, self, client.snapshot)
+        if snapshot is None:
+            return
+        roster = await asyncio.to_thread(port_read, self, client.roster)
+        history = await asyncio.to_thread(port_read, self, client.history)
+        self.app.push_screen(ForceEndModal(client, snapshot, roster, history))
+
     @on(Button.Pressed, ".workflow-end")
     async def end_session(self, event):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
-        session = row.session
-        if session is None:
+        session_id = row.session_id
+        if session_id is None:
             return
-        if session.status is SessionStatus.ENDING:
-            self.app.push_screen(ForceEndModal(session))
+        if await asyncio.to_thread(self._session_status, session_id) == "ENDING":
+            await self._push_force_end(session_id)
             return
-        await self.app.end_session(session.session_id)
-        if session.status is SessionStatus.ENDING:
-            row.begin_ending()
-        else:
-            await self._move_to_history(row, session)
+        await self.app.end_session(session_id)
+        # A session with active batches drains first; the session_ended event
+        # moves the row to the history when the drain completes.
+        if await asyncio.to_thread(self._session_status, session_id) == "ENDING":
+            await row.begin_ending()
 
-    @on(SessionEnded)
-    async def _on_session_ended(self, event):
-        await self._move_to_history(event.row, event.session)
-
-    async def _move_to_history(self, row, session):
-        # The silent end path and the tick of the row can both arrive here for the
-        # same session. The second one finds no row.
-        if not row.is_mounted:
+    async def move_session_to_history(self, session_id):
+        """The session_ended reaction: replace the live row with a history
+        row. The app calls this from its port subscription (see
+        Winslow._connect_session)."""
+        row = next(
+            (
+                r
+                for r in self.query(SessionRow).results()
+                if r.session_id == session_id
+            ),
+            None,
+        )
+        # The end paths can race; the second call finds no row.
+        if row is None or not row.is_mounted:
             return
+        final = await asyncio.to_thread(row.fetch_row)
         await row.remove()
-        await self.add_history_session(session)
+        await self.add_history_session(final)
 
     @on(Button.Pressed, ".workflow-view")
     async def view_session(self, event):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
-        await self.app.view_session(row.session.session_id)
+        await self.app.view_session(row.session_id)
 
     @on(Button.Pressed, ".session-error")
     async def show_session_error(self, event):
@@ -138,8 +175,7 @@ class DashboardScreen(SlottedScreen):
             widget = self.query_one(RestorableWidget)
         except NoMatches:
             return
-        manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
-        manifests = [m for m in manifests if m.session_id not in self.app.session_store]
+        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
         if not manifests:
             widget.display = False
             return
@@ -180,11 +216,11 @@ class DashboardScreen(SlottedScreen):
         await session_list.mount(row)
         return row
 
-    async def add_history_session(self, session) -> SessionRow:
+    async def add_history_session(self, session_row) -> SessionRow:
         self.query("#history-list-placeholder").add_class("hidden")
         history_list = self.query_one("#history-list")
         history_list.remove_class("hidden")
-        row = SessionRow(session.workflow_name, session=session)
+        row = SessionRow(session_row.instance_name, row=session_row)
         await history_list.mount(row)
         return row
 

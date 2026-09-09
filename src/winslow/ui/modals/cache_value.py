@@ -4,14 +4,12 @@ import traceback
 
 from enum import StrEnum
 
-from rich.pretty import Pretty
-
 from textual import on
 from textual.containers import VerticalScroll
 from textual.widgets import Static, Tree
 
-from winslow.cache import MISSING, DisplayStyle, EntryState, declared_entries
 from winslow.logger import LOGGER
+from winslow.model import EntryState, SnapshotEncoding
 from winslow.ui.modals.common import BaseModal
 from winslow.ui.widgets.common.logs import HIGHLIGHTER
 from winslow.util import safe_repr
@@ -21,16 +19,11 @@ from winslow.util import safe_repr
 # large container stays browsable.
 NODE_CHILD_CAP = 200
 
-# Bounds of a RAW rendering, so a large value cannot stall the modal.
-RAW_MAX_ITEMS = 100
-RAW_MAX_STRING = 500
-
 
 class _View(StrEnum):
-    """What the produce step returns for the modal to mount."""
+    """What _produce returns for the modal to mount."""
 
     TREE = "tree"
-    PRETTY = "pretty"
     TEXT = "text"
     NOTE = "note"
     # A traceback renders through the log highlighter (see HIGHLIGHTER).
@@ -53,60 +46,17 @@ def _node_label(label, value):
 
 
 class CacheValue(BaseModal):
-    """The value of one cache entry, rendered per its display_style. A failing
-    produce step renders its traceback and logs it, so the view never hides
-    the cause. Open with for_entry (live) or for_snapshot (history)."""
+    """The shell of a cache value view. A subclass owns its inputs, its
+    title and its _produce; the shell runs _produce off the UI thread and
+    mounts the (view, payload, note) it answers. A failing _produce renders
+    its traceback and logs it, so the view never hides the cause."""
 
-    def __init__(self, title, produce, logger=None, *args, **kwargs):
-        self._title = title
-        self._produce = produce
+    def __init__(self, logger=None, *args, **kwargs):
         self._logger = logger or LOGGER
         super().__init__(*args, **kwargs)
 
-    @classmethod
-    def for_entry(cls, cache, entry_name, logger=None):
-        """The live view: peek the entry and render per its display_style. An
-        ERRORED entry shows its error context above the value, or alone when
-        no record exists (see CacheEntryError)."""
-
-        def produce():
-            record = cache.peek(entry_name)
-            info = next(i for i in cache.inspect() if i.entry_name == entry_name)
-            note = None
-            if info.error is not None:
-                tier = f" on {info.error.tier}" if info.error.tier else ""
-                note = f"ERRORED - the {info.error.origin} failed{tier}: {info.error.message}"
-            if record is MISSING:
-                # No value to show: the stored traceback is the whole view.
-                if info.error is not None and info.error.traceback:
-                    return _View.TRACEBACK, info.error.traceback, note
-                return _View.NOTE, note or "<cold - no value>", None
-            if record is EntryState.COMPUTING:
-                return _View.NOTE, "<computing - the loader runs right now>", None
-            style = declared_entries(type(cache))[entry_name].display_style
-            if callable(style):
-                return _View.TEXT, str(style(record.value)), note
-            if style is DisplayStyle.TREE:
-                return _View.TREE, (entry_name, record.value), note
-            return _View.PRETTY, record.value, note
-
-        return cls(f"{cache.get_name()}.{entry_name}", produce, logger)
-
-    @classmethod
-    def for_snapshot(cls, snapshot, logger=None):
-        """The history view: a JSON snapshot deserializes back into a value
-        for the tree (see SnapshotEncoding)."""
-
-        def produce():
-            value = json.loads(snapshot.rendered)
-            return _View.TREE, (snapshot.entry_name, value), None
-
-        title = f"{snapshot.cache_name}.{snapshot.entry_name} (snapshot)"
-        return cls(title, produce, logger)
-
-    @property
-    def modal_title(self):
-        return self._title
+    def _produce(self):
+        raise NotImplementedError
 
     def compose_content(self):
         yield VerticalScroll(Static("loading..."), classes="value-view")
@@ -116,7 +66,7 @@ class CacheValue(BaseModal):
             view, payload, note = await asyncio.to_thread(self._produce)
         except Exception:
             self._logger.error(
-                f"The value view of '{self._title}' failed.", exc_info=True
+                f"The value view of '{self.modal_title}' failed.", exc_info=True
             )
             await self._mount_content(Static(HIGHLIGHTER(traceback.format_exc())))
             return
@@ -127,11 +77,6 @@ class CacheValue(BaseModal):
                 self._seed(tree.root, label, value)
                 tree.root.expand()
                 await self._mount_content(tree, note=note)
-            case _View.PRETTY:
-                pretty = Pretty(
-                    payload, max_length=RAW_MAX_ITEMS, max_string=RAW_MAX_STRING
-                )
-                await self._mount_content(Static(pretty), note=note)
             case _View.TRACEBACK:
                 await self._mount_content(Static(HIGHLIGHTER(payload)), note=note)
             case _View.TEXT | _View.NOTE:
@@ -162,3 +107,60 @@ class CacheValue(BaseModal):
         if len(children) > NODE_CHILD_CAP:
             rest = node.add(f"... {len(children) - NODE_CHILD_CAP} more")
             rest.allow_expand = False
+
+
+class CacheEntryValue(CacheValue):
+    """The live view: read the CacheValueView through the port. The value
+    arrives rendered, so the modal shows the same text a wire client
+    receives. An ERRORED entry shows its context (see CacheEntryError)."""
+
+    def __init__(self, client, cache_name, entry_name, *args, **kwargs):
+        self._client = client
+        self._cache_name = cache_name
+        self._entry_name = entry_name
+        super().__init__(*args, **kwargs)
+
+    @property
+    def modal_title(self):
+        return f"{self._cache_name}.{self._entry_name}"
+
+    def _produce(self):
+        view = self._client.cache_value(self._cache_name, self._entry_name)
+        notes = []
+        if view.error is not None:
+            tier = f" on {view.error.tier}" if view.error.tier else ""
+            notes.append(
+                f"ERRORED - the {view.error.origin} failed{tier}: "
+                f"{view.error.message}"
+            )
+        if view.summary is not None:
+            notes.append(f"bounded rendering - {view.summary}")
+        note = "\n".join(notes) or None
+        if view.rendered is None:
+            # No value to show: the stored traceback is the whole view.
+            if view.error is not None and view.error.traceback:
+                return _View.TRACEBACK, view.error.traceback, note
+            if view.state == EntryState.COMPUTING:
+                return _View.NOTE, "<computing - the loader runs right now>", None
+            return _View.NOTE, note or "<cold - no value>", None
+        if view.encoding == SnapshotEncoding.JSON:
+            return _View.TREE, (self._entry_name, json.loads(view.rendered)), note
+        return _View.TEXT, view.rendered, note
+
+
+class CacheSnapshotValue(CacheValue):
+    """The history view: a stored JSON snapshot deserializes back into a
+    value for the tree (see SnapshotEncoding)."""
+
+    def __init__(self, snapshot, *args, **kwargs):
+        self._snapshot = snapshot
+        super().__init__(*args, **kwargs)
+
+    @property
+    def modal_title(self):
+        snapshot = self._snapshot
+        return f"{snapshot.cache_name}.{snapshot.entry_name} (snapshot)"
+
+    def _produce(self):
+        value = json.loads(self._snapshot.rendered)
+        return _View.TREE, (self._snapshot.entry_name, value), None

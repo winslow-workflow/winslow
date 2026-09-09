@@ -1,4 +1,3 @@
-from functools import cached_property
 import collections
 
 from winslow._base import _Base
@@ -35,10 +34,6 @@ class Registry(_Base):
     @property
     def classes(self):
         return self._name_registry.values()
-
-    @cached_property
-    def premier_task_classes(self):
-        return {kls for kls in self._name_registry.values() if kls.is_premier}
 
     def _should_register_klass(self, klass):
         """Register only a concrete class of the matching type or of a subtype."""

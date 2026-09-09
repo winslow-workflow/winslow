@@ -36,6 +36,8 @@ INDENT = "\t"
 class Action(Enum):
     RUN = "run"
     SHOW = "show"
+    SERVE = "serve"
+    CONNECT = "connect"
 
 
 def _parse_mode(value):
@@ -90,6 +92,37 @@ class Orchestrator(_ConfigBase):
             Action.SHOW.value,
         ),
         # The UI has a workflow selection widget, so it needs no text input.
+        show_on_ui=False,
+    )
+
+    host = ConfigOption(
+        help_text="The bind address of the serve process. Loopback needs no credential.",
+        default="127.0.0.1",
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
+    port = ConfigOption(
+        help_text="The port of the serve process.",
+        type=int,
+        default=8866,
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
+    mcp = ConfigOption(
+        help_text="Serve the MCP endpoint at /mcp (requires the mcp extra).",
+        action="store_true",
+        default=False,
+        subcommands=Action.SERVE.value,
+        show_on_ui=False,
+    )
+
+    no_ws = ConfigOption(
+        help_text="Serve without the websocket endpoint.",
+        action="store_true",
+        default=False,
+        subcommands=Action.SERVE.value,
         show_on_ui=False,
     )
 
@@ -325,6 +358,25 @@ class Orchestrator(_ConfigBase):
             subparsers, action=Action.RUN, help_text="Run workflow(s)."
         )
 
+        cls._generate_subcommand(
+            subparsers,
+            action=Action.SERVE,
+            help_text="Serve the live sessions over one websocket endpoint.",
+        )
+
+        connect_parser = cls._generate_subcommand(
+            subparsers,
+            action=Action.CONNECT,
+            help_text="Run the TUI against a serve process.",
+        )
+        # The ConfigOption machinery declares only --flag options, so the
+        # URL is added here as the one positional argument of the CLI.
+        connect_parser.add_argument(
+            "url",
+            help="The websocket URL of the serve process, e.g. ws://host:8866. "
+            "A non-loopback server reads the bearer token from WINSLOW_TOKEN.",
+        )
+
         return parser
 
     @classmethod
@@ -423,13 +475,15 @@ class Orchestrator(_ConfigBase):
                 cursor += 1
         return positions
 
-    def _collect_workflow_args(self):
+    def collect_workflow_args(self):
         """{workflow_kls: parsed args or None}, validated together.
 
-        Only `show` and the interactive start call this. They parse the args of
-        each discovered workflow at one time. A headless run has one named
-        workflow and parses its args strictly (see `_handle_headless_run`), so
-        the collision between workflows that this method handles cannot occur
+        `show`, the interactive start, and a serve process's descriptors
+        request call this. They parse the args of each discovered workflow
+        at one time, so a start form (local or remote) prefills from the
+        same CLI-supplied values. A headless run has one named workflow and
+        parses its args strictly (see `_handle_headless_run`), so the
+        collision between workflows that this method handles cannot occur
         there."""
         parsed = {
             kls: self._parse_known_workflow_args(kls, self.unknown_args)
@@ -501,7 +555,7 @@ class Orchestrator(_ConfigBase):
 
     def _list_workflow_classes(self):
         self.logger.debug("Listing workflow classes")
-        workflow_args_map = self._collect_workflow_args()
+        workflow_args_map = self.collect_workflow_args()
         workflows = []
 
         for workflow_kls in self.sorted_workflow_classes:
@@ -615,6 +669,59 @@ class Orchestrator(_ConfigBase):
             )
             raise
 
+    def _handle_serve(self):
+        try:
+            import uvicorn
+            from winslow.serve.app import create_app
+        except ImportError as e:
+            raise MisconfigurationError(
+                "Serve mode requires the serve extra - install with: "
+                "pip install 'winslow[serve]'"
+            ) from e
+        from winslow.serve.auth import Credentials
+        from winslow.session import SessionRegistry
+        from winslow.state import create_state_store
+
+        config = self.orchestrator_config
+        self.logger.info(f"Serving on {config.host}:{config.port}")
+        app = create_app(
+            SessionRegistry(),
+            Credentials.from_env(config.host),
+            orchestrator=self,
+            state_store=create_state_store(config),
+            ws=not config.no_ws,
+            mcp=config.mcp,
+            base_url=f"http://{config.host}:{config.port}",
+        )
+        uvicorn.run(app, host=config.host, port=config.port)
+
+    def _handle_connect(self):
+        """The remote TUI: the same app over the wire transport of the
+        session port. The serve process owns the workflows and the state."""
+        try:
+            from winslow.client.websocket import RemoteAppClient
+            from winslow.ui import Winslow
+        except ImportError as e:
+            raise MisconfigurationError(
+                "Connect mode requires the connect extra - install with: "
+                "pip install 'winslow[connect]'"
+            ) from e
+
+        config = self.orchestrator_config
+        client = RemoteAppClient(config.url, token=os.environ.get("WINSLOW_TOKEN"))
+        client.connect()
+        self.logger.info(f"Connected to {config.url}")
+
+        setup_run_logging()
+        self.app = Winslow(
+            orchestrator_config=config, orchestrator=self, client=client
+        )
+        try:
+            self.app.run()
+        finally:
+            client.close()
+            shutdown_run_logging()
+
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")
 
@@ -626,7 +733,8 @@ class Orchestrator(_ConfigBase):
             ) from e
 
         # Validate the CLI args before any effect, so a typo fails immediately.
-        workflow_args_map = self._collect_workflow_args()
+        # The descriptors read of the app parses them again per request.
+        self.collect_workflow_args()
 
         # Set up the winslow.runs sink and the propagate=False boundary BEFORE a
         # workflow logger or a task logger starts to propagate. The run logs then
@@ -634,17 +742,9 @@ class Orchestrator(_ConfigBase):
         # headless run keeps the console output.
         setup_run_logging()
 
-        # The parsed workflow args fill the parameter forms of the UI.
-        workflow_context = {
-            kls: args
-            for kls, args in workflow_args_map.items()
-            if kls.should_be_initialized(self.orchestrator_config)
-        }
-
         self.app = Winslow(
             orchestrator_config=self.orchestrator_config,
             orchestrator=self,
-            workflow_context=workflow_context,
         )
 
         # app.run() blocks until the TUI stops. Then flush and stop the
@@ -707,11 +807,18 @@ class Orchestrator(_ConfigBase):
             self.orchestrator_config, subcommand=self.orchestrator_config.action.value
         )
 
+        if self.orchestrator_config.action is Action.CONNECT:
+            # A remote TUI reads everything over the wire, so the local
+            # workflow and cache collection is skipped.
+            return self._handle_connect()
+
         self.workflow_registry.collect_classes(self.directory)
         self._collect_caches()
 
         if self.orchestrator_config.action is Action.SHOW:
             self._handle_show()
+        elif self.orchestrator_config.action is Action.SERVE:
+            self._handle_serve()
         elif self.orchestrator_config.action is Action.RUN:
             # Runs only: a show produces no errors worth a backend. The finally
             # flushes and unregisters, so an embedding process can start again.

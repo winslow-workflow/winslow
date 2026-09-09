@@ -5,13 +5,14 @@ from winslow.task import TaskStatus
 from winslow.events import BatchCompletedEvent, BatchCreatedEvent
 from winslow.exceptions import TaskBlock
 from winslow.cache import batch_cache
+from winslow.model import BatchInfo
 
 from .base import BaseRunner
-from .execution import BatchInfo, ExecutionAction, new_batch
+from .execution import ExecutionAction, new_batch
 
 
 class HeadlessRunner(BaseRunner):
-    def _open_batch(self, action, tasks):
+    def _open_batch(self, action, tasks, options=None):
         """Create the batch, on the thread of the submitter. The body of the
         admission gate is atomic against Session.end(). A session that ends
         refuses the batch with the typed error before any task work. A batch that
@@ -22,7 +23,7 @@ class HeadlessRunner(BaseRunner):
             if not tasks:
                 return None, []
             batch = new_batch(action, tasks)
-            batch.execution_context = self._new_execution_context(batch.uuid)
+            batch.execution_context = self._new_execution_context(batch.uuid, options)
             # The whole store, and not the task list of the batch. A dependency
             # re-check reaches tasks outside the batch with the uuid of this
             # batch.
@@ -61,9 +62,14 @@ class HeadlessRunner(BaseRunner):
                 self.workflow.bus.publish(
                     BatchCompletedEvent(BatchInfo.from_batch(batch, tasks))
                 )
+                # The drain rule: an ending session finalizes when its last
+                # batch completes. After the publish, so every subscriber sees
+                # the completion before the finalization closes the bus.
+                if (session := self.workflow.session) is not None:
+                    session.finalize_if_drained()
 
-    def _submit(self, action, tasks, body):
-        batch, tasks = self._open_batch(action, tasks)
+    def _submit(self, action, tasks, body, options=None):
+        batch, tasks = self._open_batch(action, tasks, options)
         if batch is None:
             return None
         worker = threading.Thread(
@@ -86,11 +92,11 @@ class HeadlessRunner(BaseRunner):
     def _batch_finished(self, batch, tasks):
         pass
 
-    def submit_check(self, tasks):
-        return self._submit(ExecutionAction.CHECK, tasks, self._check_body)
+    def submit_check(self, tasks, options=None):
+        return self._submit(ExecutionAction.CHECK, tasks, self._check_body, options)
 
-    def submit_run(self, tasks):
-        return self._submit(ExecutionAction.RUN, tasks, self._run_body)
+    def submit_run(self, tasks, options=None):
+        return self._submit(ExecutionAction.RUN, tasks, self._run_body, options)
 
     def check(self, tasks):
         if batch := self.submit_check(tasks):

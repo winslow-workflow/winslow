@@ -52,6 +52,39 @@ versions may include breaking changes).
   with their origin.
 - `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
   and the Caches pane subscribe to it instead of polling `has_ended`.
+- `SessionRegistry` (`winslow.session`): the thread-safe map of the live sessions of one process,
+  shared by every consumer. The TUI app holds one as `app.sessions` (its private `session_store` dict
+  is gone); the serve transports resolve the same registry.
+- The serve skeleton (`winslow.serve`, behind the `[serve]` extra: starlette, uvicorn, websockets):
+  `create_app(registry, credentials)` serves `/ws` with the hello handshake. The first message is a
+  hello with a ticket (browser, HMAC-signed by the front application) or a bearer token (machine
+  client); a refusal answers with a `hello_error` frame and closes with a semantic code (4400
+  malformed hello, 4401 credential refused, 4408 hello timeout); an accepted hello answers `hello_ok`
+  and a session snapshot. A loopback bind requires no credential. `winslow.serve.auth` owns
+  `mint_ticket` and `verify_ticket`, so the minting side and the server share one rule. Run it with
+  `winslow serve [--host] [--port]`. After the hello a client subscribes to sessions: each subscribe
+  answers with the session snapshot (task statuses, batches, stamped with the sequence the events
+  continue from), then the bus events stream as frames with per-session sequence numbers - task and
+  execution statuses, batch created and completed with their `BatchInfo`, and log lines coalesced per
+  task per 50ms tick. A resubscribe resets the stream with a fresh snapshot (the recovery after a
+  sequence gap), and a client that stays behind a full frame window is disconnected with close code
+  1013. Actions ride the same socket: an `action` frame (run_tasks, check_tasks, stop_batch,
+  end_session, set_batch_options) answers a typed ack under its request id, through
+  `ActionHandler.submit_guarded`, which turns an unexpected raise into a refused ack with the traceback
+  in the session log. `request` frames serve `create_session` (builds, persists, and registers a live
+  session from a collected workflow), `descriptors` (the start-form options from `ConfigOption`),
+  `history`, `log_tail`, and `task_detail`.
+- The MCP endpoint (`winslow serve --mcp`, behind the `[mcp]` extra): the tool layer over the action
+  handler, mounted at `/mcp` beside the websocket. The tools mirror the actions (each answers the ack
+  as data, so an agent reads a refusal reason), plus `list_sessions`, `start_session`, `descriptors`,
+  `history`, and `task_detail`. The same `WINSLOW_TOKEN` verifies both doors; a loopback bind serves
+  without a credential. The two endpoints work individually: `--no-ws` runs an MCP-only process, and
+  asking for `--mcp` without the extra refuses with the install message.
+- The descriptors carry the whole start form: `{"workflows": [...], "overrides": [...]}` - the workflow
+  options (the `values` of a create) plus the orchestrator options the start form shows (the
+  `overrides`), each row with `identifier` and `depends_on` beside the existing fields. A create with a
+  missing required value, an unknown name, or a value outside the declared choices refuses with a
+  directional message before any initialization work runs.
 - The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
   counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
   `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the
@@ -60,6 +93,67 @@ versions may include breaking changes).
 
 ### Changed
 
+- The manifest stores the effective workflow values: every declared option, resolved from the
+  caller values, the parsed CLI base and the declared defaults. A restore no longer depends on the
+  argv of the restoring process - a session created with `--client acme` restores with it in a
+  process started without the flag. Orchestrator overrides stay caller-only: host, port, mode and
+  directory belong to the running process.
+- A cache read of an ended session refuses with direction: "has ended and released its caches",
+  pointing at the recorded reads in the execution history. Before, it raised the pre-init message
+  "caches read before initialize_tasks built them". `SessionSnapshot.cache_names` is `None` for an
+  ended session; an empty tuple means no registered caches.
+- The drain rule moved into the runner: after each batch completion the batch worker calls
+  `Session.finalize_if_drained`, so an ending session reaches ENDED the same way for the TUI, the
+  websocket and headless. Before, only the TUI app drove the transition, and a session ended over
+  the wire with running batches stayed ENDING forever.
+- Breaking: the batch flags (dry run, force run, force success, disable concurrency) are per client,
+  like the search filters. `RunTasks` and `CheckTasks` carry them as `options` over the session
+  baseline; each batch snapshots the flags it ran with, so two clients with different toggles never
+  overwrite each other. `SetBatchOptions`, `BatchOptionsChangedEvent` and the checkbox sync are gone;
+  the toggles no longer fold into the manifest, so a restored session prefills from the CLI baseline.
+  The `batch_options` read serves that baseline. `BatchOptions` is frozen; `Workflow.batch_options`
+  never changes after construction.
+- `apply_filter` carries a `scope`: `tasks` (the default, today's behavior) applies the full filter
+  registry over the live tasks; `history` applies the builtin filters over the execution record infos
+  and also serves an ended session. The server owns the one query parser, so a client (the TUI, a
+  future web client) sends the query and receives identity keys, never parsing the language itself.
+  A tasks search on an ended session now refuses with direction instead of failing inside the handler.
+- The two search panes share one contract (`QuerySearchMixin`): an unparseable query clears the
+  preview instead of dimming every row, and a refused submit keeps the previous filter and toasts the
+  reason. The history pane matches through `apply_filter(scope="history")`, so a record whose task
+  left the roster matches again. The filter inputs validate with a grammar-only parse
+  (`parse_syntax`); an unknown command surfaces at submit through the matcher.
+- Breaking for plugin authors: the TUI renders from the session port alone (see `docs/ui-plugins.md`).
+  `WorkflowRenderContext` carries `client` (the `SessionClient`), `session` (a `SessionRow` value),
+  `snapshot` (a `SessionSnapshot` value), `roster` (stub `TaskInfo` rows) and `task_statuses`; the
+  `workflow`, `workflow_config` and `orchestrator_config` attributes are gone. `DashboardRenderContext`
+  carries `client` (the `AppClient`) and `descriptors`; `orchestrator` and `workflow_context` are gone.
+  `WorkflowConfirmationRenderContext.workflow` is the workflow name; it carried the class as
+  `workflow_kls`. `TaskDetailRenderContext` carries `client` and `task_key` for the live log stream
+  (`log_key` is gone), and its `transient_snapshots` and `cache_snapshots` key by phase name strings.
+  `SessionRow` and `TaskDetailRenderContext` carry `root_dir`, the project root of the serving
+  process, so the source-path display works over a wire client; the task detail widget reads it from
+  its context instead of the app orchestrator.
+- Breaking for plugin authors: the task overview widget is `TaskInfoPane`; it was `TaskInfo`, which
+  shadowed the `TaskInfo` value class.
+- Breaking for plugin authors: the workflow screen messages carry values only. `ExecutionStatusChanged`
+  and `TaskLogUpdated` carry `batch_uuid`; they carried the live batch as `batch`. `BatchCreated` and
+  `BatchCompleted` carry `info` (a `BatchInfo` value). `CacheSelected` carries `card` (a `CacheCard`
+  value); it carried the live cache. A new `BatchOptionsChanged` message carries the live option
+  values after a `SetBatchOptions` lands.
+- The Caches pane renders from the `caches()` read of the port and submits `LoadCacheEntries` and
+  `ClearCacheEntries` through the action handler; it held live `BaseCache` objects and called them
+  directly. The cache value modal shows the server-rendered `CacheValueView`, the same text a wire
+  client receives, and splits by source: `CacheEntryValue` (live, through the port) and
+  `CacheSnapshotValue` (history) over the `CacheValue` shell. "Clear all" clears the visible
+  entries; it cleared whole caches.
+- `create_session` parses string values through the declared option types, checks each element of a
+  multiselect value against the choices, and fills unsent options from the parsed CLI base, so the
+  serve door and the TUI form start a workflow from the same value context.
+- `HistoryRow` carries the batch option snapshot as `options`; `SessionSnapshot` carries `cache_names`;
+  `CacheCard` carries `error` and the caches read isolates a cache whose storage raises;
+  `WorkflowDescriptor` carries `auto_init`; `OptionRow` carries `initial_selection` for a multiselect
+  prefill.
 - Breaking for plugin authors: `TaskStatusChanged` carries `(key, status)`; it carried the live task.
   `ExecutionStatusChanged` and `TaskLogUpdated` name the task with `task_key`; the attribute was
   `task_uuid`.
@@ -77,8 +171,6 @@ versions may include breaking changes).
   log routing key (`Task.log_key`, a per-run nonce plus the identity key).
 - Execution history keys by the identity key: `ExecutionRecordStore`, `ExecutionBatch.errored` and the
   status history of the store all hold identity keys.
-- The Caches pane is unchanged: its rows keep the live `BaseCache` objects, which are process-local UI
-  state.
 - `Graph` takes `logger` at construction and the workflow hands its session logger in, so the task
   initialization messages reach the session log pane. A project `graph_class` subclass that overrides
   `__init__` must accept the keyword.
