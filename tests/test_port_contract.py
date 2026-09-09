@@ -1,5 +1,5 @@
 """The port contract, parameterized over the transports: the same black-box
-tests drive the local adapter, the wire client and the MCP door. A future
+tests drive the local adapter, the wire client and the MCP endpoint. A future
 transport joins by adding a fixture param and an adapter with the same
 surface. MCP has no event lane, so the contract here is reads and actions;
 the event parity lives in test_client_parity."""
@@ -259,7 +259,7 @@ class McpAppPort:
 
 
 class McpServedProcess(ServedProcess):
-    """A served process with the MCP door mounted next to the websocket."""
+    """A served process with the MCP endpoint mounted next to the websocket."""
 
     def __init__(self, registry, orchestrator=None, state_store=None):
         from winslow.serve import Credentials, create_app
@@ -270,7 +270,7 @@ class McpServedProcess(ServedProcess):
             hello_timeout=2.0,
             orchestrator=orchestrator or bare_orchestrator(),
             state_store=state_store or scratch_state_store(),
-            mcp=True,
+            endpoints=("ws", "mcp"),
             base_url="http://127.0.0.1",
         )
         self.server = None

@@ -410,9 +410,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         params = await asyncio.to_thread(port_read, self, self.client.session_params)
         if params is None:
             return
-        self.app.push_screen(
-            WorkflowParams(self.session_info.instance_name, params)
-        )
+        self.app.push_screen(WorkflowParams(self.session_info.instance_name, params))
 
     @on(Input.Submitted, "#filter-input")
     def handle_filter(self, event):

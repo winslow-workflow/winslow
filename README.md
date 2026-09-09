@@ -5,16 +5,22 @@
 [![CI](https://github.com/winslow-workflow/winslow/actions/workflows/ci.yml/badge.svg)](https://github.com/winslow-workflow/winslow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
-**A state and workflow management framework with a terminal UI.**
+**A workflow and state manager that serves terminals and agents.**
 
-Winslow lets you describe work as a set of small, dependency-aware **tasks** and
-then run them from a live terminal dashboard — or headless in CI. Its guiding
-idea is simple: every task knows both **how to do its work** and **how to tell
-whether that work is already done**. Winslow checks the latter before doing the
-former, so re-running a workflow only does what still needs doing.
+Winslow runs work as a set of small tasks with declared dependencies. You drive
+them from where you are:
 
-> If you've ever written a pile of scripts held together with "did this step
-> already run?" checks, Winslow is that pattern, made first-class.
+- A live terminal dashboard on your machine, `winslow run`
+- A terminal connected to a shared host, `winslow connect`
+- An agent over MCP, `winslow serve --endpoints ws mcp`
+- Headless in cron or CI, `winslow run --mode headless`
+
+Every task knows two things: how to do its work, and how to tell whether that
+work is already done. Winslow checks the second before it does the first, so a
+second run of a workflow only does what still needs doing.
+
+> If you have a pile of scripts held together with "did this step already run?"
+> checks, Winslow is that pattern as a framework.
 
 ---
 
@@ -26,19 +32,24 @@ https://github.com/user-attachments/assets/23426158-0447-421b-ab16-caf4c0d9103e
 
 ## Install
 
+Each mode is one extra:
+
 ```bash
-uv add "winslow[tui]"      # or: pip install 'winslow[tui]'
+uv add "winslow[serve]"      # the shared host
+uv add "winslow[mcp]"        # the shared host, with the MCP endpoint
+uv add "winslow[tui]"        # one machine: the UI and the sessions together
+uvx --from "winslow[connect]" winslow connect ws://host:8866   # a terminal, no project needed
 ```
 
-Requires Python 3.12+. The `tui` extra pulls in the terminal UI; for headless
-runs only (cron, CI), the bare `winslow` package is enough.
+Winslow needs Python 3.12 or later. `pip install 'winslow[serve]'` works the
+same way. A headless run in cron or CI needs the bare `winslow` package only.
 
 ## Quick start
 
-A workflow is a directory containing a `Workflow` class and the `Task` classes
-that belong to it. The `workflow.py` filename marks the directory as a
-workflow package — every `.py` file next to it belongs to that workflow.
-Drop this in `workflows/etl/workflow.py`:
+A workflow is a directory with a `Workflow` class and the `Task` classes that
+belong to it. The file name `workflow.py` marks the directory as a workflow
+package, and every `.py` file next to it belongs to that workflow. Put this in
+`workflows/etl/workflow.py`:
 
 ```python
 import os
@@ -46,12 +57,11 @@ from winslow import Workflow, Task
 
 
 class Etl(Workflow):
-    pass  # name defaults to "etl" (kebab-cased class name)
+    pass  # The name defaults to "etl", the kebab-cased class name.
 
 
 class DownloadData(Task):
     def run(self):
-        # ... fetch the file ...
         download("s3://bucket/raw.csv", "/data/raw.csv")
 
     def check(self):
@@ -68,103 +78,119 @@ class TransformData(Task):
         return os.path.exists("/data/clean.csv")
 ```
 
-Then launch the terminal UI from that directory:
+Start the terminal UI from that directory:
 
 ```bash
 winslow run
 ```
 
-Or run it headless (handy for cron and CI):
+Or serve the directory and connect to it from another terminal:
+
+```bash
+winslow serve                                                        # on the host
+uvx --from "winslow[connect]" winslow connect ws://127.0.0.1:8866    # from a terminal
+```
+
+Or run it headless, for cron and CI:
 
 ```bash
 winslow run --mode headless --workflow etl
 ```
 
-## The core idea: `run` + `check`
+The [getting started](https://winslow-workflow.org/getting-started/) page walks
+through all three. [Serve and connect](https://winslow-workflow.org/serve/)
+covers a team on one host and an agent over MCP.
 
-These two methods are the whole contract:
+## The core idea: `run` and `check`
 
-- **`run(self)`** makes a change to the world.
-- **`check(self)`** reports whether the desired end state already holds.
+Two methods are the whole contract:
 
-Before running a task, Winslow calls `check()`. If it's already true, the
-task is skipped; otherwise `run()` executes and Winslow calls `check()`
-again to confirm success. That makes workflows **idempotent and resumable** by
-construction — interrupt one halfway and re-run it, and it picks up where it
-left off. (Need to force a redo? `winslow run --force-run` skips the pre-check.)
+- `run(self)` makes a change to the world.
+- `check(self)` reports whether the wanted end state already holds.
 
-A task that only verifies state can omit `run()` entirely — it becomes a
-read-only **check**.
+Before it runs a task, Winslow calls `check()`. If the check passes, the task is
+skipped. If it fails, `run()` executes and Winslow calls `check()` again to
+confirm the result. A workflow is therefore idempotent and resumable: interrupt
+it halfway, run it again, and it continues from where it stopped. To force a
+rerun, `winslow run --force-run` skips the pre-check.
 
-## Start as a status board, automate later
+A task that only verifies state can omit `run()`. It becomes a read-only check.
 
-Because `run()` is optional, a workflow built only from checks changes
-nothing — it just reads your systems and reports what's true. That makes
-adoption incremental:
+## Start as a status board and automate later
 
-1. Describe the runbook you already have as checks — one `check()` per step,
+A workflow built only from checks changes nothing. It reads your systems and
+reports what is true. That makes adoption incremental:
+
+1. Describe the runbook you already have as checks, one `check()` per step,
    automated or manual. The TUI is now a live status board over your process
-   exactly as it exists today. Zero migration.
+   as it exists today.
 2. Add `run()` to one task at a time, wherever automation pays off. The rest
    stay checks, and the workflow is usable at every step in between.
 
-A task can even automate part of its work and leave the rest to a human —
-see [the docs](https://winslow-workflow.org/#adopt-winslow-one-task-at-a-time)
-for how that plays out.
+A task can also automate part of its work and leave the rest to a person. The
+[docs](https://winslow-workflow.org/#adopt-winslow-one-task-at-a-time) show how.
 
-## A few things you'll probably reach for
+## What else is there
 
-Each of these is optional — start with `run`/`check` and add the rest as
+Each of these is optional. Start with `run` and `check` and add the rest when
 you need it.
 
-- **Dependencies & ordering.** Declare `dependencies = OtherTask` (or a tuple /
-  task-group name). Winslow builds the dependency graph, detects cycles, and
-  runs things in the right order. Mark foundational steps `is_premier` and
-  cleanup steps `is_terminal`.
+- **Dependencies and ordering.** Declare `dependencies = OtherTask`, a tuple, or
+  a task group name. Winslow builds the dependency graph, detects cycles, and
+  runs the tasks in order. Mark foundational steps `is_premier` and cleanup
+  steps `is_terminal`.
 
-- **Eligibility & guards.** Override `is_eligible()` to skip a task in some
-  environments, or `can_run()` to block it until a precondition holds. For
-  reusable rules, attach **composable constraints**:
+- **Eligibility and guards.** Override `is_eligible()` to skip a task in some
+  environments, or `can_run()` to block it until a precondition holds. A
+  reusable rule is a constraint class:
 
   ```python
   class DeployTask(Task):
       runnability_constraints = [BusinessHoursOnly]
   ```
 
-- **Parameterized tasks.** One task class can fan out into many instances via
-  `Parameter` declarations — e.g. one `ProcessRegion` task per region — each
-  tracked and run independently.
+- **Parameterized tasks.** One task class fans out into many instances through
+  `Parameter` declarations, for example one `ProcessRegion` task per region,
+  each tracked and run on its own.
 
-- **A task filter language — that you can extend.** Narrow the view (or a run)
-  with expressions like `build,test`, `!g deploy`, or `~lint & !group nightly`,
-  in the UI's search box or via `--filter` on the CLI. Add your own commands by
-  subclassing `TaskFilter`: define a `!command` and what it matches, and it's
-  available everywhere filters are.
+- **A filter language you can extend.** Narrow the view or a run with
+  expressions like `build,test`, `!g deploy`, or `~lint & !group nightly`, in
+  the search box of the UI or with `--filter` on the CLI. Subclass `TaskFilter`
+  to add a `!command` of your own, and it works everywhere filters do.
 
-- **Declarative caching.** Share expensive data — station lists, calendars,
-  reference tables — through `GlobalCache` (process scope) and `WorkflowCache`
-  (session scope) classes. Declare fields with `@entry` (lazy, eager,
-  `depends_on`, `ttl`); eager fields load in parallel before the graph is
-  built, and `JsonFileStorage` keeps a cache warm across processes.
+- **Declarative caching.** Share expensive data such as station lists,
+  calendars or reference tables through `GlobalCache` (process scope) and
+  `WorkflowCache` (session scope) classes. Declare fields with `@entry` (lazy,
+  eager, `depends_on`, `ttl`). Eager fields load in parallel before the graph
+  is built, and `JsonFileStorage` keeps a cache warm across processes.
 
 - **Error telemetry.** Report task and workflow errors to Sentry
   (`winslow[sentry]`) or OpenTelemetry (`winslow[otel]`) by setting their
-  environment values — each error reaches the backends exactly once.
+  environment values. Each error reaches the backends once.
 
-- **Live terminal UI.** Watch tasks change state in real time, stream per-task
-  logs, browse execution history, and run or re-check individual tasks by hand —
-  all from the dashboard. Everything also works headless in `--mode headless`.
+- **Live terminal UI.** Watch tasks change state, stream per-task logs, browse
+  the execution history, and run or re-check single tasks by hand, all from the
+  dashboard.
 
-- **A pluggable UI.** The dashboard and workflow views are assembled from
-  plugins that fill named slots. Add your own tab or panel — or replace a
-  built-in one — by subclassing `UIPlugin`, no fork required. Both UI plugins
-  and custom filters can be autodiscovered or shipped as separate packages via
-  entry points (`winslow.tui_plugins`, `winslow.filter_plugins`).
+- **Serve and connect.** `winslow serve` starts the engine, the component that
+  owns the sessions, and exposes it over a websocket. Every connected terminal
+  sees the same sessions. `--endpoints ws mcp` adds an MCP endpoint, so an
+  agent lists, starts, runs and inspects sessions with the same reads and
+  actions a terminal has.
+
+- **A pluggable UI.** The dashboard and the workflow screen are assembled from
+  plugins that fill named slots. Subclass `UIPlugin` to add a tab or a panel,
+  or to replace a built-in one. UI plugins and filters can live in their own
+  packages, found through entry points (`winslow.tui_plugins`,
+  `winslow.filter_plugins`).
 
 ## CLI at a glance
 
 ```bash
-winslow run                                    # interactive terminal UI
+winslow serve                                  # the sessions on 127.0.0.1:8866
+winslow serve --host 0.0.0.0 --endpoints ws mcp    # on the network, with /mcp for agents
+winslow connect ws://host:8866                 # the TUI against a server
+winslow run                                    # the UI and the sessions in one process
 winslow run --workflow etl                     # UI, pre-selecting a workflow
 winslow run --mode headless --workflow etl     # headless run
 winslow run --mode headless --check ...        # check completion without running
@@ -175,47 +201,48 @@ winslow show --initialize --workflow etl       # initialize one workflow, list i
 winslow show --initialize --workflow etl --with-deps   # ...with each task's dependencies
 ```
 
-Winslow discovers your workflows from the current directory; defining an
-`Orchestrator` subclass to customize global options is optional.
+Winslow discovers the workflows from the current directory. An `Orchestrator`
+subclass that adds global options is optional.
 
 ## How it compares
 
-Winslow is a **local-first** workflow tool. There is no server, no scheduler
-daemon, and no metadata database: done-ness is whatever `check()` observes
-right now — a file, a table, an API response, a merged PR — so if the world
-drifts, the next run sees it. Tasks run where you invoke `winslow`, and cron
-or CI is the intended trigger for unattended runs.
+Winslow runs on one host. There is no scheduler daemon and no metadata
+database. Done-ness is whatever `check()` observes right now, a file, a table,
+an API response, a merged PR, so when the world drifts, the next run sees it.
+Tasks run where the engine runs, on your laptop under `winslow run` or on the
+shared host under `winslow serve`, and cron or CI triggers the unattended runs.
 
-If your situation calls for distributed workers, a built-in scheduler, or a
-central run history, a different tool will serve you better. The
+If you need distributed workers, a built-in scheduler, or a central run history,
+a different tool fits better. The
 [tool selector](https://winslow-workflow.org/selector.html) compares Winslow
-with the common alternatives under the same rules — tick what your situation
+with the common alternatives under the same rules. Tick what your situation
 requires and see what fits.
 
 ## Trust model
 
-Treat a workflow directory like a `Makefile` or a `conftest.py`: **running
-`winslow` in a directory runs that directory's code**, imported at startup
-before any prompt. Plugin and filter autodiscovery is likewise **opt-out** —
-installed packages exposing winslow entry points load on startup; the
-[plugin guide](https://winslow-workflow.org/plugins/) shows how to constrain
-or allowlist them. The full trust model and the vulnerability reporting
-process are in [SECURITY.md](SECURITY.md).
+Treat a workflow directory like a `Makefile` or a `conftest.py`: running
+`winslow` in a directory runs the code of that directory, imported at startup
+before any prompt. Plugin and filter autodiscovery is opt-out as well. An
+installed package with a winslow entry point loads on startup, and the
+[plugin guide](https://winslow-workflow.org/plugins/) shows how to constrain or
+allowlist them. A serve credential grants every action on the serving host,
+including starting a workflow, which runs its code. The full trust model and
+the vulnerability reporting process are in [SECURITY.md](SECURITY.md).
 
 ## Status
 
-Winslow is early (0.x) — the API may still shift between minor versions. Full
-documentation lives at [winslow-workflow.org](https://winslow-workflow.org).
+Winslow is early, 0.x, and the API may still change between minor versions.
+The full documentation lives at [winslow-workflow.org](https://winslow-workflow.org).
 
-## Questions & feedback
+## Questions and feedback
 
-- Questions, use cases, and ideas →
+- Questions, use cases and ideas:
   [Discussions](https://github.com/winslow-workflow/winslow/discussions)
-- Reproducible bugs →
+- Reproducible bugs:
   [Issues](https://github.com/winslow-workflow/winslow/issues)
 
-Real-world use cases are especially welcome while the API is still settling —
-what you automate, and what fought you, both shape what 0.x becomes.
+Real use cases are welcome while the API is still settling. What you automate,
+and what fought you, both shape what 0.x becomes.
 
 ## License
 

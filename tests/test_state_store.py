@@ -2,6 +2,7 @@ import json
 
 import pytest
 
+from winslow import settings
 from winslow.exceptions import MisconfigurationError, SerializationError
 from winslow.orchestrator import OrchestratorConfig
 from winslow.state import (
@@ -302,7 +303,7 @@ def test_no_ttl_trusts_only_this_session():
 
 
 def test_the_default_backend_is_the_file_store(monkeypatch):
-    monkeypatch.delenv("WINSLOW_STATE_BACKEND", raising=False)
+    monkeypatch.setattr(settings, "STATE_BACKEND", "file")
     assert isinstance(create_state_store(OrchestratorConfig()), FileStateStore)
 
 
@@ -312,13 +313,13 @@ def test_a_registered_backend_is_selectable(monkeypatch):
 
     register_state_backend("recording", RecordingStore)
     try:
-        monkeypatch.setenv("WINSLOW_STATE_BACKEND", "recording")
+        monkeypatch.setattr(settings, "STATE_BACKEND", "recording")
         assert isinstance(create_state_store(OrchestratorConfig()), RecordingStore)
     finally:
         _BACKENDS.pop("recording", None)
 
 
 def test_an_unknown_backend_raises(monkeypatch):
-    monkeypatch.setenv("WINSLOW_STATE_BACKEND", "nope")
+    monkeypatch.setattr(settings, "STATE_BACKEND", "nope")
     with pytest.raises(MisconfigurationError, match="'nope'"):
         create_state_store(OrchestratorConfig())

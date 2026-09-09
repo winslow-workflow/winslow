@@ -130,8 +130,7 @@ class CacheEntryValue(CacheValue):
         if view.error is not None:
             tier = f" on {view.error.tier}" if view.error.tier else ""
             notes.append(
-                f"ERRORED - the {view.error.origin} failed{tier}: "
-                f"{view.error.message}"
+                f"ERRORED - the {view.error.origin} failed{tier}: {view.error.message}"
             )
         if view.summary is not None:
             notes.append(f"bounded rendering - {view.summary}")

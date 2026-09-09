@@ -5,9 +5,10 @@ sides share one rule."""
 
 import hashlib
 import hmac
-import os
 import time
 from dataclasses import dataclass
+
+from winslow import settings
 
 
 def _sign(secret, user, expiry):
@@ -29,7 +30,9 @@ def verify_ticket(secret, ticket):
         user, expiry, signature = ticket.split(":")
     except (ValueError, AttributeError):
         return None, "malformed ticket"
-    if not hmac.compare_digest(signature, _sign(secret, user, expiry)):
+    if not hmac.compare_digest(
+        signature.encode(), _sign(secret, user, expiry).encode()
+    ):
         return None, "bad ticket signature"
     if float(expiry) < time.time():
         return None, "ticket expired - fetch a fresh one and reconnect"
@@ -49,26 +52,28 @@ class Credentials:
     @classmethod
     def from_env(cls, host):
         loopback = host in ("127.0.0.1", "::1", "localhost")
-        origins = os.environ.get("WINSLOW_ORIGINS", "")
+        origins = settings.SERVE_ORIGINS.split(",")
         return cls(
-            token=os.environ.get("WINSLOW_TOKEN"),
-            ticket_secret=os.environ.get("WINSLOW_TICKET_SECRET"),
-            allowed_origins=tuple(o for o in origins.split(",") if o),
+            token=settings.SERVE_TOKEN,
+            ticket_secret=settings.SERVE_TICKET_SECRET,
+            allowed_origins=tuple(o for o in origins if o),
             require_credential=not loopback,
         )
 
     def verify_hello(self, hello, origin):
         """(user, None) for an accepted HelloFrame, (None, reason) for a refusal."""
-        if not self.require_credential:
-            return "local", None
+        # The Origin rule holds on every bind: a page in a local browser reaches
+        # a loopback server too.
         if origin is not None and origin not in self.allowed_origins:
             return None, f"origin {origin!r} is not allowed on this server"
+        if not self.require_credential:
+            return "local", None
         if ticket := hello.ticket:
             if not self.ticket_secret:
                 return None, "this server accepts no tickets - use a bearer token"
             return verify_ticket(self.ticket_secret, ticket)
         if token := hello.token:
-            if self.token and hmac.compare_digest(token, self.token):
+            if self.token and hmac.compare_digest(token.encode(), self.token.encode()):
                 return "token-client", None
             return None, "bad bearer token"
         return None, "the hello carries no credential - send a ticket or a token"

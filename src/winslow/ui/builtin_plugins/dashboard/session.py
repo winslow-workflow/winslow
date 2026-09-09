@@ -62,9 +62,7 @@ class SessionRow(Widget):
             return
         summary = self.row.task_status_summary
         self.query_one(".summary", Label).update(
-            format_status_summary(
-                summary.completed, summary.problematic, summary.total
-            )
+            format_status_summary(summary.completed, summary.problematic, summary.total)
         )
         self.query_one(".elapsed", Label).update(format_elapsed(self.row.elapsed))
 

@@ -29,6 +29,8 @@ theme:
 
 nav:
   - Home: index.md
+  - Getting started: getting-started.md
+  - Serve and connect: serve.md
   - Guide:
       - Workflows: workflows.md
       - Tasks: tasks.md

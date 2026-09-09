@@ -190,11 +190,7 @@ class DashboardScreen(SlottedScreen):
         row. The app calls this from its port subscription (see
         Winslow._connect_session)."""
         row = next(
-            (
-                r
-                for r in self.query(SessionRow).results()
-                if r.session_id == session_id
-            ),
+            (r for r in self.query(SessionRow).results() if r.session_id == session_id),
             None,
         )
         # The end paths can race; the second call finds no row.

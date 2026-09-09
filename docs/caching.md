@@ -139,6 +139,9 @@ class Forecast(WorkflowCache):
     def conditions(self): ...
 ```
 
+A loader reads its declared upstream entries. Invalidation belongs to the callers of the cache: a
+task, a hook or the Caches tab.
+
 `invalidate` takes one or more entry names, and drops each with its declared dependents,
 transitively. `invalidate_all` drops everything. A dropped entry recomputes on its next access -
 an eager field too:
@@ -208,8 +211,10 @@ class Forecast(WorkflowCache):
 The header narrows the pane: search the entries by name, or select one scope. The bulk actions
 follow the narrowed view - `clear all` invalidates every cache with a visible entry, and
 `load all` loads every visible entry, in parallel like the
-[eager population](#prepopulate-a-cache). Select a card to see the cache details in the overview pane: its scope, storage layers and
-entries.
+[eager population](#prepopulate-a-cache). Select a card to see the cache details in the overview
+pane: its scope, its storage layers and its entries. For each entry with `depends_on`, the
+overview lists one row per upstream entry with the live state of that upstream, so a stale
+dependency shows next to the entry it feeds.
 
 ## Cache storage
 

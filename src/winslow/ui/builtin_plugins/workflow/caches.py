@@ -255,8 +255,7 @@ class CachesPane(SearchFlowMixin, Widget):
                 if card.name not in self._unobservable:
                     self._unobservable.add(card.name)
                     self.app.logger.error(
-                        f"The cache pane cannot observe '{card.name}': "
-                        f"{card.error}"
+                        f"The cache pane cannot observe '{card.name}': {card.error}"
                     )
                 widget.border_subtitle = " storage error "
                 for row in widget.query(CacheEntryRow).results():

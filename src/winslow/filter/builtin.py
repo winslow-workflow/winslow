@@ -51,11 +51,7 @@ def enforce_builtin_only(query):
     BUILTIN_FILTERS. The serve edge and the session port apply the same rule
     to a builtin-only search."""
     foreign = sorted(
-        {
-            type(f).get_name()
-            for f in query.filters()
-            if type(f) not in BUILTIN_FILTERS
-        }
+        {type(f).get_name() for f in query.filters() if type(f) not in BUILTIN_FILTERS}
     )
     if foreign:
         raise ValueError(

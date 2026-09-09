@@ -14,7 +14,7 @@ from winslow.exceptions import (
     StorageError,
 )
 from winslow.logger import LOGGER
-from winslow.settings import config
+from winslow import settings
 
 
 # The sentinel for a key with no record. None cannot mark it, because None is
@@ -118,9 +118,7 @@ class JsonFileStorage(BaseStorage):
     def __init__(self, cache_name, namespace):
         _validate_path_components(cache_name, namespace)
         super().__init__(cache_name, namespace)
-        base = self.base_directory or config(
-            "WINSLOW_CACHE_DIR", default=".winslow/cache"
-        )
+        base = self.base_directory or settings.CACHE_DIR
         # The namespace keeps same-named caches of different scopes apart.
         self.directory = Path(base) / namespace / cache_name
 

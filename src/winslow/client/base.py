@@ -5,7 +5,7 @@ method takes values and returns values (see winslow.model).
 Each read is one Read declaration on the contract class. A transport either
 overrides the read with a method (see winslow.client.local) or implements
 read(), which serves every declaration (see winslow.client.websocket). The
-declaration also names the wire envelope of the read, so the serve doors
+declaration also names the wire envelope of the read, so the serve endpoints
 dispatch from the same declaration (see PORT_READS).
 
 A read the server or the session refuses raises RequestError with the
@@ -18,7 +18,6 @@ from dataclasses import field, make_dataclass
 from functools import cached_property, partial
 
 from winslow._meta import _DeclarationMeta
-from winslow.protocol.frames import RequestFrame
 from winslow.model import (
     CacheInfo,
     CacheValueView,
@@ -70,7 +69,10 @@ class Read:
     def envelope(self):
         """The request frame of this read: a RequestFrame with the session id
         of a session read and the declared fields. The client constructs it
-        and the serve door validates it (see Connection.decode)."""
+        and the serve endpoint validates it (see Connection.decode)."""
+        # The frames need pydantic, which only the serve and connect extras install.
+        from winslow.protocol.frames import RequestFrame
+
         head = [("kind", str, field(default=self.name))]
         if self.scope == "session":
             head.append(("session_id", str))
@@ -110,7 +112,7 @@ class _PortMeta(_DeclarationMeta):
 
 
 class Port(metaclass=_PortMeta):
-    """A contract class of the port. scope names the door the reads serve
+    """A contract class of the port. scope names the endpoint the reads serve
     from. read_meta holds every Read declaration through the MRO."""
 
     scope = None
@@ -286,6 +288,6 @@ class SessionClient(Port):
 
 
 # The read surface of the port, keyed by request kind: every Read declaration,
-# so the doors serve exactly what the local TUI consumes. A request frame names
+# so the endpoints serve exactly what the local TUI consumes. A request frame names
 # the read under "kind" (see Connection.envelope_class).
 PORT_READS = {**AppClient.read_meta, **SessionClient.read_meta}

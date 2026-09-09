@@ -11,6 +11,7 @@ from starlette.applications import Starlette
 from starlette.routing import Mount, WebSocketRoute
 
 from winslow.actions import Action
+from winslow.constants import ENDPOINTS
 from winslow.client import LocalAppClient
 from winslow.protocol.codec import CODEC, ValidationError, report
 from winslow.exceptions import MisconfigurationError, RequestError
@@ -98,7 +99,7 @@ class Bridges:
 
 class ServeApp:
     """One serve process: the live sessions of the registry behind two
-    optional doors, the websocket endpoint and the MCP mount. Each door works
+    optional endpoints, the websocket and the MCP mount. Each endpoint works
     alone, and both share the registry and the credential policy. The port
     carries the orchestrator and the state store (see LocalAppClient)."""
 
@@ -111,30 +112,28 @@ class ServeApp:
         state_store,
         hello_timeout=5.0,
         qsize=10_000,
-        ws=True,
-        mcp=False,
+        endpoints=("ws",),
         base_url="http://127.0.0.1:8866",
     ):
         self.registry = registry
         self.credentials = credentials
         self.hello_timeout = hello_timeout
         self.qsize = qsize
-        # The in-process port every door serves (see PORT_READS in winslow.client.base).
+        # The in-process port every endpoint serves (see PORT_READS in winslow.client.base).
         self.local = LocalAppClient(
             registry, orchestrator=orchestrator, state_store=state_store
         )
         self.bridges = Bridges(qsize)
-        self.ws_enabled = ws
-        self.base_url = base_url
-        self.mcp_endpoint = self._build_mcp() if mcp else None
-        if not ws and self.mcp_endpoint is None:
+        self.endpoints = frozenset(endpoints)
+        if unknown := self.endpoints - set(ENDPOINTS):
             raise MisconfigurationError(
-                "The serve process needs at least one endpoint - "
-                "enable the websocket, the MCP mount, or both."
+                f"{sorted(unknown)} name no serve endpoint. The endpoints are {list(ENDPOINTS)}."
             )
+        self.base_url = base_url
+        self.mcp_endpoint = self._build_mcp() if "mcp" in self.endpoints else None
 
     async def read(self, spec, session_id, fields):
-        """One port read on a worker thread, for both doors. A refusal raises
+        """One port read on a worker thread, for both endpoints. A refusal raises
         RequestError with the served reason. A traceback read runs project
         init code, so a broad catch answers, with the traceback for the error
         modal of a client (see RequestError.detail)."""
@@ -147,7 +146,7 @@ class ServeApp:
             raise RequestError(reason, detail=detail) from exc
 
     async def submit(self, session_id, action):
-        """One guarded submit on a worker thread, for both doors. An unknown
+        """One guarded submit on a worker thread, for both endpoints. An unknown
         session id raises RequestError (see SessionRegistry.resolve)."""
         try:
             session = self.registry.resolve(session_id)
@@ -176,7 +175,7 @@ class ServeApp:
 
     def starlette(self):
         routes = []
-        if self.ws_enabled:
+        if "ws" in self.endpoints:
             routes.append(WebSocketRoute("/ws", self.ws))
         if self.mcp_endpoint is not None:
             routes.append(Mount("/", app=self.mcp_endpoint.streamable_http_app()))

@@ -86,9 +86,7 @@ def test_the_persistence_subscriber_acts_only_on_run_writes(state_store):
         adapter.flush()
         assert state_store.load_status_snapshots("sess-origin") == {}
 
-        adapter.on_task_status(
-            TaskStatusEvent(key="k", status=TaskStatus.COMPLETED)
-        )
+        adapter.on_task_status(TaskStatusEvent(key="k", status=TaskStatus.COMPLETED))
         adapter.flush()
         assert set(state_store.load_status_snapshots("sess-origin")) == {"k"}
     finally:

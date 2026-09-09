@@ -34,7 +34,7 @@ class BearerTokenVerifier(TokenVerifier):
         self._token = token
 
     async def verify_token(self, token):
-        if hmac.compare_digest(token, self._token):
+        if hmac.compare_digest(token.encode(), self._token.encode()):
             return AccessToken(token=token, client_id="winslow-token", scopes=[])
         return None
 

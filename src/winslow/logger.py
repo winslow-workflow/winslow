@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from logging.handlers import QueueHandler, QueueListener
 
-from winslow.settings import config
+from winslow import settings
 from winslow.util import safe_repr
 
 
@@ -41,27 +41,19 @@ def run_logger_name(session_id):
 # each record back to its task.
 TASK_LOGGER_NAME = f"{RUNS_LOGGER_NAME}.task"
 
-LOG_FORMAT = config(
-    "WINSLOW_LOG_FORMAT", default="%(asctime)s - %(levelname)s - %(message)s"
+INTERACTIVE_FORMATTER = logging.Formatter(
+    settings.LOG_FORMAT, datefmt=settings.LOG_DATEFMT
 )
-LOG_DATEFMT = config("WINSLOW_LOG_DATEFMT", default="%Y-%m-%d %H:%M:%S UTC")
-LOG_UTC = config("WINSLOW_LOG_UTC", default=True, cast=bool)
-
-INTERACTIVE_FORMATTER = logging.Formatter(LOG_FORMAT, datefmt=LOG_DATEFMT)
-if LOG_UTC:
+if settings.LOG_UTC:
     INTERACTIVE_FORMATTER.converter = time.gmtime
 
 INLINE_FORMATTER = logging.Formatter("%(levelname)s - %(message)s")
-
-# One JSON object per console record, for a pod whose log store queries
-# fields (see StructuredFormatter). The default stays human-readable.
-LOG_JSON = config("WINSLOW_LOG_JSON", default=False, cast=bool)
 
 
 def _console_handler():
     """The console handler. WINSLOW_LOG_JSON selects JSON lines; a terminal
     with rich installed gets rich; everything else gets plain lines."""
-    if LOG_JSON:
+    if settings.LOG_JSON:
         handler = logging.StreamHandler()
         handler.setFormatter(StructuredFormatter())
         return handler
@@ -72,9 +64,9 @@ def _console_handler():
             pass
         else:
             formatter = logging.Formatter(
-                "%(asctime)s  %(message)s", datefmt=LOG_DATEFMT
+                "%(asctime)s  %(message)s", datefmt=settings.LOG_DATEFMT
             )
-            if LOG_UTC:
+            if settings.LOG_UTC:
                 formatter.converter = time.gmtime
             handler = RichHandler(rich_tracebacks=True, show_time=False)
             handler.setFormatter(formatter)
@@ -281,8 +273,8 @@ class StructuredFormatter(logging.Formatter):
     queryable entry per record, with the traceback as a field."""
 
     def __init__(self):
-        super().__init__(datefmt=LOG_DATEFMT)
-        if LOG_UTC:
+        super().__init__(datefmt=settings.LOG_DATEFMT)
+        if settings.LOG_UTC:
             self.converter = time.gmtime
 
     def _traceback(self, record):
@@ -380,7 +372,7 @@ _listener = None
 
 
 def _default_sinks():
-    return [SessionFileSink(config("WINSLOW_LOG_DIR", default=".winslow/logs"))]
+    return [SessionFileSink(settings.LOG_DIR)]
 
 
 def setup_run_logging(sinks=None):

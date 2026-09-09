@@ -12,7 +12,7 @@ from winslow.cache import (
 )
 from winslow.workflow import WorkflowRegistry
 from winslow._config import _ConfigBase
-from winslow.constants import Mode
+from winslow.constants import ENDPOINTS, Mode
 from winslow.descriptors import ConfigOption
 from winslow.util import iter_dir_module_names, classes_in_module
 
@@ -21,8 +21,8 @@ from winslow.exceptions import (
     InitializationError,
     EligibilityError,
 )
+from winslow import settings
 from winslow.logger import (
-    LOG_JSON,
     LOGGER,
     setup_run_logging,
     shutdown_run_logging,
@@ -115,18 +115,11 @@ class Orchestrator(_ConfigBase):
         show_on_ui=False,
     )
 
-    mcp = ConfigOption(
-        help_text="Serve the MCP endpoint at /mcp (requires the mcp extra).",
-        action="store_true",
-        default=False,
-        subcommands=Command.SERVE.value,
-        show_on_ui=False,
-    )
-
-    no_ws = ConfigOption(
-        help_text="Serve without the websocket endpoint.",
-        action="store_true",
-        default=False,
+    endpoints = ConfigOption(
+        help_text="The endpoints to serve: ws, mcp, or both. mcp requires the mcp extra.",
+        choices=list(ENDPOINTS),
+        multiselect=True,
+        default=["ws"],
         subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
@@ -659,7 +652,7 @@ class Orchestrator(_ConfigBase):
         # The boundary must exist before the first session logs (see
         # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
         # for the log store of a pod; the default keeps the session files.
-        setup_run_logging(sinks=[stdout_json_sink()] if LOG_JSON else None)
+        setup_run_logging(sinks=[stdout_json_sink()] if settings.LOG_JSON else None)
         registry = SessionRegistry()
         state_store = create_state_store(config)
         self._restore_sessions(registry, state_store)
@@ -669,8 +662,7 @@ class Orchestrator(_ConfigBase):
             Credentials.from_env(config.host),
             orchestrator=self,
             state_store=state_store,
-            ws=not config.no_ws,
-            mcp=config.mcp,
+            endpoints=config.endpoints,
             base_url=f"http://{config.host}:{config.port}",
         )
         try:
@@ -734,7 +726,7 @@ class Orchestrator(_ConfigBase):
             ) from e
 
         config = self.orchestrator_config
-        client = RemoteAppClient(config.url, token=os.environ.get("WINSLOW_TOKEN"))
+        client = RemoteAppClient(config.url, token=settings.SERVE_TOKEN)
         client.connect()
         self.logger.info(f"Connected to {config.url}")
 

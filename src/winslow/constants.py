@@ -6,6 +6,10 @@ class ParameterStyle(Enum):
     PRODUCT = auto()
 
 
+# The endpoints a serve process can open (see ServeApp).
+ENDPOINTS = ("ws", "mcp")
+
+
 class Mode(Enum):
     TUI = "tui"
     HEADLESS = "headless"

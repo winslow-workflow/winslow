@@ -1,5 +1,5 @@
 """The MCP endpoint contract: the tools over ActionHandler behind the /mcp
-mount, one bearer token for both doors, and the door switches on ServeApp.
+mount, one bearer token for both endpoints, and the endpoint switches on ServeApp.
 The MCP client runs over an in-process ASGI transport with the app lifespan
 entered by hand (a mounted MCP app starts through the parent lifespan)."""
 
@@ -44,7 +44,7 @@ def mcp_app(registry, credentials=None):
         credentials,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
-        mcp=True,
+        endpoints=("ws", "mcp"),
         base_url="http://testserver",
     )
 
@@ -148,28 +148,31 @@ def test_the_mcp_door_without_the_token_refuses_at_build():
             Credentials(token=None, require_credential=True),
             orchestrator=bare_orchestrator(),
             state_store=scratch_state_store(),
-            mcp=True,
+            endpoints=("mcp",),
         )
 
 
-def test_a_serve_app_needs_at_least_one_door():
-    with pytest.raises(MisconfigurationError, match="at least one endpoint"):
+def test_an_unknown_door_refuses_at_build():
+    with pytest.raises(MisconfigurationError, match="grpc"):
         ServeApp(
             SessionRegistry(),
             Credentials(require_credential=False),
             orchestrator=bare_orchestrator(),
             state_store=scratch_state_store(),
-            ws=False,
-            mcp=False,
+            endpoints=("ws", "grpc"),
         )
 
 
-def test_the_cli_parses_the_door_flags():
+def test_the_cli_parses_the_doors():
     from winslow.orchestrator import Orchestrator
 
-    args = Orchestrator.get_base_parser().parse_args(["serve", "--mcp", "--no-ws"])
-    assert args.mcp is True
-    assert args.no_ws is True
+    parser = Orchestrator.get_base_parser()
+    assert parser.parse_args(["serve"]).endpoints == ["ws"]
+    assert parser.parse_args(["serve", "--endpoints", "mcp"]).endpoints == ["mcp"]
+    assert parser.parse_args(["serve", "--endpoints", "ws", "mcp"]).endpoints == [
+        "ws",
+        "mcp",
+    ]
 
 
 def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
@@ -179,7 +182,7 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
     app = create_app(
         SessionRegistry(),
         Credentials(token=TOKEN, require_credential=True),
-        mcp=True,
+        endpoints=("ws", "mcp"),
         base_url="http://testserver",
         orchestrator=orchestrator,
         state_store=scratch_state_store(),

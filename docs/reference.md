@@ -1,6 +1,8 @@
 # API reference
 
-The public API of Winslow: the names that `import winslow` exposes.
+The public API of Winslow: the names that `import winslow` exposes, then the client API a UI pane
+or an agent uses to read and drive sessions, in process or over the wire (see
+[Serve and connect](serve.md) and [UI plugins](ui-plugins.md)).
 
 ## Workflow
 
@@ -63,3 +65,33 @@ The public API of Winslow: the names that `import winslow` exposes.
 ## Orchestrator
 
 ::: winslow.Orchestrator
+
+## Client API
+
+::: winslow.client.AppClient
+
+::: winslow.client.SessionClient
+
+::: winslow.client.LocalAppClient
+
+::: winslow.exceptions.RequestError
+
+## Actions
+
+::: winslow.actions
+
+## Events
+
+::: winslow.bus.SessionBus
+
+::: winslow.events
+
+## Model
+
+::: winslow.model
+
+## Sessions
+
+::: winslow.session.SessionRegistry
+
+::: winslow.session.create_session
