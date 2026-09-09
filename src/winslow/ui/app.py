@@ -10,10 +10,7 @@ from textual.widgets import Footer, Header, Button
 from winslow.ui import screens
 from winslow.ui.store_adapter import SessionLifecycleEvent
 from winslow.actions import EndSession
-from winslow.client import LocalAppClient
 from winslow.events import SessionEndedEvent
-from winslow.session import SessionRegistry
-from winslow.state import create_state_store
 
 
 def session_screen_name(session_id):
@@ -21,11 +18,10 @@ def session_screen_name(session_id):
 
 
 class Winslow(App):
-    """The TUI app: the composition root. Every screen consumes the port
-    surface alone (see winslow.client). Locally the app owns the session
-    registry and the state store and builds the LocalAppClient over them;
-    `winslow connect` passes the wire client instead, and the app touches
-    no local session state."""
+    """The TUI app: a consumer of the session port. Every screen reads,
+    subscribes and acts through the AppClient (see winslow.client). The
+    orchestrator handlers compose the transport and pass it in (see
+    Orchestrator._handle_interactive_run and _handle_connect)."""
 
     BINDINGS = [
         ("ctrl+d", "switch_mode('dashboard')", "Dashboard"),
@@ -44,27 +40,16 @@ class Winslow(App):
         "styles/modals.tcss",
     ]
 
-    def __init__(self, orchestrator, orchestrator_config, client=None):
-        # A private name, to prevent a clash if Textual adds a config object.
-        self._winslow_config = orchestrator_config
-        self.orchestrator = orchestrator
-
-        if client is None:
-            self.sessions = SessionRegistry()
-            # One durable store for every session of the app: manifests, task
-            # snapshots and batch records live here (see winslow.state).
-            self.state_store = create_state_store(orchestrator_config)
-            # The session port of this process. Every screen reads, subscribes
-            # and acts through it (see winslow.client).
-            client = LocalAppClient(
-                self.sessions, orchestrator=orchestrator, state_store=self.state_store
-            )
-        else:
-            # A wire client: the serve process owns the registry and the store.
-            self.sessions = None
-            self.state_store = None
+    def __init__(self, client, logger, owns_sessions):
+        # The session port of this process. Every screen reads, subscribes
+        # and acts through it (see winslow.client).
         self.client = client
-
+        # The name is w_logger, to prevent a clash with the _logger of the
+        # Textual App.
+        self.w_logger = logger
+        # True for the local TUI, which runs in the process that owns the
+        # sessions. auto_init falls to that process (see DashboardScreen).
+        self.owns_sessions = owns_sessions
         super().__init__()
 
     def clear_selection(self):
@@ -75,7 +60,7 @@ class Winslow(App):
 
     @property
     def logger(self):
-        return self.orchestrator.logger
+        return self.w_logger
 
     def compose(self):
         """Create the child widgets of the app."""
@@ -129,12 +114,12 @@ class Winslow(App):
 
     async def _start_session(self, workflow_name, create):
         """One session through the port: `create` is the AppClient call that
-        answers a SessionRow. A failure lands in the history as a failed row
+        answers a SessionInfo. A failure lands in the history as a failed row
         with the traceback."""
         row_widget = await self.dashboard.add_pending_session(workflow_name)
         self.logger.info(f"Initializing workflow: {workflow_name}")
         try:
-            session_row = await asyncio.to_thread(create)
+            session_info = await asyncio.to_thread(create)
         except Exception as e:
             # The session log carries the traceback through the create flow;
             # the failed row shows it for the ErrorDetail modal. A wire
@@ -153,23 +138,39 @@ class Winslow(App):
             return
 
         self.logger.info(f"Workflow '{workflow_name}' ready.")
-        row_widget.complete(session_row)
-        self._connect_session(session_row)
+        row_widget.complete(session_info)
+        self._connect_session(session_info)
 
-    def _connect_session(self, session_row):
+    async def adopt_session(self, session_info):
+        """One session another client created: give this client its
+        installed screen and dashboard row, from the SessionInfo value alone.
+        The screen installs first, so a failed read leaves no orphan row."""
+        self._connect_session(session_info)
+        if session_info.status in ("ENDED", "ERROR"):
+            await self.dashboard.add_history_session(session_info)
+            return
+        row_widget = await self.dashboard.add_pending_session(
+            session_info.instance_name
+        )
+        row_widget.complete(session_info)
+
+    def _connect_session(self, session_info):
         """Install the workflow screen over one SessionClient and wire the
-        session-ended lane that moves the dashboard row to the history."""
-        session_id = session_row.session_id
+        session-ended lane that moves the dashboard row to the history. The
+        screen subscribes itself at its first mount (see WorkflowScreen.connect):
+        an unmounted screen cannot receive a post from a worker thread."""
+        session_id = session_info.session_id
         client = self.client.session(session_id)
-        screen = screens.WorkflowScreen(client, session_row)
+        screen = screens.WorkflowScreen(client, session_info)
         self.install_screen(screen, name=session_screen_name(session_id))
-        screen.connect()
 
         # The end event moves the dashboard row to the history. The bus
-        # close at session end disconnects the lane.
-        client.subscribe(
-            SessionEndedEvent, partial(self._relay_session_ended, session_id)
-        )
+        # close at session end disconnects the lane. An adopted session that
+        # already ended has no end to relay.
+        if session_info.status not in ("ENDED", "ERROR"):
+            client.subscribe(
+                SessionEndedEvent, partial(self._relay_session_ended, session_id)
+            )
 
     def _relay_session_ended(self, session_id, event):
         self.post_message(

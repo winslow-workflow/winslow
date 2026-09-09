@@ -6,6 +6,7 @@ payload rule, see winslow.events)."""
 import threading
 from dataclasses import asdict, dataclass, fields
 
+from winslow._meta import _tagged, handles
 from winslow.cache import declared_entries
 from winslow.exceptions import SessionEndingError
 from winslow.task.context import BatchOptions
@@ -29,47 +30,87 @@ class BatchAck(Ack):
     batch_uuid: str | None = None
 
 
+class Action:
+    """The base of every action. name is the wire name (see ActionFrame). The
+    actions register by name at class creation (see build)."""
+
+    name = None
+    by_name = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        # A base with no name is an action kind and stays unregistered (see Lane).
+        if cls.name is not None:
+            Action.by_name[cls.name] = cls
+
+    @classmethod
+    def build(cls, name, payload):
+        """The action instance of one wire name and its field dict (see
+        ActionFrame). The codec validates the payload against the dataclass."""
+        # The codec needs pydantic, which only the serve and connect extras install.
+        from winslow.protocol.codec import CODEC, ValidationError, report
+
+        action_class = cls.by_name.get(name)
+        if action_class is None:
+            raise ValueError(
+                f"{name!r} names no action. The actions are {sorted(cls.by_name)}."
+            )
+        try:
+            return CODEC.decode(action_class, payload or {})
+        except ValidationError as exc:
+            raise ValueError(
+                f"bad fields for {name} - {report(exc)}. The fields of {name} are "
+                f"{[f.name for f in fields(action_class)]}."
+            ) from None
+
+
 @dataclass(frozen=True)
-class RunTasks:
+class RunTasks(Action):
     """options carries the batch options of this submit: {name: bool},
     over the session baseline. They are client view state, so each client
     sends its own with every batch (see BatchOptions)."""
 
+    name = "run_tasks"
     keys: tuple
     options: dict | None = None
 
 
 @dataclass(frozen=True)
-class CheckTasks:
+class CheckTasks(Action):
     """The check form of RunTasks; options works the same."""
 
+    name = "check_tasks"
     keys: tuple
     options: dict | None = None
 
 
 @dataclass(frozen=True)
-class StopBatch:
+class StopBatch(Action):
+    name = "stop_batch"
     batch_uuid: str
 
 
 @dataclass(frozen=True)
-class EndSession:
+class EndSession(Action):
+    name = "end_session"
     force: bool = False
 
 
 @dataclass(frozen=True)
-class LoadCacheEntries:
+class LoadCacheEntries(Action):
     """Bulk-only, like RunTasks: a single selection sends a one-pair list.
     Each pair is (cache_name, entry_name)."""
 
+    name = "load_cache_entries"
     entries: tuple
 
 
 @dataclass(frozen=True)
-class ClearCacheEntries:
+class ClearCacheEntries(Action):
     """Bulk-only, like LoadCacheEntries. "Clear" is the action verb on the
     wire; the handler calls cache.invalidate internally."""
 
+    name = "clear_cache_entries"
     entries: tuple
 
 
@@ -127,11 +168,13 @@ class ActionHandler:
         ack_class = BatchAck if isinstance(action, (RunTasks, CheckTasks)) else Ack
         return ack_class(accepted=False, reason=reason)
 
+    @handles(RunTasks)
     def run_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_run_single, self._runner.submit_run
         )
 
+    @handles(CheckTasks)
     def check_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_check_single, self._runner.submit_check
@@ -175,9 +218,17 @@ class ActionHandler:
             return self._refuse(action, str(exc))
         if batch is None:
             # The admission filtered every task out (see _open_batch).
-            return self._refuse(action, "The batch contains no eligible tasks.")
+            return self._refuse(
+                action,
+                (
+                    "no requested task is eligible for this action right now - "
+                    "the current statuses exclude all of them; the task list "
+                    "shows each status."
+                ),
+            )
         return BatchAck(accepted=True, batch_uuid=batch.uuid)
 
+    @handles(StopBatch)
     def stop_batch(self, action):
         batch = self._runner.get_batch(action.batch_uuid)
         if batch is None:
@@ -189,6 +240,7 @@ class ActionHandler:
         batch.request_stop()
         return Ack(accepted=True)
 
+    @handles(EndSession)
     def end_session(self, action):
         if action.force:
             self.session.force_end()
@@ -199,9 +251,7 @@ class ActionHandler:
     def _resolve_cache_entries(self, action):
         """(cache, entry_name) pairs for the wire pairs of the action, or a
         refusal reason naming the first unknown cache or entry."""
-        caches_by_name = {
-            cache.get_name(): cache for cache in self._workflow.caches()
-        }
+        caches_by_name = {cache.get_name(): cache for cache in self._workflow.caches()}
         resolved = []
         for cache_name, entry_name in action.entries:
             cache = caches_by_name.get(cache_name)
@@ -247,18 +297,17 @@ class ActionHandler:
         ).start()
         return Ack(accepted=True)
 
+    @handles(LoadCacheEntries)
     def load_cache_entries(self, action):
         return self._cache_entries_action(action, self._load_cache_entry)
 
+    @handles(ClearCacheEntries)
     def clear_cache_entries(self, action):
         return self._cache_entries_action(action, self._clear_cache_entry)
 
-    # Adding an action means one dataclass and one method, registered here.
-    _methods = {
-        RunTasks: run_tasks,
-        CheckTasks: check_tasks,
-        StopBatch: stop_batch,
-        EndSession: end_session,
-        LoadCacheEntries: load_cache_entries,
-        ClearCacheEntries: clear_cache_entries,
-    }
+
+# The dispatch table of submit: action class -> method, from every method
+# @handles marks. Adding an action means one dataclass and one marked method.
+ActionHandler._methods = {
+    method.handles: method for method in _tagged(ActionHandler, "handles")
+}

@@ -1,13 +1,13 @@
 """The in-process transport of the session port. LocalAppClient and
-LocalSessionClient hand the dataclasses the core builds straight through:
-no serialization runs on this path (see winslow.model)."""
+LocalSessionClient pass the dataclasses the core builds through unchanged
+(see winslow.model)."""
 
 from dataclasses import asdict
 from functools import partial
 
 from winslow.cache import declared_entries
 from winslow.client.base import AppClient, SessionClient
-from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.exceptions import RequestError
 from winslow.logger import (
     INTERACTIVE_FORMATTER,
     InteractiveLogHandler,
@@ -18,21 +18,21 @@ from winslow.model import (
     CacheUpdatedEvent,
     CacheValueView,
     Descriptors,
-    HistoryRow,
-    ManifestRow,
+    BatchOutcome,
+    ManifestInfo,
     RecordDetail,
     SessionLogEvent,
     SessionParams,
-    SessionRow,
+    SessionInfo,
     SessionSnapshot,
     TaskLogEvent,
 )
 from winslow.session import create_session
 
 
-class _CacheUpdateListener:
-    """Collapse the five CacheListener callbacks into CacheUpdatedEvent per
-    name. EventBridge does the same collapse on the serve side."""
+class CacheUpdateListener:
+    """Collapse the five CacheListener callbacks into one CacheUpdatedEvent
+    per name, handed to handler. The bridge and the local client share it."""
 
     def __init__(self, handler):
         self.handler = handler
@@ -66,47 +66,30 @@ def _emit_task_log(handler, task_key, line):
 
 class LocalAppClient(AppClient):
     """The dashboard scope over a live SessionRegistry. orchestrator and
-    state_store power descriptors, manifests, create and restore; a client
+    state_store serve descriptors, manifests, create and restore. A client
     without them serves the registry reads only."""
 
-    def __init__(self, registry, orchestrator=None, state_store=None):
+    def __init__(self, registry, orchestrator, state_store):
         self.registry = registry
         self.orchestrator = orchestrator
         self.state_store = state_store
 
-    def _require_orchestrator(self):
-        if self.orchestrator is None:
-            raise MisconfigurationError(
-                "this client serves no workflows - pass an orchestrator."
-            )
-
-    def _require_state_store(self):
-        if self.state_store is None:
-            raise MisconfigurationError(
-                "this client keeps no session state - pass a state store."
-            )
-
     def sessions(self):
         return tuple(
-            SessionRow.from_session(session)
-            for session in self.registry.sessions()
+            SessionInfo.from_session(session) for session in self.registry.sessions()
         )
 
     def descriptors(self):
-        self._require_orchestrator()
         return Descriptors.from_orchestrator(self.orchestrator)
 
     def manifests(self):
-        self._require_state_store()
         return tuple(
-            ManifestRow.from_manifest(manifest)
+            ManifestInfo.from_manifest(manifest)
             for manifest in self.state_store.list_open_manifests()
             if manifest.session_id not in self.registry
         )
 
     def create_session(self, workflow, overrides=None, values=None):
-        self._require_orchestrator()
-        self._require_state_store()
         try:
             session = create_session(
                 self.orchestrator,
@@ -119,13 +102,11 @@ class LocalAppClient(AppClient):
             )
         except (KeyError, ValueError) as exc:
             # A refusal: an unknown workflow, a bad option value. An init
-            # bug propagates raw, so an in-process caller keeps its traceback.
+            # bug propagates unchanged, so an in-process caller keeps its traceback.
             raise RequestError(exc.args[0] if exc.args else str(exc)) from None
-        return SessionRow.from_session(session)
+        return SessionInfo.from_session(session)
 
     def restore_session(self, session_id):
-        self._require_orchestrator()
-        self._require_state_store()
         if session_id in self.registry:
             raise RequestError(f"{session_id!r} is already a live session.")
         manifest = next(
@@ -137,13 +118,11 @@ class LocalAppClient(AppClient):
             None,
         )
         if manifest is None:
-            raise RequestError(
-                f"{session_id!r} names no open manifest to restore."
-            )
+            raise RequestError(f"{session_id!r} names no open manifest to restore.")
         if manifest.workflow_class not in self.orchestrator.workflow_registry.names:
             raise RequestError(
                 f"the manifest names workflow {manifest.workflow_class!r}, "
-                f"which this client does not collect."
+                f"which this process does not collect."
             )
         session = create_session(
             self.orchestrator,
@@ -156,16 +135,13 @@ class LocalAppClient(AppClient):
             seed=True,
             origin="local",
         )
-        return SessionRow.from_session(session)
+        return SessionInfo.from_session(session)
 
     def session(self, session_id):
         return LocalSessionClient(self.registry.resolve(session_id))
 
     def subscribe_connection(self, handler):
         # The in-process transport has no connection to lose.
-        pass
-
-    def unsubscribe_connection(self, handler):
         pass
 
 
@@ -176,7 +152,7 @@ class LocalSessionClient(SessionClient):
 
     def __init__(self, session):
         self.session = session
-        # One teardown callable per active subscription; close() drains it.
+        # One teardown callable per active subscription. close() drains it.
         self._teardowns = {}
 
     @property
@@ -194,7 +170,7 @@ class LocalSessionClient(SessionClient):
 
     def _require_live(self):
         """The live task reads refuse once the session has ended, with the
-        reason the serve edge serves (see requires_live_session)."""
+        reason the serve edge serves (see Connection.handle_subscribe_task_log)."""
         if self.session.has_ended:
             raise RequestError(
                 f"{self.session_id} has ended - its live task and cache "
@@ -206,48 +182,51 @@ class LocalSessionClient(SessionClient):
         workflow = self._workflow
         return tuple(workflow.task_info(task) for task in workflow.roster_tasks())
 
-    def task_detail(self, key):
+    def task_detail(self, task_key):
         self._require_live()
-        task = self._resolve_task(key)
+        task = self._resolve_task(task_key)
         return self._workflow.task_info(
             task, full=True, evaluate=True, root_dir=self._workflow.root_dir
         )
 
-    def _resolve_task(self, key):
+    def _resolve_task(self, task_key):
         try:
-            return self._workflow.task_index.resolve(key)
+            return self._workflow.task_index.resolve(task_key)
         except KeyError as exc:
             raise RequestError(exc.args[0]) from None
 
-    def record_detail(self, batch_uuid, key):
-        return RecordDetail.from_record(self._record(batch_uuid, key))
+    def record_detail(self, batch_uuid, task_key):
+        return RecordDetail.from_record(self._record(batch_uuid, task_key))
 
     def history(self):
         runner = self._workflow.runner
         return tuple(
-            HistoryRow.from_batch(batch, runner.record_store(batch.uuid))
+            BatchOutcome.from_batch(batch, runner.record_store(batch.uuid))
             for batch in runner.batches
         )
 
-    def log_tail(self, batch_uuid, key, limit=200):
-        return self._record(batch_uuid, key).log_tail(limit)
+    def log_tail(self, batch_uuid, task_key, limit=None):
+        # None arrives from an omitted wire field. The default lives here.
+        return self._record(batch_uuid, task_key).log_tail(
+            200 if limit is None else limit
+        )
 
-    def _record(self, batch_uuid, key):
+    def _record(self, batch_uuid, task_key):
         store = self._workflow.runner.record_store(batch_uuid)
         if store is None:
             raise RequestError(
                 f"batch {batch_uuid!r} keeps no records in this session."
             )
         try:
-            return store.get_record(key)
+            return store.get_record(task_key)
         except KeyError:
             raise RequestError(
-                f"task {key!r} is not in the roster of batch {batch_uuid!r}."
+                f"task {task_key!r} is not in the roster of batch {batch_uuid!r}."
             ) from None
 
     def caches(self):
-        # The caches read of an ended session refuses with direction (see
-        # Workflow.caches).
+        # Workflow.caches raises for an ended session. Its message becomes
+        # the refusal reason.
         try:
             return CachesPayload.from_workflow(self._workflow).caches
         except ValueError as exc:
@@ -264,11 +243,9 @@ class LocalSessionClient(SessionClient):
             raise RequestError(f"{cache} has no entry {entry_name!r}.")
         return CacheValueView.from_entry(cache, entry_name)
 
-    def apply_filter(self, query, builtin_only=False, scope="tasks"):
+    def apply_filter(self, query, scope="tasks"):
         try:
-            return self._workflow.filter_keys(
-                query, scope=scope, builtin_only=builtin_only
-            )
+            return self._workflow.filter_keys(query, scope=scope)
         except ValueError as exc:
             raise RequestError(str(exc)) from None
 
@@ -286,12 +263,12 @@ class LocalSessionClient(SessionClient):
             return
         workflow = self._workflow
         if topic is CacheUpdatedEvent:
-            listener = _CacheUpdateListener(handler)
+            listener = CacheUpdateListener(handler)
             workflow.add_cache_listener(listener)
             teardown = partial(workflow.remove_cache_listener, listener)
         elif topic is SessionLogEvent:
             # The default formatter is INTERACTIVE: a full log view carries
-            # timestamps; only an inline cell uses the short form.
+            # timestamps. Only an inline cell uses the short form.
             log_handler = InteractiveLogHandler(partial(_emit_session_log, handler))
             workflow.logger.addHandler(log_handler)
             teardown = partial(workflow.logger.removeHandler, log_handler)
@@ -331,6 +308,7 @@ class LocalSessionClient(SessionClient):
             teardown()
 
     def close(self):
+        """Disconnect every subscription of this client (see EventBridge.detach)."""
         while self._teardowns:
             _, teardown = self._teardowns.popitem()
             teardown()
@@ -338,6 +316,6 @@ class LocalSessionClient(SessionClient):
     # --- actions ----------------------------------------------------------------
 
     def submit(self, action):
-        # submit, not submit_guarded: an in-process bug keeps its traceback
+        # The unguarded submit keeps the traceback of an in-process bug
         # (see ActionHandler.submit_guarded).
         return self.session.actions.submit(action)

@@ -1,4 +1,3 @@
-
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
@@ -32,7 +31,6 @@ from winslow.task.context import (
 from winslow.events import Origin
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
-from winslow.task.eligibility import check_task_eligibility
 from winslow.telemetry import emit_task_error
 
 from .execution import (
@@ -44,18 +42,9 @@ from .execution import (
 
 
 class BaseRunner(_Base):
-    # The stop latency of the waits in _resolve_dependencies. A stop
-    # request writes no status to the store, so it cannot end a wait by
-    # itself: it sets an event on the batch (see
-    # ExecutionBatch.request_stop), and only _stop_requested reads it. The
-    # timeout ends each wait after 0.5 seconds, and the loop reads the
-    # event between the slices. The constant is thus the longest delay
-    # between a stop request and its detection.
-    #
-    # Example: a task waits on a dependency that runs for 60 seconds, and
-    # the user presses stop after 10. The waiter wakes at the end of its
-    # current 0.5 second slice, reads _stop_requested, and leaves the wait.
-    # Without the timeout it would sleep the full 60 seconds.
+    # A stop request sets an event on the batch and writes no status, so a
+    # wait cannot end on its own. Each wait ends after this many seconds and
+    # the loop reads the event between the slices (see ExecutionBatch.request_stop).
     TASK_DEPENDENCY_STOP_POLL_SECONDS = 0.5
 
     def __init__(
@@ -78,6 +67,9 @@ class BaseRunner(_Base):
         # On the base class, so both runners share it. Callers look up a batch
         # through get_batch and batches.
         self._execution_batches_map = {}
+        # Identity keys of the tasks that ran in this workflow. Used for marking
+        # tasks as COMPLETED_PREVIOUSLY vs COMPLETED (see _check_task_success).
+        self._run_attempted = set()
 
     def _new_execution_context(self, batch_uuid, options=None):
         """Snapshot the options of this batch: the submit's own, or the
@@ -93,6 +85,9 @@ class BaseRunner(_Base):
 
     def _execution_context_for(self, batch_uuid):
         return self._execution_batches_map[batch_uuid].execution_context
+
+    def has_run(self, task):
+        return task.identity_key in self._run_attempted
 
     def get_batch(self, batch_uuid):
         """Return the batch with this uuid, or None when the runner holds no
@@ -303,10 +298,10 @@ class BaseRunner(_Base):
 
     def _check_task_eligibility(self, task, _):  # The signature matches _batch_call
         # This does not run in task_scope. An eligibility check that fails must
-        # abort the workflow init (see check_task_eligibility) and must not
+        # abort the workflow init (see Task._check_eligibility) and must not
         # become a silent ERROR.
         self.set_status(task, TaskStatus.CHECKING_ELIGIBILITY, None)
-        result = check_task_eligibility(task, logger=self.logger)
+        result = task._check_eligibility(logger=self.logger)
         self.set_status(
             task,
             TaskStatus.READY_TO_PROCESS if result else TaskStatus.SKIPPED,
@@ -366,7 +361,7 @@ class BaseRunner(_Base):
                     flagged = batch is not None and task.identity_key in batch.errored
                     if flagged:
                         stat = TaskStatus.COMPLETED_WITH_ERROR
-                    elif task.is_noop or task._has_been_run:
+                    elif task.is_noop or self.has_run(task):
                         stat = TaskStatus.COMPLETED
                     else:
                         stat = TaskStatus.COMPLETED_PREVIOUSLY
@@ -392,9 +387,8 @@ class BaseRunner(_Base):
                 task.dry_run()
             else:
                 self.logger.info(f"Running {task}")
-                # Before run(), so a run that raises still counts as a run
-                # attempt of this workflow (see TaskStatus.COMPLETED_PREVIOUSLY).
-                task._has_been_run = True
+                # Before run(), so a run that raises still counts as an attempt.
+                self._run_attempted.add(task.identity_key)
                 task.run()
             self.set_status(task, TaskStatus.RUN_FINISHED, batch_uuid)
 
@@ -439,37 +433,9 @@ class BaseRunner(_Base):
         self._resolve_dependencies(task.dependent_tasks, batch_uuid, checked_deps)
 
     def _resolve_dependencies(self, deps, batch_uuid, checked_deps=frozenset()):
-        # Example: task D depends on A, B and C. The group pre-pass probed
-        # B, so the caller passes checked_deps={B}. The statuses at entry:
-        #
-        #     A: COMPLETED            # satisfied
-        #     B: FAILED               # probed by the pre-pass
-        #     C: CHECKING_COMPLETION  # a sibling thread probes C right now
-        #
-        # The walk:
-        #
-        #     1. candidates = [B, C]. A is satisfied and drops out.
-        #     2. C is active: wait_for = [C]. B is in checked_deps, so no
-        #        new probe: good_to_check stays empty.
-        #     3. The loop waits for C in 0.5 second slices (see
-        #        TASK_DEPENDENCY_STOP_POLL_SECONDS).
-        #     4. C settles as COMPLETED and leaves the wait list, and the
-        #        loop ends. If C settles as FAILED instead, no pre-pass
-        #        covered it, so the loop probes C once before it ends.
-        #     5. The caller reads the statuses: B stays unsatisfied, so D
-        #        becomes BLOCKED (see process_task).
-        #
-        # The tricky parts:
-        #
-        # - checked_deps holds the dependencies that the caller resolved in
-        #   the group pre-pass. The statuses do not show them, so the caller
-        #   passes them, and the sibling threads skip exactly these probes,
-        #   which would otherwise race.
-        # - A dependency in an active status belongs to another thread at
-        #   that moment. The loop waits instead of probing it, and sorts it
-        #   again when it settles: still unsatisfied means probe it here,
-        #   any other status means it is resolved.
-        # - The wait runs in short slices, so a stop request is noticed.
+        # checked_deps holds the dependencies the group pre-pass probed, which
+        # the store does not show. An active dependency belongs to another
+        # thread: the loop waits for it in short slices, so a stop request is noticed.
 
         # TODO: raise a timeout here
 

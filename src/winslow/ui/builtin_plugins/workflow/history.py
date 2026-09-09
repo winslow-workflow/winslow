@@ -63,7 +63,7 @@ _FLAG_PILLS = (
 
 @dataclass(frozen=True)
 class BatchView:
-    """The card model of one batch, from either port shape: a HistoryRow at
+    """The card model of one batch, from either port shape: a BatchOutcome at
     compose time, a BatchInfo from a batch_created event."""
 
     uuid: str
@@ -161,20 +161,26 @@ class RecordRow(TaskRowBase):
         if outcome is not None:
             self.status = TaskStatus[outcome.status]
             self.log_line = outcome.last_log
-        else:
-            self.watch_status(self.status)
+        # The watcher fires under the mount, where is_mounted is still
+        # False: paint once more after the refresh.
+        self.call_after_refresh(self._paint)
 
     def update_outcome(self, outcome):
         self._outcome = outcome
         self.log_line = outcome.last_log
-        # An equal status does not trigger the reactive. Paint directly
-        # first, so the runtime column still refreshes.
-        self.watch_status(TaskStatus[outcome.status])
         self.status = TaskStatus[outcome.status]
+        # An equal status does not trigger the watcher. Paint anyway, so
+        # the runtime column refreshes.
+        self._paint()
 
     def watch_status(self, status):
-        if not self.is_mounted:
-            return
+        if self.is_mounted:
+            self._paint()
+
+    def _paint(self):
+        """Paint from the current state. The deferred call after the mount
+        must not carry a status captured at mount time."""
+        status = self.status
         if self._outcome is None and self._running_since is None:
             self._running_since = time.time()
         self.query_one(".icon", Label).update(get_task_icon(status))
@@ -224,9 +230,7 @@ class BatchCard(Widget):
         self._title_prefix = f" {view.action}  ·  {ts}  ·  {short_uuid}"
 
         options = view.options or {}
-        pills = [
-            (label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)
-        ]
+        pills = [(label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)]
 
         stoppable = view.status in ACTIVE_BATCH_STATUSES
         with Horizontal(classes="batch-header"):
@@ -328,7 +332,7 @@ class HistoryPane(QuerySearchMixin, Widget):
     def handle_search_submitted(self, event):
         self.submit_search(event.value)
 
-    @on(Checkbox.Changed, "#hide-completed")
+    @on(Checkbox.Changed, "#hide-completed-records")
     def handle_hide_completed(self, event):
         self._hide_completed = event.value
         self._apply_visibility()
@@ -359,7 +363,7 @@ class HistoryPane(QuerySearchMixin, Widget):
             )
             with Horizontal(classes="checkboxes"):
                 with Vertical(classes="column"):
-                    yield Checkbox("hide completed", id="hide-completed")
+                    yield Checkbox("hide completed", id="hide-completed-records")
                     # The placeholder keeps 'hide completed' on the top row. The
                     # checkbox column of the task bar has the same two rows.
                     yield Checkbox("placeholder", classes="placeholder", disabled=True)
@@ -406,6 +410,15 @@ class HistoryPane(QuerySearchMixin, Widget):
 
     @on(BatchCreated)
     async def on_batch_created(self, event):
+        if event.info.uuid in self._cards:
+            # A healing snapshot replays known batches. A completed batch refreshes
+            # through its completed event. A running one refreshes here, so its
+            # record rows catch up on the statuses of the gap (see _refresh_outcomes).
+            if event.info.completed_at is None:
+                self.run_worker(
+                    self._refresh_outcomes(event.info.uuid), group="history-refresh"
+                )
+            return
         scroll = self.query_one(VerticalScroll)
         card = BatchCard(BatchView.from_batch_info(event.info), self._infos_by_key)
         await scroll.mount(card, before=0)

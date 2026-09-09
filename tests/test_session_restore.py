@@ -88,7 +88,7 @@ def test_a_seeded_success_is_stale_and_reprobes_on_first_touch(
     # The STALE seed re-probed: the fresh target of this instance is empty,
     # so the probe failed, the task ran again, and the new snapshot is live.
     assert second.store[alpha] is S.COMPLETED
-    assert alpha._has_been_run
+    assert second.runner.has_run(alpha)
 
 
 def test_a_fresh_seed_inside_the_ttl_is_not_stale(
@@ -109,7 +109,7 @@ def test_a_fresh_seed_inside_the_ttl_is_not_stale(
 
     # Inside the TTL the seed is trusted: the task did not run again.
     assert second.store[alpha] is S.COMPLETED
-    assert not alpha._has_been_run
+    assert not second.runner.has_run(alpha)
 
 
 def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):

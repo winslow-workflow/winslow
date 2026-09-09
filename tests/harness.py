@@ -1,6 +1,7 @@
 import hashlib
 import os
 import sys
+import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -10,6 +11,7 @@ from pathlib import Path
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.session import Session
+from winslow.state import FileStateStore
 from winslow.task.status import TaskStatus as S
 from winslow.util import _SCOPE_NS
 
@@ -113,7 +115,7 @@ def build_workflow(directory, name, mode, *extra_argv):
     )
     orchestrator = Orchestrator(config, directory=directory)
     orchestrator.workflow_registry.collect_classes(directory)
-    workflow = orchestrator.workflow_registry[name](config)
+    workflow = orchestrator.workflow_registry[name](config, root_dir=directory)
     workflow.initialize_tasks()
     return workflow
 
@@ -249,3 +251,22 @@ def by_params(workflow):
         ): task
         for task in workflow.tasks
     }
+
+
+def bare_orchestrator(directory=None):
+    """An orchestrator with the serve config and no collected workflows: the
+    dependency of a port whose test registers its sessions by hand."""
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["serve"], namespace=OrchestratorConfig()
+    )
+    return Orchestrator(config, directory=directory, unknown_args=unknown)
+
+
+def scratch_state_store():
+    """A file state store under a fresh temporary directory, for a test
+    without the state_store fixture."""
+
+    class ScratchStateStore(FileStateStore):
+        base_directory = Path(tempfile.mkdtemp()) / "state"
+
+    return ScratchStateStore(OrchestratorConfig())

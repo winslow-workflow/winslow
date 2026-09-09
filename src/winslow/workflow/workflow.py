@@ -1,6 +1,5 @@
 import operator
 import time
-import uuid
 from argparse import ArgumentParser, Namespace
 from functools import cached_property
 
@@ -32,7 +31,7 @@ from winslow.state import (
     is_trusted,
 )
 from winslow.logger import LOGGER
-from winslow.util import identity_digest, slugify
+from winslow.util import identity_digest, new_uuid, slugify
 from winslow.exceptions import MisconfigurationError, InitializationError
 
 
@@ -68,10 +67,18 @@ class Workflow(_ConfigBase):
     cache_registry_class = WorkflowCacheRegistry
 
     def __init__(
-        self, orchestrator_config, workflow_config=None, store=None, logger=LOGGER
+        self,
+        orchestrator_config,
+        workflow_config=None,
+        store=None,
+        logger=LOGGER,
+        root_dir=None,
     ):
 
         super().__init__(orchestrator_config)
+        # The project root of the process (see Orchestrator.directory). The
+        # task detail renders source paths relative to it.
+        self.root_dir = root_dir
 
         self.workflow_config = (
             workflow_config if workflow_config is not None else Namespace()
@@ -170,12 +177,6 @@ class Workflow(_ConfigBase):
         return self.batch_options.disable_concurrency
 
     @property
-    def root_dir(self):
-        """The project root of the process (see Orchestrator.directory). The
-        orchestrator stamps it onto the config; a bare test config has none."""
-        return getattr(self.orchestrator_config, "directory", None)
-
-    @property
     def session(self):
         return self._session
 
@@ -231,7 +232,7 @@ class Workflow(_ConfigBase):
         """The nonce separates two concurrent runs of one workflow in the log
         routing (see Task.log_key). The property owns the name, so a config
         option cannot bind it."""
-        return str(uuid.uuid4())
+        return new_uuid()
 
     def __str__(self):
         """The display form of the run: the name plus the identifier options,
@@ -325,11 +326,7 @@ class Workflow(_ConfigBase):
 
         logger.debug(f"{self} initialized {len(self.store)} tasks.")
 
-        # The graph is necessary only to build the pipeline and to assign the
-        # dependencies of each task, which the tasks now hold. Drop the graph, so
-        # the garbage collector can free it and its _task_class_map, which holds
-        # a reference to each task. The workflow task list and the dependency
-        # links then own the tasks.
+        # The graph did its one job. Drop it, so initialize_tasks stays one-shot.
         self.graph = None
 
     def release_tasks(self):
@@ -588,7 +585,7 @@ class Workflow(_ConfigBase):
             }.values()
         )
 
-    def filter_keys(self, query, scope="tasks", builtin_only=False):
+    def filter_keys(self, query, scope="tasks"):
         """The identity keys the query matches over the named corpus: 'tasks'
         applies the full registry over the live tasks, 'history' the builtin
         filters over the record infos. Raises ValueError with direction."""
@@ -601,8 +598,6 @@ class Workflow(_ConfigBase):
         if scope == "history":
             enforce_builtin_only(parsed)
             return tuple(info.key for info in parsed.apply(self.record_infos()))
-        if builtin_only:
-            enforce_builtin_only(parsed)
         if self.tasks is None:
             raise ValueError(
                 f"{self} has ended and released its tasks - search the "

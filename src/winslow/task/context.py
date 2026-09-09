@@ -17,7 +17,7 @@ class BatchOptions:
     disable_concurrency: bool
 
 
-@dataclass
+@dataclass(frozen=True)
 class TaskExecutionContext:
     batch_uuid: Optional[str]
     dry_run: bool
@@ -52,15 +52,12 @@ def get_execution_context() -> Optional[TaskExecutionContext]:
     return _task_execution.get()
 
 
-def set_execution_context(context: Optional[TaskExecutionContext]):
-    _task_execution.set(context)
-
-
 @contextmanager
 def scoped_execution_context(context: TaskExecutionContext):
     if get_execution_context() is not None:
         raise RuntimeError(
-            "Nested execution contexts are not allowed in the current context"
+            "a batch already runs on this thread - a nested execution "
+            "context is not supported."
         )
     token = _task_execution.set(context)
     try:
@@ -69,7 +66,7 @@ def scoped_execution_context(context: TaskExecutionContext):
         _task_execution.reset(token)
 
 
-@dataclass
+@dataclass(frozen=True)
 class LogContext:
     """Structured labels that are stamped onto each log record from the scope of a
     task. A sink, such as a file or Loki, thus gets metadata that it can query,

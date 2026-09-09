@@ -1,6 +1,6 @@
 """The serve slice-one contract, black-box through the Starlette test client:
-the hello handshake, the refusal channels, the credential policy, and the
-session snapshot. The refusal codes and the 5s timeout come from the spike
+the hello handshake, the refusal channels, and the credential policy. The
+refusal codes and the 5s timeout come from the spike
 findings; the timeout here is short, so the timeout test stays fast."""
 
 import pytest
@@ -9,10 +9,17 @@ from starlette.websockets import WebSocketDisconnect
 
 from winslow.constants import Mode
 from winslow.serve import Credentials, create_app, mint_ticket, verify_ticket
-from winslow.serve.app import PROTOCOL_VERSION
 from winslow.session import Session, SessionRegistry
+from winslow.protocol.frames import RequestFrame
+from winslow.protocol.frames import (
+    HelloErrorFrame,
+    HelloFrame,
+    HelloOkFrame,
+    ResultFrame,
+    SubscribeFrame,
+)
 
-from harness import build_workflow
+from harness import bare_orchestrator, build_workflow, scratch_state_store
 
 SECRET = "test-secret"
 TOKEN = "test-token"
@@ -25,17 +32,23 @@ def client(registry=None, credentials=None, hello_timeout=0.2):
         allowed_origins=("http://ui.example",),
         require_credential=True,
     )
-    app = create_app(registry or SessionRegistry(), credentials, hello_timeout)
+    app = create_app(
+        registry or SessionRegistry(),
+        credentials,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        hello_timeout=hello_timeout,
+    )
     return TestClient(app)
 
 
 def hello(ws, **fields):
-    ws.send_json({"type": "hello", "version": PROTOCOL_VERSION, **fields})
+    ws.send_json({"type": HelloFrame.type, **fields})
 
 
 def expect_refusal(ws, code, reason_part):
     error = ws.receive_json()
-    assert error["type"] == "hello_error"
+    assert error["type"] == HelloErrorFrame.type
     assert reason_part in error["reason"]
     with pytest.raises(WebSocketDisconnect) as exc:
         ws.receive_json()
@@ -43,18 +56,10 @@ def expect_refusal(ws, code, reason_part):
     assert reason_part in exc.value.reason
 
 
-def test_a_ticket_reaches_hello_ok_and_the_snapshot():
+def test_a_ticket_reaches_hello_ok():
     with client().websocket_connect("/ws") as ws:
         hello(ws, ticket=mint_ticket(SECRET, "can"))
-        assert ws.receive_json() == {
-            "type": "hello_ok",
-            "user": "can",
-            "version": PROTOCOL_VERSION,
-        }
-        snapshot = ws.receive_json()
-        assert snapshot["type"] == "snapshot"
-        assert snapshot["seq"] == 0
-        assert snapshot["sessions"] == []
+        assert ws.receive_json() == {"type": HelloOkFrame.type, "user": "can"}
 
 
 def test_a_bearer_token_reaches_hello_ok():
@@ -83,8 +88,26 @@ def test_a_wrong_token_refuses():
 
 def test_a_non_hello_first_message_refuses():
     with client().websocket_connect("/ws") as ws:
-        ws.send_json({"type": "subscribe"})
+        ws.send_json({"type": SubscribeFrame.type})
         expect_refusal(ws, 4400, "must be a hello")
+
+
+def test_a_hello_with_a_wrong_field_type_refuses_as_malformed():
+    with client().websocket_connect("/ws") as ws:
+        hello(ws, token=123)
+        error = ws.receive_json()
+        assert error["type"] == HelloErrorFrame.type
+        assert "malformed" in error["reason"]
+        assert "token" in error["detail"]
+        with pytest.raises(WebSocketDisconnect) as exc:
+            ws.receive_json()
+        assert exc.value.code == 4400
+
+
+def test_a_binary_first_message_refuses():
+    with client().websocket_connect("/ws") as ws:
+        ws.send_bytes(b"\x00\x01")
+        expect_refusal(ws, 4400, "text message")
 
 
 def test_silence_refuses_on_the_hello_timeout():
@@ -115,14 +138,19 @@ def test_an_allowed_origin_passes():
         assert ws.receive_json()["user"] == "can"
 
 
-def test_the_snapshot_lists_the_registered_sessions(e2e_repo):
+def test_the_sessions_read_lists_the_registered_sessions(e2e_repo):
     workflow = build_workflow(e2e_repo, "my-workflow", Mode.HEADLESS)
     registry = SessionRegistry()
     registry.register(Session(workflow))
     with client(registry=registry).websocket_connect("/ws") as ws:
         hello(ws, token=TOKEN)
-        ws.receive_json()
-        (row,) = ws.receive_json()["sessions"]
+        assert ws.receive_json()["type"] == HelloOkFrame.type
+        ws.send_json(
+            {"type": RequestFrame.type, "request_id": "r-1", "kind": "sessions"}
+        )
+        result = ws.receive_json()
+        assert result["type"] == ResultFrame.type
+        (row,) = result["result"]
         assert row["session_id"] == workflow.session_id
         assert row["status"] == "ACTIVE"
 
@@ -135,9 +163,9 @@ def test_ticket_helpers_round_trip():
 
 
 def test_the_cli_parses_the_serve_subcommand():
-    from winslow.orchestrator import Action, Orchestrator
+    from winslow.orchestrator import Command, Orchestrator
 
     args = Orchestrator.get_base_parser().parse_args(["serve", "--port", "9000"])
-    assert args.action is Action.SERVE
+    assert args.action is Command.SERVE
     assert args.host == "127.0.0.1"
     assert args.port == 9000

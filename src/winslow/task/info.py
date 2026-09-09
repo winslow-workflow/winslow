@@ -4,6 +4,7 @@ TaskInfo.from_task imports these helpers at call time."""
 
 import inspect
 import os
+from dataclasses import replace
 from functools import cached_property, lru_cache
 
 from winslow.model import NOT_EVALUATED, SourceNode
@@ -160,6 +161,32 @@ def _ambiguous_names(origins):
         name, module, _ = _origin(obj)
         modules.setdefault(name, set()).add(module)
     return {name for name, mods in modules.items() if len(mods) > 1}
+
+
+def _walk_nodes(node):
+    yield node
+    for child in node.children:
+        yield from _walk_nodes(child)
+
+
+def _labeled_node(node, ambiguous, root_dir):
+    return replace(
+        node,
+        label=_origin_label(node, ambiguous, root_dir),
+        location=_location(node.module, node.path, root_dir),
+        children=tuple(
+            _labeled_node(child, ambiguous, root_dir) for child in node.children
+        ),
+    )
+
+
+def labeled_source_tree(cls, root_dir):
+    """The source tree of the class with the display fields of every node
+    filled. The bare tree caches per class; the labels depend on root_dir
+    and on the whole tree, so this pass runs per capture."""
+    root = _source_tree(cls)
+    ambiguous = _ambiguous_names(_walk_nodes(root))
+    return _labeled_node(root, ambiguous, root_dir)
 
 
 def _origin_label(obj, ambiguous, root_dir):

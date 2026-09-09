@@ -28,8 +28,8 @@ session port client and value shapes (see [the payload rule](#the-payload-rule))
 The workflow context attributes:
 
 - `client`: the `SessionClient` of the session. It serves every read (`roster()`, `history()`,
-  `caches()`, `task_detail(key)`, ...) and accepts every action through `submit(action)`.
-- `session`: the `SessionRow` value: display name, instance name, status, the task status summary.
+  `caches()`, `task_detail(task_key)`, ...) and accepts every action through `submit(action)`.
+- `session`: the `SessionInfo` value: display name, instance name, status, the task status summary.
 - `snapshot`: the `SessionSnapshot` at compose time: task statuses by identity key, batch rows, the
   session log backlog, the cache names.
 - `roster`: one stub `TaskInfo` per task, in launch-filter order.
@@ -74,7 +74,7 @@ class StatusBoard(Widget):
 ```
 
 A pane that needs more than its messages carry reads through the client, for example
-`context.client.task_detail(key)` for the full capture of one task, or
+`context.client.task_detail(task_key)` for the full capture of one task, or
 `context.client.submit(RunTasks(keys=(key,)))` for an action. Every client method takes values and
 returns values, so the same pane renders a local session and a remote one.
 

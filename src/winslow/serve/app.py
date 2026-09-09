@@ -1,49 +1,46 @@
 """The serve process: ServeApp owns the process state (the registry, the
 credential policy, the bridges), Connection owns one socket after its hello
-(the subscriptions, the control queue, the one sender task, the request
+(the session queues, the control queue, the one sender task, the request
 jobs). create_app builds the ASGI app from a ServeApp."""
 
 import asyncio
-import functools
 import json
 import traceback
 from contextlib import asynccontextmanager
-from dataclasses import asdict
-
 from starlette.applications import Starlette
 from starlette.routing import Mount, WebSocketRoute
-from starlette.websockets import WebSocketDisconnect
 
-from winslow.cache import declared_entries
-from winslow.codec import CODEC, ValidationError
-from winslow.exceptions import MisconfigurationError
-from winslow.logger import INTERACTIVE_FORMATTER, LOGGER, get_task_dispatcher
-from winslow.model import ActionFrame, SubscribeFrame, TaskLogSubscribeFrame
-from winslow.serve.bridge import EventBridge, Subscription
-from winslow.serve.wire import (
-    INBOUND_FRAME_TYPES,
-    REQUEST_CLASSES,
-    FrameTypes,
-    Requests,
-    build_action,
-    cache_value_payload,
-    caches_payload,
-    descriptor_rows,
-    history_rows,
-    manifest_row,
-    record_detail_payload,
-    roster_payload,
-    session_params_payload,
-    session_row,
-    session_snapshot,
+from winslow.actions import Action
+from winslow.client import LocalAppClient
+from winslow.protocol.codec import CODEC, ValidationError, report
+from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.logger import LOGGER
+from winslow.serve.bridge import EventBridge, FrameQueue
+from winslow._meta import _tagged, handles
+from winslow.client.base import PORT_READS
+from winslow.protocol.frames import (
+    AckFrame,
+    ActionFrame,
+    ErrorFrame,
+    HelloErrorFrame,
+    HelloFrame,
+    HelloOkFrame,
+    RequestFrame,
+    ResultFrame,
+    SubscribeFrame,
+    TaskLogBacklogFrame,
+    TaskLogSubscribeFrame,
+    TaskLogUnsubscribeFrame,
+    UnsubscribeFrame,
+    encode_frame,
 )
-from winslow.session import create_session
 
-PROTOCOL_VERSION = 1
+# The refusals of a port read: an unknown session id, or a served refusal
+# (see ServeApp.read).
+READ_REFUSALS = (KeyError, RequestError)
 
-# The refusal codes of the handshake. The refusal also rides a hello_error
-# frame: after an accepted upgrade a browser reads the frame, the code, and
-# the reason (see serve-spikes-findings, spike 1).
+# The refusal codes of the handshake. The reason also travels as a hello_error
+# frame before the close, so a browser client can read it.
 MALFORMED_HELLO = 4400
 CREDENTIAL_REFUSED = 4401
 HELLO_TIMEOUT = 4408
@@ -51,60 +48,27 @@ HELLO_TIMEOUT = 4408
 CLIENT_TOO_SLOW = 1013
 
 
-def request_handler(kind):
-    """Mark a Connection method as the handler of one request kind (see
-    Requests). run_request builds its dispatch table from every method this
-    decorator tags, the same pattern the MCP tool registry uses (see
-    winslow.serve.mcp.tool)."""
-
-    def wrap(method):
-        method._request_kind = kind
-        return method
-
-    return wrap
-
-
-def requires_session(method):
-    """Resolve the session before the method body runs, and pass it as a
-    third argument. A session that does not resolve already answered the
-    error frame (see Connection.resolve_for); the body never runs."""
-
-    @functools.wraps(method)
-    async def wrapper(self, envelope):
-        session = self.resolve_for(envelope)
-        if session is not None:
-            await method(self, envelope, session)
-
-    return wrapper
-
-
-def requires_live_session(method):
-    """requires_session, plus a refusal once the session has ended: its
-    tasks and workflow cache are released (see Workflow.release_tasks), so
-    a read past that point fails inside the handler with no direction.
-    history, log_tail, record_detail, batch_options and session_params use
-    requires_session instead - they read state that survives the release."""
-
-    @requires_session
-    async def guarded(self, envelope, session):
-        if session.has_ended:
-            self.request_error(
-                envelope.request_id,
-                f"{session.session_id} has ended - its live task and cache "
-                f"state is released.",
-            )
-            return
-        await method(self, envelope, session)
-
-    # requires_session already wraps guarded with functools.wraps(guarded);
-    # re-wrap with the real handler so a traceback names it, not "guarded".
-    return functools.wraps(method)(guarded)
+def parse_frame(message):
+    """The frame dict of one inbound ASGI receive message. A message that is
+    not a JSON object raises ValueError with the reason for the client. The
+    text key check refuses a binary message, which Starlette's receive_json
+    turns into a KeyError."""
+    text = message.get("text")
+    if text is None:
+        raise ValueError("a frame must be a text message.")
+    try:
+        frame = json.loads(text)
+    except ValueError:
+        raise ValueError("the message is not JSON.") from None
+    if not isinstance(frame, dict):
+        raise ValueError(f"a frame must be a JSON object, not {type(frame).__name__}.")
+    return frame
 
 
 class Bridges:
-    """The bridges of the serve process, one per subscribed session. Built on
-    first subscribe: the snapshot carries the state, so earlier events are
-    already inside it. Runs on the loop only."""
+    """The bridges of the serve process, one per subscribed session. A bridge
+    is built on the first subscribe. The snapshot carries the state, so earlier
+    events are already inside it. Runs on the loop only."""
 
     def __init__(self, qsize):
         self.qsize = qsize
@@ -135,18 +99,18 @@ class Bridges:
 class ServeApp:
     """One serve process: the live sessions of the registry behind two
     optional doors, the websocket endpoint and the MCP mount. Each door works
-    alone; both share the registry and the credential policy. orchestrator
-    and state_store power the descriptor and create_session requests; without
-    them those requests answer with an error."""
+    alone, and both share the registry and the credential policy. The port
+    carries the orchestrator and the state store (see LocalAppClient)."""
 
     def __init__(
         self,
         registry,
         credentials,
+        *,
+        orchestrator,
+        state_store,
         hello_timeout=5.0,
         qsize=10_000,
-        orchestrator=None,
-        state_store=None,
         ws=True,
         mcp=False,
         base_url="http://127.0.0.1:8866",
@@ -155,8 +119,10 @@ class ServeApp:
         self.credentials = credentials
         self.hello_timeout = hello_timeout
         self.qsize = qsize
-        self.orchestrator = orchestrator
-        self.state_store = state_store
+        # The in-process port every door serves (see PORT_READS in winslow.client.base).
+        self.local = LocalAppClient(
+            registry, orchestrator=orchestrator, state_store=state_store
+        )
         self.bridges = Bridges(qsize)
         self.ws_enabled = ws
         self.base_url = base_url
@@ -166,6 +132,37 @@ class ServeApp:
                 "The serve process needs at least one endpoint - "
                 "enable the websocket, the MCP mount, or both."
             )
+
+    async def read(self, spec, session_id, fields):
+        """One port read on a worker thread, for both doors. A refusal raises
+        RequestError with the served reason. A traceback read runs project
+        init code, so a broad catch answers, with the traceback for the error
+        modal of a client (see RequestError.detail)."""
+        caught = Exception if spec.traceback else READ_REFUSALS
+        try:
+            return await asyncio.to_thread(self._port_call, spec, session_id, fields)
+        except caught as exc:
+            reason = str(exc.args[0] if exc.args else exc)
+            detail = traceback.format_exc() if spec.traceback else None
+            raise RequestError(reason, detail=detail) from exc
+
+    async def submit(self, session_id, action):
+        """One guarded submit on a worker thread, for both doors. An unknown
+        session id raises RequestError (see SessionRegistry.resolve)."""
+        try:
+            session = self.registry.resolve(session_id)
+        except KeyError as exc:
+            raise RequestError(exc.args[0]) from exc
+        # The admission gate can block, so the submit runs on a worker thread.
+        return await asyncio.to_thread(session.actions.submit_guarded, action)
+
+    def _port_call(self, spec, session_id, fields):
+        """Runs on the worker thread, so a session resolve refusal stays off
+        the event loop."""
+        client = self.local
+        if spec.scope == "session":
+            client = client.session(session_id)
+        return getattr(client, spec.name)(**fields)
 
     def _build_mcp(self):
         try:
@@ -189,8 +186,7 @@ class ServeApp:
     async def _lifespan(self, app):
         try:
             if self.mcp_endpoint is not None:
-                # A mounted MCP app must be started by the parent lifespan
-                # (see serve-spikes-findings, spike 3).
+                # A mounted MCP app starts under the parent lifespan.
                 async with self.mcp_endpoint.session_manager.run():
                     yield
             else:
@@ -205,27 +201,37 @@ class ServeApp:
             return
         await Connection(self, websocket, user).run()
 
-    async def _refuse(self, websocket, code, reason):
-        await websocket.send_json({"type": FrameTypes.HELLO_ERROR, "reason": reason})
+    async def _refuse(self, websocket, code, reason, detail=None):
+        await websocket.send_text(
+            encode_frame(HelloErrorFrame(reason=reason, detail=detail))
+        )
         await websocket.close(code=code, reason=reason)
 
     async def _handshake(self, websocket):
-        """Returns the user, or None after a refusal."""
+        """Returns the user, or None after a refusal or a disconnect. The hello
+        decodes through HelloFrame like every later frame (see Connection.decode),
+        so verify_hello reads typed fields."""
         try:
-            raw = await asyncio.wait_for(websocket.receive_text(), self.hello_timeout)
+            message = await asyncio.wait_for(websocket.receive(), self.hello_timeout)
         except asyncio.TimeoutError:
             await self._refuse(
                 websocket, HELLO_TIMEOUT, f"no hello within {self.hello_timeout:g}s"
             )
             return None
+        if message["type"] == "websocket.disconnect":
+            return None
         try:
-            hello = json.loads(raw)
-            if hello.get("type") != FrameTypes.HELLO:
-                raise ValueError
-        except (ValueError, AttributeError):
+            frame = parse_frame(message)
+            if frame.get("type") != HelloFrame.type:
+                raise ValueError("the first message must be a hello.")
+            hello = CODEC.decode(HelloFrame, frame)
+        except ValidationError as exc:
             await self._refuse(
-                websocket, MALFORMED_HELLO, "the first message must be a hello"
+                websocket, MALFORMED_HELLO, "the hello is malformed", detail=report(exc)
             )
+            return None
+        except ValueError as exc:
+            await self._refuse(websocket, MALFORMED_HELLO, str(exc))
             return None
         user, error = self.credentials.verify_hello(
             hello, websocket.headers.get("origin")
@@ -237,95 +243,59 @@ class ServeApp:
 
 
 class Connection:
-    """One socket after its hello. The receive loop dispatches the frames;
-    one sender task sends everything (the control queue and every
-    subscription), so no two tasks write the socket."""
+    """One socket after its hello. The receive loop dispatches the frames. One
+    sender task sends everything (the control queue and every session queue),
+    so no two tasks write the socket."""
 
     def __init__(self, app, websocket, user):
         self.app = app
         self.websocket = websocket
         self.user = user
         self.wake = asyncio.Event()
-        self.control = Subscription(wake=self.wake, maxlen=app.qsize)
-        self.subscriptions = {}
+        self.control = FrameQueue(wake=self.wake, maxlen=app.qsize)
+        # session_id -> FrameQueue. The task log keys of a session live on its
+        # queue, so removing the queue releases both (see EventBridge).
+        self.queues = {}
         self.jobs = set()
-        # (session_id, task_key) pairs this connection subscribed to (see
-        # handle_subscribe_task_log). Cleaned up on disconnect.
-        self.task_log_subscriptions = set()
 
     async def run(self):
-        await self.websocket.send_json(
-            {"type": FrameTypes.HELLO_OK, "user": self.user, "version": PROTOCOL_VERSION}
-        )
-        await self.websocket.send_json(
-            {
-                "type": FrameTypes.SNAPSHOT,
-                "seq": 0,
-                "sessions": [session_row(s) for s in self.app.registry.sessions()],
-            }
-        )
+        await self.websocket.send_text(encode_frame(HelloOkFrame(user=self.user)))
         send_task = asyncio.get_running_loop().create_task(self._sender())
         try:
             while True:
-                try:
-                    frame = await self.websocket.receive_json()
-                except (WebSocketDisconnect, RuntimeError):
+                message = await self.websocket.receive()
+                if message["type"] == "websocket.disconnect":
                     return
-                except ValueError:
-                    self.reply(
-                        {"type": FrameTypes.ERROR, "reason": "the message is not JSON"}
-                    )
-                    continue
-                if not isinstance(frame, dict):
-                    self.reply(
-                        {
-                            "type": FrameTypes.ERROR,
-                            "reason": f"a frame must be a JSON object, not "
-                            f"{type(frame).__name__}.",
-                        }
-                    )
+                try:
+                    frame = parse_frame(message)
+                except ValueError as exc:
+                    self.reply(ErrorFrame(reason=str(exc)))
                     continue
                 self.handle_frame(frame)
         finally:
             send_task.cancel()
             for job in self.jobs:
                 job.cancel()
-            for session_id, subscription in self.subscriptions.items():
+            for session_id, queue in self.queues.items():
                 bridge = self.app.bridges.get(session_id)
                 if bridge is not None:
-                    bridge.unsubscribe(subscription)
-            for session_id, task_key in self.task_log_subscriptions:
-                bridge = self.app.bridges.get(session_id)
-                if bridge is not None:
-                    bridge.unsubscribe_task_log(task_key)
+                    bridge.remove_queue(queue)
 
     # --- the outgoing side ---------------------------------------------------
 
-    def reply(self, payload):
-        self.control.push(json.dumps(payload))
+    def reply(self, frame):
+        self.control.push(encode_frame(frame))
 
-    def request_error(self, request_id, reason):
-        self.reply(
-            {"type": FrameTypes.ERROR, "request_id": request_id, "reason": reason}
-        )
-
-    def result(self, envelope, **payload):
-        self.reply(
-            {
-                "type": FrameTypes.RESULT,
-                "request_id": envelope.request_id,
-                "kind": envelope.kind,
-                **payload,
-            }
-        )
+    def request_error(self, request_id, reason, detail=None):
+        self.reply(ErrorFrame(request_id=request_id, reason=reason, detail=detail))
 
     async def _sender(self):
         while True:
             self.wake.clear()
-            for subscription in (self.control, *self.subscriptions.values()):
-                while subscription.deque:
-                    await self.websocket.send_text(subscription.deque.popleft())
-                if subscription.behind_a_full_window:
+            for queue in (self.control, *self.queues.values()):
+                while queue.deque:
+                    await self.websocket.send_text(queue.deque.popleft())
+                if queue.behind_a_full_window:
                     await self.websocket.close(
                         code=CLIENT_TOO_SLOW,
                         reason="the client stays behind a full frame window - "
@@ -337,70 +307,49 @@ class Connection:
     # --- the incoming side -----------------------------------------------------
 
     def handle_frame(self, frame):
-        kind = frame.get("type")
-        match kind:
-            case FrameTypes.SUBSCRIBE:
-                if envelope := self.decode(frame, SubscribeFrame):
-                    self.handle_subscribe(envelope)
-            case FrameTypes.UNSUBSCRIBE:
-                if envelope := self.decode(frame, SubscribeFrame):
-                    self.handle_unsubscribe(envelope.session_id)
-            case FrameTypes.SUBSCRIBE_TASK_LOG:
-                if envelope := self.decode(frame, TaskLogSubscribeFrame):
-                    self.handle_subscribe_task_log(envelope)
-            case FrameTypes.UNSUBSCRIBE_TASK_LOG:
-                if envelope := self.decode(frame, TaskLogSubscribeFrame):
-                    self.handle_unsubscribe_task_log(envelope)
-            case FrameTypes.ACTION:
-                self.dispatch(frame, ActionFrame, self.run_action)
-            case FrameTypes.REQUEST:
-                self.dispatch_request(frame)
-            case _:
-                self.reply(
-                    {
-                        "type": FrameTypes.ERROR,
-                        "reason": f"unknown message type {kind!r} - this "
-                        f"server speaks {', '.join(INBOUND_FRAME_TYPES)}.",
-                    }
+        entry = self.inbound.get(frame.get("type"))
+        if entry is None:
+            self.reply(
+                ErrorFrame(
+                    reason=f"unknown message type {frame.get('type')!r} - this "
+                    f"server speaks {', '.join(self.inbound)}."
                 )
+            )
+            return
+        frame_class, handler = entry
+        envelope = self.decode(frame, frame_class)
+        if envelope is not None:
+            handler(self, envelope)
 
-    def decode(self, frame, envelope_class):
+    def decode(self, frame, frame_class):
         """The envelope of one inbound frame, or None after an error reply.
         Every inbound frame decodes through its envelope before a handler
         sees it: the envelope replaces a trusted frame.get(...) read (see
-        winslow.model, winslow.codec)."""
+        envelope_class, winslow.protocol.codec)."""
         try:
-            return CODEC.decode(envelope_class, frame)
+            return CODEC.decode(self.envelope_class(frame, frame_class), frame)
         except ValidationError as exc:
             self.request_error(
                 frame.get("request_id"),
-                f"the {frame.get('type')} frame is malformed - {exc}",
+                f"the {frame.get('type')} frame is malformed - {report(exc)}",
             )
-            return None
+        except ValueError as exc:
+            self.request_error(frame.get("request_id"), str(exc))
+        return None
 
-    def dispatch(self, frame, envelope_class, run):
-        """Decode the frame, then spawn the handler as a job (see spawn):
-        the async request and action path, where the handler itself may
-        block or fail."""
-        envelope = self.decode(frame, envelope_class)
-        if envelope is not None:
-            self.spawn(envelope, run(envelope))
-
-    def dispatch_request(self, frame):
-        """A request frame's envelope class depends on its kind (see
-        REQUEST_CLASSES), so the kind is checked before the frame decodes -
-        an unknown kind answers the same "names no request" reply the old
-        flat envelope gave, instead of a validation error naming a missing
-        "kind" field."""
-        envelope_class = REQUEST_CLASSES.get(frame.get("kind"))
-        if envelope_class is None:
-            self.request_error(
-                frame.get("request_id"),
+    @classmethod
+    def envelope_class(cls, frame, frame_class):
+        """The class that validates one inbound frame. A request validates
+        through the envelope of the read its kind names (see Read.envelope)."""
+        if frame_class is not RequestFrame:
+            return frame_class
+        spec = PORT_READS.get(frame.get("kind"))
+        if spec is None:
+            raise ValueError(
                 f"{frame.get('kind')!r} names no request. The requests are "
-                f"{', '.join(sorted(REQUEST_CLASSES))}.",
+                f"{', '.join(sorted(PORT_READS))}."
             )
-            return
-        self.dispatch(frame, envelope_class, self.run_request)
+        return spec.envelope
 
     def spawn(self, envelope, coroutine):
         job = asyncio.get_running_loop().create_task(
@@ -410,8 +359,7 @@ class Connection:
         job.add_done_callback(self.jobs.discard)
 
     async def _answered(self, envelope, coroutine):
-        """No spawned job dies silent: the client reads an error frame
-        instead of waiting on an answer that never comes."""
+        """A failed job answers an error frame, so the client stops waiting."""
         try:
             await coroutine
         except Exception:
@@ -426,58 +374,64 @@ class Connection:
 
     def resolve(self, session_id, request_id):
         """The live session under session_id, or None after an error reply."""
-        session = self.app.registry.get(session_id)
-        if session is None:
-            LOGGER.debug(
-                f"session id {session_id!r} (request {request_id!r}) does "
-                f"not resolve to a live session."
-            )
-            self.request_error(
-                request_id,
-                f"session id {session_id!r} does not resolve to a live "
-                f"session - it ended, or it belongs to another process.",
-            )
-        return session
+        try:
+            return self.app.registry.resolve(session_id)
+        except KeyError as exc:
+            LOGGER.debug(f"request {request_id!r}: {exc.args[0]}")
+            self.request_error(request_id, exc.args[0])
+            return None
 
     def resolve_for(self, envelope):
         return self.resolve(envelope.session_id, envelope.request_id)
 
+    @handles(SubscribeFrame)
     def handle_subscribe(self, envelope):
-        """Attach, snapshot, and queue - synchronous on the loop, so no drain
-        pass lands between the attach and the snapshot. A second subscribe of
-        one session resets the queue and resends the snapshot: that is the
-        recovery of a client that saw a sequence gap."""
+        """Attach, snapshot, and queue, synchronous on the loop, so no drain
+        pass runs between the attach and the snapshot. A second subscribe of
+        one session resets the queue and resends the snapshot. This is how a
+        client recovers from a sequence gap."""
         session = self.resolve_for(envelope)
         if session is None:
+            return
+        if session.has_ended:
+            # The bus of an ended session is closed, so a new bridge has nothing
+            # to attach to. The refusal reaches the lane (see on_subscribe_refused).
+            self.request_error(
+                envelope.request_id,
+                f"{session.session_id} has ended and emits no more events - "
+                f"request its history instead of subscribing.",
+            )
             return
         session_id = session.session_id
         bridge = self.app.bridges.get_or_create(session)
-        subscription = self.subscriptions.get(session_id)
-        if subscription is None:
-            subscription = Subscription(wake=self.wake, maxlen=self.app.qsize)
-            self.subscriptions[session_id] = subscription
+        queue = self.queues.get(session_id)
+        if queue is None:
+            queue = FrameQueue(wake=self.wake, maxlen=self.app.qsize)
+            self.queues[session_id] = queue
         else:
-            subscription.deque.clear()
-            subscription.dropped = 0
-        bridge.subscribe(subscription)
-        subscription.push(json.dumps(bridge.snapshot()))
+            queue.deque.clear()
+            queue.dropped = 0
+        bridge.add_queue(queue)
+        queue.push(encode_frame(bridge.snapshot()))
 
-    def handle_unsubscribe(self, session_id):
-        subscription = self.subscriptions.pop(session_id, None)
+    @handles(UnsubscribeFrame)
+    def handle_unsubscribe(self, envelope):
+        session_id = envelope.session_id
+        queue = self.queues.pop(session_id, None)
         bridge = self.app.bridges.get(session_id)
-        if subscription is not None and bridge is not None:
-            bridge.unsubscribe(subscription)
-        self.reply({"type": FrameTypes.UNSUBSCRIBED, "session_id": session_id})
+        if queue is not None and bridge is not None:
+            bridge.remove_queue(queue)
 
+    @handles(TaskLogSubscribeFrame)
     def handle_subscribe_task_log(self, envelope):
-        """The backlog and the live stream of one task's log, outside any
-        batch. The backlog answers at once. The live lines ride the session
-        subscription as task_log_batch frames, so the client must already
-        be subscribed to the session; this method never subscribes it."""
+        """The backlog and the live stream of one task log, outside any batch.
+        The backlog answers at once. The live lines travel on the session
+        subscription as task_log_batch frames, so the client subscribes to the
+        session first."""
         session = self.resolve_for(envelope)
         if session is None:
             return
-        if session.session_id not in self.subscriptions:
+        if session.session_id not in self.queues:
             self.request_error(
                 envelope.request_id,
                 f"subscribe to {session.session_id!r} before subscribing "
@@ -488,350 +442,84 @@ class Connection:
         if session.has_ended:
             self.request_error(
                 envelope.request_id,
-                f"{session.session_id} has ended - its live task state is "
-                f"released.",
+                f"{session.session_id} has ended - its live task state is released.",
             )
             return
-        task_key = envelope.task_key
-        try:
-            task = session.workflow.task_index.resolve(task_key)
-        except KeyError as exc:
-            self.request_error(envelope.request_id, exc.args[0])
-            return
         bridge = self.app.bridges.get_or_create(session)
-        key = (session.session_id, task_key)
-        if key not in self.task_log_subscriptions:
-            self.task_log_subscriptions.add(key)
-            bridge.subscribe_task_log(task_key, task.log_key)
-        backlog = get_task_dispatcher().buffered(task.log_key)
+        try:
+            backlog = bridge.subscribe_task_log(
+                self.queues[session.session_id], envelope.task_key
+            )
+        except RequestError as exc:
+            self.request_error(envelope.request_id, str(exc))
+            return
         self.reply(
-            {
-                "type": FrameTypes.TASK_LOG_BACKLOG,
-                "session_id": session.session_id,
-                "task_key": task_key,
-                "lines": [INTERACTIVE_FORMATTER.format(record) for record in backlog],
-            }
+            TaskLogBacklogFrame(
+                request_id=envelope.request_id,
+                session_id=session.session_id,
+                task_key=envelope.task_key,
+                lines=tuple(backlog),
+            )
         )
 
+    @handles(TaskLogUnsubscribeFrame)
     def handle_unsubscribe_task_log(self, envelope):
         session_id = envelope.session_id
         task_key = envelope.task_key
-        key = (session_id, task_key)
-        if key in self.task_log_subscriptions:
-            self.task_log_subscriptions.discard(key)
-            bridge = self.app.bridges.get(session_id)
-            if bridge is not None:
-                bridge.unsubscribe_task_log(task_key)
-        self.reply(
-            {
-                "type": FrameTypes.UNSUBSCRIBED_TASK_LOG,
-                "session_id": session_id,
-                "task_key": task_key,
-            }
-        )
+        queue = self.queues.get(session_id)
+        bridge = self.app.bridges.get(session_id)
+        if queue is not None and bridge is not None:
+            bridge.unsubscribe_task_log(queue, task_key)
+
+    @handles(ActionFrame)
+    def handle_action(self, envelope):
+        self.spawn(envelope, self.run_action(envelope))
+
+    @handles(RequestFrame)
+    def handle_request(self, envelope):
+        self.spawn(envelope, self.run_read(envelope, PORT_READS[envelope.kind]))
 
     async def run_action(self, envelope):
-        session = self.resolve_for(envelope)
-        if session is None:
-            return
+        """One action as an ack frame, or an error frame (see ServeApp.submit)."""
         try:
-            action = build_action(envelope.action, envelope.fields)
-        except ValueError as exc:
+            action = Action.build(envelope.action, envelope.fields)
+            ack = await self.app.submit(envelope.session_id, action)
+        except (ValueError, RequestError) as exc:
             self.request_error(envelope.request_id, str(exc))
             return
-        # The admission gate can block: the submit runs on a worker thread.
-        ack = await asyncio.to_thread(session.actions.submit_guarded, action)
+        self.reply(AckFrame(request_id=envelope.request_id, ack=ack))
+
+    async def run_read(self, envelope, spec):
+        """One port read as a result frame, or an error frame (see ServeApp.read)."""
+        fields = {name: getattr(envelope, name) for name in spec.fields}
+        try:
+            result = await self.app.read(
+                spec, getattr(envelope, "session_id", None), fields
+            )
+        except RequestError as exc:
+            self.request_error(envelope.request_id, str(exc), detail=exc.detail)
+            return
         self.reply(
-            {"type": FrameTypes.ACK, "request_id": envelope.request_id, **asdict(ack)}
+            ResultFrame(
+                request_id=envelope.request_id, kind=envelope.kind, result=result
+            )
         )
 
-    async def run_request(self, envelope):
-        # dispatch_request already resolved the kind to this envelope's
-        # class, and every request class maps to a handler below.
-        handler = self._request_handlers[envelope.kind]
-        await handler(self, envelope)
 
-
-    @request_handler(Requests.DESCRIPTORS)
-    async def _request_descriptors(self, envelope):
-        if self.app.orchestrator is None:
-            self.request_error(envelope.request_id, "this server serves no workflows")
-            return
-        self.result(envelope, **descriptor_rows(self.app.orchestrator))
-
-    @request_handler(Requests.CREATE_SESSION)
-    async def _request_create_session(self, envelope):
-        if self.app.orchestrator is None or self.app.state_store is None:
-            self.request_error(envelope.request_id, "this server creates no sessions")
-            return
-        try:
-            session = await asyncio.to_thread(
-                create_session,
-                self.app.orchestrator,
-                self.app.state_store,
-                self.app.registry,
-                envelope.workflow,
-                envelope.overrides,
-                envelope.values,
-            )
-        except Exception as exc:
-            self.reply(
-                {
-                    "type": FrameTypes.ERROR,
-                    "request_id": envelope.request_id,
-                    "reason": str(exc.args[0] if exc.args else exc),
-                    "detail": traceback.format_exc(),
-                }
-            )
-            return
-        self.result(envelope, **session_row(session))
-
-    @request_handler(Requests.SESSIONS)
-    async def _request_sessions(self, envelope):
-        self.result(
-            envelope,
-            sessions=[session_row(s) for s in self.app.registry.sessions()],
-        )
-
-    @request_handler(Requests.SNAPSHOT)
-    @requires_session
-    async def _request_snapshot(self, envelope, session):
-        self.result(envelope, **session_snapshot(session))
-
-    @request_handler(Requests.HISTORY)
-    @requires_session
-    async def _request_history(self, envelope, session):
-        self.result(envelope, batches=history_rows(session))
-
-    @request_handler(Requests.LOG_TAIL)
-    @requires_session
-    async def _request_log_tail(self, envelope, session):
-        store = session.workflow.runner.record_store(envelope.batch_uuid)
-        if store is None:
-            self.request_error(
-                envelope.request_id,
-                f"batch {envelope.batch_uuid!r} keeps no records in this "
-                f"session.",
-            )
-            return
-        try:
-            record = store.get_record(envelope.task_key)
-        except KeyError:
-            self.request_error(
-                envelope.request_id,
-                f"task {envelope.task_key!r} is not in the roster of "
-                f"batch {envelope.batch_uuid!r}.",
-            )
-            return
-        limit = envelope.limit or 200
-        self.result(
-            envelope,
-            task_key=envelope.task_key,
-            batch_uuid=envelope.batch_uuid,
-            lines=record.log_tail(limit),
-        )
-
-    @request_handler(Requests.TASK_DETAIL)
-    @requires_live_session
-    async def _request_task_detail(self, envelope, session):
-        try:
-            task = session.workflow.task_index.resolve(envelope.task_key)
-        except KeyError as exc:
-            self.request_error(envelope.request_id, exc.args[0])
-            return
-        # The full capture evaluates user code: a worker thread runs it. The
-        # session's task_info fills checked_at and effective_ttl from the
-        # snapshots and evaluates cold descriptors, matching the local TUI
-        # detail view.
-        info = await asyncio.to_thread(
-            session.workflow.task_info,
-            task,
-            full=True,
-            evaluate=True,
-            root_dir=session.workflow.root_dir,
-        )
-        self.result(envelope, info=asdict(info))
-
-    @request_handler(Requests.ROSTER)
-    @requires_live_session
-    async def _request_roster(self, envelope, session):
-        payload = await asyncio.to_thread(roster_payload, session.workflow)
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.CACHES)
-    @requires_live_session
-    async def _request_caches(self, envelope, session):
-        # A session end can land between the live guard and this read; the
-        # refusal then answers a frame (see Workflow.caches).
-        try:
-            payload = await asyncio.to_thread(caches_payload, session.workflow)
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.CACHE_VALUE)
-    @requires_live_session
-    async def _request_cache_value(self, envelope, session):
-        # The same end race as the caches request (see Workflow.caches).
-        try:
-            cache = session.workflow.get_cache(envelope.cache_name)
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        if cache is None:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.cache_name!r} names no cache of this session.",
-            )
-            return
-        if envelope.entry_name not in declared_entries(type(cache)):
-            self.request_error(
-                envelope.request_id,
-                f"{cache} has no entry {envelope.entry_name!r}.",
-            )
-            return
-        payload = await asyncio.to_thread(
-            cache_value_payload, cache, envelope.entry_name
-        )
-        self.result(envelope, **payload)
-
-    @request_handler(Requests.RECORD_DETAIL)
-    @requires_session
-    async def _request_record_detail(self, envelope, session):
-        store = session.workflow.runner.record_store(envelope.batch_uuid)
-        if store is None:
-            self.request_error(
-                envelope.request_id,
-                f"batch {envelope.batch_uuid!r} keeps no records in this "
-                f"session.",
-            )
-            return
-        try:
-            record = store.get_record(envelope.task_key)
-        except KeyError:
-            self.request_error(
-                envelope.request_id,
-                f"task {envelope.task_key!r} is not in the roster of "
-                f"batch {envelope.batch_uuid!r}.",
-            )
-            return
-        self.result(envelope, **record_detail_payload(record))
-
-    @request_handler(Requests.BATCH_OPTIONS)
-    @requires_session
-    async def _request_batch_options(self, envelope, session):
-        self.result(envelope, options=asdict(session.workflow.batch_options))
-
-    @request_handler(Requests.SESSION_PARAMS)
-    @requires_session
-    async def _request_session_params(self, envelope, session):
-        self.result(envelope, **session_params_payload(session.workflow))
-
-    @request_handler(Requests.APPLY_FILTER)
-    @requires_session
-    async def _request_apply_filter(self, envelope, session):
-        # A project filter can run arbitrary code, so a worker thread applies
-        # the query. The history scope also serves an ended session (see
-        # Workflow.filter_keys).
-        try:
-            keys = await asyncio.to_thread(
-                session.workflow.filter_keys,
-                envelope.query,
-                envelope.scope,
-                envelope.builtin_only,
-            )
-        except ValueError as exc:
-            self.request_error(envelope.request_id, str(exc))
-            return
-        self.result(envelope, keys=list(keys))
-
-    @request_handler(Requests.MANIFESTS)
-    async def _request_manifests(self, envelope):
-        if self.app.state_store is None:
-            self.request_error(
-                envelope.request_id, "this server keeps no session state"
-            )
-            return
-        manifests = await asyncio.to_thread(self.app.state_store.list_open_manifests)
-        self.result(
-            envelope,
-            manifests=[
-                manifest_row(m)
-                for m in manifests
-                if m.session_id not in self.app.registry
-            ],
-        )
-
-    @request_handler(Requests.RESTORE_SESSION)
-    async def _request_restore_session(self, envelope):
-        if self.app.orchestrator is None or self.app.state_store is None:
-            self.request_error(envelope.request_id, "this server creates no sessions")
-            return
-        if envelope.session_id in self.app.registry:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.session_id!r} is already a live session.",
-            )
-            return
-        manifest = next(
-            (
-                m
-                for m in self.app.state_store.list_open_manifests()
-                if m.session_id == envelope.session_id
-            ),
-            None,
-        )
-        if manifest is None:
-            self.request_error(
-                envelope.request_id,
-                f"{envelope.session_id!r} names no open manifest to restore.",
-            )
-            return
-        if manifest.workflow_class not in self.app.orchestrator.workflow_registry.names:
-            self.request_error(
-                envelope.request_id,
-                f"the manifest names workflow {manifest.workflow_class!r}, "
-                f"which this server does not collect.",
-            )
-            return
-        try:
-            session = await asyncio.to_thread(
-                create_session,
-                self.app.orchestrator,
-                self.app.state_store,
-                self.app.registry,
-                manifest.workflow_class,
-                manifest.orchestrator_overrides or {},
-                manifest.workflow_values or {},
-                manifest.session_id,
-                True,
-            )
-        except Exception as exc:
-            self.reply(
-                {
-                    "type": FrameTypes.ERROR,
-                    "request_id": envelope.request_id,
-                    "reason": str(exc.args[0] if exc.args else exc),
-                    "detail": traceback.format_exc(),
-                }
-            )
-            return
-        self.result(envelope, **session_row(session))
-
-
-# The dispatch table of run_request, built once from every method
-# @request_handler tagged: adding a request means one method, tagged where
-# it is declared, and nothing to keep in sync elsewhere.
-Connection._request_handlers = {
-    method._request_kind: method
-    for method in vars(Connection).values()
-    if hasattr(method, "_request_kind")
+# The inbound table of handle_frame: frame type -> (frame class, handler),
+# from every method @handles marks.
+Connection.inbound = {
+    method.handles.type: (method.handles, method)
+    for method in _tagged(Connection, "handles")
 }
 
 
-def create_app(registry, credentials, hello_timeout=5.0, qsize=10_000, **kwargs):
+def create_app(registry, credentials, *, orchestrator, state_store, **kwargs):
     """The ASGI app of one serve process (see ServeApp)."""
     return ServeApp(
-        registry, credentials, hello_timeout=hello_timeout, qsize=qsize, **kwargs
+        registry,
+        credentials,
+        orchestrator=orchestrator,
+        state_store=state_store,
+        **kwargs,
     ).starlette()

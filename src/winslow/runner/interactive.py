@@ -171,13 +171,13 @@ class InteractiveRunner(HeadlessRunner):
             # materialized.
             store = self._execution_record_store_map[batch_uuid]
             if task.identity_key in store:
-                record = store.get_record(task.identity_key)
-                if snapshot := snapshot_transients(
-                    task, peek_phase_cache(task, batch_uuid)
-                ):
-                    record.transient_snapshots[phase] = snapshot
-                if recorder is not None and (snapshots := recorder.sweep()):
-                    record.cache_snapshots[phase] = snapshots
+                store.get_record(task.identity_key).snapshot_phase(
+                    phase,
+                    transients=snapshot_transients(
+                        task, peek_phase_cache(task, batch_uuid)
+                    ),
+                    cache_reads=recorder.sweep() if recorder is not None else None,
+                )
 
     def _stop_requested(self, batch_uuid):
         batch = self._execution_batches_map.get(batch_uuid)
@@ -204,17 +204,15 @@ class InteractiveRunner(HeadlessRunner):
     def _register_seeded_batch(self, batch):
         # An empty record store: the tasks of the dead process left no
         # records, but the history pane reads a store for every batch.
-        root_dir = getattr(self.orchestrator_config, "directory", None)
         self._execution_record_store_map[batch.uuid] = ExecutionRecordStore(
-            self.workflow.bus, batch.uuid, [], root_dir=root_dir
+            self.workflow.bus, batch.uuid, [], root_dir=self.workflow.root_dir
         )
 
     def _batch_admitted(self, batch, tasks):
-        root_dir = getattr(self.orchestrator_config, "directory", None)
         # The record store publishes on the session bus, so one subscription
         # covers every batch, past and future.
         exec_store = ExecutionRecordStore(
-            self.workflow.bus, batch.uuid, [], root_dir=root_dir
+            self.workflow.bus, batch.uuid, [], root_dir=self.workflow.root_dir
         )
         for task in tasks:
             exec_store.register(task)
@@ -235,14 +233,6 @@ class InteractiveRunner(HeadlessRunner):
 
     def submit_run_single(self, task, options=None):
         return self._submit(ExecutionAction.RUN, [task], self._single_run_body, options)
-
-    def check_single(self, task):
-        if batch := self.submit_check_single(task):
-            batch.wait()
-
-    def run_single(self, task):
-        if batch := self.submit_run_single(task):
-            batch.wait()
 
     def bulk_check(self, tasks):
         self.check(tasks)

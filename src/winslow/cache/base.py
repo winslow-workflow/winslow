@@ -3,6 +3,7 @@ import time
 import inspect
 import threading
 import traceback
+from contextvars import ContextVar
 
 from enum import StrEnum
 from functools import cached_property
@@ -150,6 +151,12 @@ def _trigger_label(trigger):
     return f"invalidate({', '.join(repr(n) for n in trigger)})"
 
 
+# The (cache, entry name) pairs the current logical thread is computing.
+# execute_in_threads copies the context into its workers, so a loader that fans
+# out and reads back into a computing entry raises instead of blocking on its lock.
+_read_chain: ContextVar = ContextVar("cache_read_chain", default=())
+
+
 class BaseCache:
     """The base of the declarative caches: the registries discover the
     concrete subclasses and validate them at collection (see docs/caching.md)."""
@@ -177,9 +184,6 @@ class BaseCache:
         # One lock per field, so two threads that hit a cold field compute it
         # once. Vanilla cached_property has no lock since Python 3.12.
         self._locks = {name: threading.Lock() for name in self._entries}
-        # The fields a thread is computing right now, per thread. _entry_value
-        # reads it to turn an undeclared read cycle into a loud error.
-        self._reading = threading.local()
         # The error context per entry (see CacheEntryError). Mutated under the
         # entry's field lock; a successful write of the entry clears it.
         self._errors = {}
@@ -315,11 +319,16 @@ class BaseCache:
         persistent backend (see JsonFileStorage). The scope bases define it."""
         raise NotImplementedError
 
+    def _own_chain(self):
+        """The entries of this cache that the current logical thread is
+        computing (see _read_chain)."""
+        return tuple(name for cache, name in _read_chain.get() if cache is self)
+
     def _entry_value(self, entry):
         """Return the value of one entry. A cold or expired entry computes
         under its field lock and writes through the storage layer."""
         name = entry._attr_name
-        chain = getattr(self._reading, "chain", ())
+        chain = self._own_chain()
         if name in chain:
             # The thread already holds the lock of this field, so a second
             # acquisition would deadlock it silently and forever.
@@ -342,7 +351,7 @@ class BaseCache:
                     f"Cache '{self}': entry '{name}' went stale "
                     f"(age {time.time() - record.written_at:.1f}s, ttl {entry.ttl}s) - recomputing."
                 )
-            self._reading.chain = (*chain, name)
+            token = _read_chain.set((*_read_chain.get(), (self, name)))
             try:
                 value = entry.func(self)
             except Exception as exc:
@@ -359,7 +368,7 @@ class BaseCache:
                     emit_lazy_error(self, name, exc)
                 raise
             finally:
-                self._reading.chain = chain
+                _read_chain.reset(token)
             # Serve what the storage stored: a serializing backend returns the
             # normalized round trip, so the shape never changes after a restart.
             stored = self._storage.write(
@@ -418,7 +427,7 @@ class BaseCache:
         """Drop upstream first: the other order lets a reader recompute a
         dependent from the stale upstream and keep it. Returns the names that
         held a live value."""
-        chain = getattr(self._reading, "chain", ())
+        chain = self._own_chain()
         if blocked := [name for name in names if name in chain]:
             # The thread holds the locks of its own chain, so the drop would
             # deadlock silently and forever (compare _entry_value).

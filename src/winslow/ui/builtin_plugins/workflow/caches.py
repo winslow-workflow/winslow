@@ -105,7 +105,7 @@ class CacheEntryRow(TaskRowBase):
 
     def show_unobservable(self):
         """The storage of the cache cannot be observed: the row shows that
-        instead of a stale state (see CacheCard.unobservable)."""
+        instead of a stale state (see CacheInfo.unobservable)."""
         if not self.is_mounted:
             return
         self.remove_class(*(str(s) for s in EntryState))
@@ -124,14 +124,14 @@ class CacheEntryRow(TaskRowBase):
         self.post_message(self.Action(self.cache_name, self.entry_name, action))
 
 
-class CacheCardWidget(Widget):
+class CacheCard(Widget):
     class Selected(Message):
         def __init__(self, cache_name):
             self.cache_name = cache_name
             super().__init__()
 
     def __init__(self, card, *args, **kwargs):
-        # The CacheCard value at compose time; the pane refreshes the rows
+        # The CacheInfo value at compose time; the pane refreshes the rows
         # from later snapshots (see CachesPane._apply).
         self.card = card
         self._title_prefix = f" {card.name}  ·  {card.scope}"
@@ -142,8 +142,8 @@ class CacheCardWidget(Widget):
         return self.card.name
 
     def compose(self):
-        for entry in self.card.entries:
-            yield CacheEntryRow(self.card.name, entry.name)
+        for name in self.card.entries:
+            yield CacheEntryRow(self.card.name, name)
 
     def on_mount(self):
         self.border_title = f"{self._title_prefix} "
@@ -169,8 +169,11 @@ class CachesPane(SearchFlowMixin, Widget):
         self._tick_timer = None
         self._rows = {}
         self._cards = {}
-        # The latest CacheCard per name, for the overview pane selection.
+        # The latest CacheInfo per name, for the overview pane selection.
         self._card_values = {}
+        # The cache the overview shows: every refresh pushes its fresh card
+        # (see _apply).
+        self._selected_cache = None
         self._search = ""
         self._init_search()
         self._scope = _SCOPE_ALL
@@ -235,7 +238,7 @@ class CachesPane(SearchFlowMixin, Widget):
             self._collecting = False
 
     async def _mount_card(self, card):
-        widget = CacheCardWidget(card)
+        widget = CacheCard(card)
         await self.query_one("#cache-cards", VerticalScroll).mount(widget)
         self._cards[card.name] = widget
         for row in widget.query(CacheEntryRow).results():
@@ -270,6 +273,10 @@ class CachesPane(SearchFlowMixin, Widget):
                     row.error = info.error
                     row.log_line = card.values.get(info.entry_name) or ""
         self._apply_visibility()
+        # The card reactives of the overview skip an unchanged value, so a
+        # quiet tick repaints nothing there.
+        if card := self._card_values.get(self._selected_cache):
+            self.screen.refresh_cache_detail(card)
 
     # --- filters ----------------------------------------------------------
 
@@ -328,9 +335,10 @@ class CachesPane(SearchFlowMixin, Widget):
 
     def _select_cache(self, cache_name):
         if card := self._card_values.get(cache_name):
+            self._selected_cache = cache_name
             self.screen.show_cache_detail(card)
 
-    @on(CacheCardWidget.Selected)
+    @on(CacheCard.Selected)
     def on_card_selected(self, event):
         self._select_cache(event.cache_name)
 

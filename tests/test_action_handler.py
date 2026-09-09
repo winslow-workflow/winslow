@@ -7,6 +7,7 @@ import logging
 
 from winslow.actions import (
     Ack,
+    Action,
     BatchAck,
     CheckTasks,
     EndSession,
@@ -30,6 +31,14 @@ def submit_and_wait(workflow, action):
     if ack.accepted:
         workflow.runner.get_batch(ack.batch_uuid).wait()
     return ack
+
+
+def test_an_action_kind_without_a_name_is_not_an_action():
+    class Kind(Action):
+        pass
+
+    assert None not in Action.by_name
+    assert Kind not in Action.by_name.values()
 
 
 def test_run_tasks_single_key_creates_a_batch(e2e_repo):

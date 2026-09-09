@@ -13,12 +13,38 @@ from starlette.testclient import TestClient
 from winslow.constants import Mode
 from winslow.events import LogLineEvent
 from winslow.serve import Credentials, create_app
-from winslow.serve.app import PROTOCOL_VERSION, ServeApp
-from winslow.serve.bridge import EventBridge, Subscription
+from winslow.serve.app import ServeApp
+from winslow.serve.bridge import EventBridge, FrameQueue
+from winslow.protocol.lanes import (
+    BatchCompletedLane,
+    BatchCreatedLane,
+    ExecutionStatusLane,
+    LogBatchLane,
+    SessionEndedLane,
+    TaskStatusLane,
+)
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
+from winslow.protocol.frames import RequestFrame
+from winslow.protocol.frames import (
+    ErrorFrame,
+    HelloFrame,
+    HelloOkFrame,
+    ResultFrame,
+    SnapshotFrame,
+    SubscribeFrame,
+    TaskLogBacklogFrame,
+    TaskLogSubscribeFrame,
+    UnsubscribeFrame,
+)
 
-from harness import build_workflow, by_name, run_batch
+from harness import (
+    bare_orchestrator,
+    build_workflow,
+    by_name,
+    run_batch,
+    scratch_state_store,
+)
 
 TOKEN = "test-token"
 
@@ -32,13 +58,33 @@ def live_session(e2e_repo, mode=Mode.TUI):
 
 def connect(registry, qsize=10_000):
     credentials = Credentials(token=TOKEN, require_credential=True)
-    app = create_app(registry, credentials, hello_timeout=1.0, qsize=qsize)
+    app = create_app(
+        registry,
+        credentials,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        hello_timeout=1.0,
+        qsize=qsize,
+    )
     client = TestClient(app)
     ws = client.websocket_connect("/ws").__enter__()
-    ws.send_json({"type": "hello", "version": PROTOCOL_VERSION, "token": TOKEN})
-    assert ws.receive_json()["type"] == "hello_ok"
-    assert ws.receive_json()["type"] == "snapshot"
+    ws.send_json({"type": HelloFrame.type, "token": TOKEN})
+    assert ws.receive_json()["type"] == HelloOkFrame.type
     return client, ws
+
+
+def settle(ws, session_id):
+    """Wait for the server to process every earlier frame of the socket: a
+    read answers in order, so its result marks the frames before it as handled."""
+    ws.send_json(
+        {
+            "type": RequestFrame.type,
+            "request_id": "settle",
+            "kind": "batch_options",
+            "session_id": session_id,
+        }
+    )
+    frames_until(ws, ResultFrame)
 
 
 def frames_until(ws, kind, limit=500):
@@ -46,9 +92,9 @@ def frames_until(ws, kind, limit=500):
     for _ in range(limit):
         frame = ws.receive_json()
         seen.append(frame)
-        if frame["type"] == kind:
+        if frame["type"] == kind.type:
             return seen
-    raise AssertionError(f"no {kind!r} frame within {limit} frames: {seen[-5:]}")
+    raise AssertionError(f"no {kind.type!r} frame within {limit} frames: {seen[-5:]}")
 
 
 def test_subscribe_answers_with_the_session_snapshot(e2e_repo):
@@ -57,15 +103,15 @@ def test_subscribe_answers_with_the_session_snapshot(e2e_repo):
     registry.register(session)
     _, ws = connect(registry)
 
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
     snapshot = ws.receive_json()
-    assert snapshot["type"] == "snapshot"
+    assert snapshot["type"] == SnapshotFrame.type
     assert snapshot["session_id"] == session.session_id
     assert snapshot["seq"] == 0
-    assert snapshot["tasks"] == {
+    assert snapshot["snapshot"]["tasks"] == {
         key: status.name for key, status in workflow.store.current.items()
     }
-    assert snapshot["batches"] == []
+    assert snapshot["snapshot"]["batches"] == []
     ws.close()
 
 
@@ -75,12 +121,12 @@ def test_an_unknown_session_answers_an_error_and_stays_open(e2e_repo):
     registry.register(session)
     _, ws = connect(registry)
 
-    ws.send_json({"type": "subscribe", "session_id": "gone"})
+    ws.send_json({"type": SubscribeFrame.type, "session_id": "gone"})
     error = ws.receive_json()
-    assert error["type"] == "error"
+    assert error["type"] == ErrorFrame.type
     assert "does not resolve to a live session" in error["reason"]
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+    assert ws.receive_json()["type"] == SnapshotFrame.type
     ws.close()
 
 
@@ -89,24 +135,24 @@ def test_a_batch_streams_its_events_with_increasing_sequence(e2e_repo):
     registry = SessionRegistry()
     registry.register(session)
     _, ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+    assert ws.receive_json()["type"] == SnapshotFrame.type
 
     run_batch(workflow)
 
-    frames = frames_until(ws, "batch_completed")
+    frames = frames_until(ws, BatchCompletedLane)
     kinds = collections.Counter(frame["type"] for frame in frames)
-    assert kinds["batch_created"] == 1
-    assert kinds["task_status"] > 0
-    assert kinds["execution_status"] > 0
+    assert kinds[BatchCreatedLane.type] == 1
+    assert kinds[TaskStatusLane.type] > 0
+    assert kinds[ExecutionStatusLane.type] > 0
     sequences = [frame["seq"] for frame in frames]
     assert sequences == sorted(sequences)
     assert len(set(sequences)) == len(sequences)
     assert all(frame["session_id"] == session.session_id for frame in frames)
     completed = frames[-1]
-    assert completed["batch"]["status"] == "FINISHED"
+    assert completed["info"]["status"] == "FINISHED"
     # The roster holds the admitted tasks: eligibility filtered the rest.
-    roster = set(completed["batch"]["tasks"])
+    roster = set(completed["info"]["tasks"])
     assert roster and roster < {t.identity_key for t in workflow.tasks}
     ws.close()
 
@@ -116,15 +162,15 @@ def test_log_lines_coalesce_per_task_per_tick(e2e_repo):
     registry = SessionRegistry()
     registry.register(session)
     _, ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+    assert ws.receive_json()["type"] == SnapshotFrame.type
 
     for n in range(3):
         workflow.bus.publish(
             LogLineEvent(task_key="alpha-1", batch_uuid="b-1", line=f"line {n}")
         )
     frame = ws.receive_json()
-    assert frame["type"] == "log_batch"
+    assert frame["type"] == LogBatchLane.type
     assert frame["task_key"] == "alpha-1"
     assert frame["lines"] == ["line 0", "line 1", "line 2"]
     ws.close()
@@ -136,35 +182,38 @@ def test_a_resubscribe_resets_the_stream_with_a_fresh_snapshot(e2e_repo):
     registry = SessionRegistry()
     registry.register(session)
     _, ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
     first = ws.receive_json()
 
     run_batch(workflow)
     # Drain the live stream first, so the resubscribe happens after the tick
     # fanned the batch out and the sequence moved.
-    frames_until(ws, "batch_completed")
+    frames_until(ws, BatchCompletedLane)
 
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    fresh = frames_until(ws, "snapshot")[-1]
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+    fresh = frames_until(ws, SnapshotFrame)[-1]
     assert fresh["seq"] > first["seq"]
-    assert fresh["tasks"][alpha.identity_key] == workflow.store[alpha].name
+    assert fresh["snapshot"]["tasks"][alpha.identity_key] == workflow.store[alpha].name
     ws.close()
 
 
 def test_a_full_window_of_drops_marks_the_client_too_slow(e2e_repo):
     workflow, session = live_session(e2e_repo)
     bridge = EventBridge(session, qsize=4)
-    subscription = Subscription(wake=asyncio.Event(), maxlen=4)
-    bridge.subscribe(subscription)
+    queue = FrameQueue(wake=asyncio.Event(), maxlen=4)
+    bridge.add_queue(queue)
 
     for n in range(12):
-        bridge._fan_out({"type": "task_status", "key": f"k{n}", "status": "RUNNING"})
+        bridge._fan_out(
+            TaskStatusLane,
+            {"key": f"k{n}", "status": "RUNNING", "origin": "run"},
+        )
 
-    assert len(subscription.deque) == 4
-    assert subscription.dropped == 8
-    assert subscription.behind_a_full_window
+    assert len(queue.deque) == 4
+    assert queue.dropped == 8
+    assert queue.behind_a_full_window
     # The frames that survive are the newest, so a reader sees the gap.
-    kept = [json.loads(payload)["seq"] for payload in subscription.deque]
+    kept = [json.loads(payload)["seq"] for payload in queue.deque]
     assert kept == [9, 10, 11, 12]
 
 
@@ -173,18 +222,18 @@ def test_unsubscribe_stops_the_stream(e2e_repo):
     registry = SessionRegistry()
     registry.register(session)
     _, ws = connect(registry)
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "snapshot"
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+    assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    ws.send_json({"type": "unsubscribe", "session_id": session.session_id})
-    assert ws.receive_json()["type"] == "unsubscribed"
+    ws.send_json({"type": UnsubscribeFrame.type, "session_id": session.session_id})
+    settle(ws, session.session_id)
     run_batch(workflow)
     assert workflow.store[by_name(workflow)["Alpha"]] is S.COMPLETED
 
-    ws.send_json({"type": "subscribe", "session_id": session.session_id})
+    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
     frame = ws.receive_json()
     # The snapshot only: no event of the unsubscribed batch leaked into the queue.
-    assert frame["type"] == "snapshot"
+    assert frame["type"] == SnapshotFrame.type
     ws.close()
 
 
@@ -203,18 +252,23 @@ def test_the_bridge_retires_when_its_session_ends(e2e_repo):
     registry = SessionRegistry()
     registry.register(session)
     credentials = Credentials(token=TOKEN, require_credential=True)
-    serve_app = ServeApp(registry, credentials, hello_timeout=1.0)
+    serve_app = ServeApp(
+        registry,
+        credentials,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        hello_timeout=1.0,
+    )
     client = TestClient(serve_app.starlette())
     with client.websocket_connect("/ws") as ws:
-        ws.send_json({"type": "hello", "version": PROTOCOL_VERSION, "token": TOKEN})
-        assert ws.receive_json()["type"] == "hello_ok"
-        assert ws.receive_json()["type"] == "snapshot"
-        ws.send_json({"type": "subscribe", "session_id": session.session_id})
-        assert ws.receive_json()["type"] == "snapshot"
+        ws.send_json({"type": HelloFrame.type, "token": TOKEN})
+        assert ws.receive_json()["type"] == HelloOkFrame.type
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
         assert serve_app.bridges.get(session.session_id) is not None
 
         session.end()
-        frames_until(ws, "session_ended")
+        frames_until(ws, SessionEndedLane)
 
         # The drain retires the bridge on the loop after the fan-out; a long
         # serve process must not keep one live drain task per ended session.
@@ -223,3 +277,76 @@ def test_the_bridge_retires_when_its_session_ends(e2e_repo):
                 break
             time.sleep(0.01)
         assert serve_app.bridges.get(session.session_id) is None
+
+
+def test_a_session_unsubscribe_releases_its_task_log_listeners(e2e_repo):
+    """The task log keys live on the session subscription, so an unsubscribe
+    of the session alone leaves no dispatcher listener behind."""
+    workflow, session = live_session(e2e_repo)
+    alpha = by_name(workflow)["Alpha"]
+    registry = SessionRegistry()
+    registry.register(session)
+    credentials = Credentials(token=TOKEN, require_credential=True)
+    serve_app = ServeApp(
+        registry,
+        credentials,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        hello_timeout=1.0,
+    )
+    client = TestClient(serve_app.starlette())
+    with client.websocket_connect("/ws") as ws:
+        ws.send_json({"type": HelloFrame.type, "token": TOKEN})
+        assert ws.receive_json()["type"] == HelloOkFrame.type
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
+        ws.send_json(
+            {
+                "type": TaskLogSubscribeFrame.type,
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        frames_until(ws, TaskLogBacklogFrame)
+        bridge = serve_app.bridges.get(session.session_id)
+        assert alpha.identity_key in bridge._task_log_queues
+
+        ws.send_json({"type": UnsubscribeFrame.type, "session_id": session.session_id})
+        settle(ws, session.session_id)
+        assert bridge._task_log_queues == {}
+
+
+def test_a_subscribe_to_an_ended_session_answers_a_refusal(e2e_repo):
+    """The bus of an ended session is closed: the subscribe must answer an
+    error frame, never raise into the socket loop. The client lane turns the
+    refusal into the end event (see on_subscribe_refused)."""
+    workflow, session = live_session(e2e_repo)
+    registry = SessionRegistry()
+    registry.register(session)
+    session.end()
+
+    client, ws = connect(registry)
+    ws.send_json(
+        {
+            "type": SubscribeFrame.type,
+            "session_id": session.session_id,
+            "request_id": "c-1",
+        }
+    )
+    frame = ws.receive_json()
+    assert frame["type"] == ErrorFrame.type
+    assert frame["request_id"] == "c-1"
+    assert "has ended" in frame["reason"]
+
+    # The connection survives: the history of the ended session still serves.
+    ws.send_json(
+        {
+            "type": RequestFrame.type,
+            "kind": "history",
+            "session_id": session.session_id,
+            "request_id": "c-2",
+        }
+    )
+    result = ws.receive_json()
+    assert result["type"] == ResultFrame.type
+    assert result["kind"] == "history"

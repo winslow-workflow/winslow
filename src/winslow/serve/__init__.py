@@ -1,6 +1,5 @@
-"""The serve process: one websocket endpoint over the live sessions of a
-SessionRegistry (see specs on the session bus and the action handler for the
-two halves it exposes). Requires the [serve] extra."""
+"""The serve process: a websocket endpoint and an optional MCP mount over the
+live sessions of a SessionRegistry (see ServeApp). Requires the [serve] extra."""
 
 from .auth import Credentials, mint_ticket, verify_ticket
 

@@ -18,7 +18,7 @@ from winslow.ui.widgets.common import FilterableOptionList
 ORCHESTRATOR_FIELD = "orchestrator-field"
 WORKFLOW_FIELD = "workflow-field"
 
-# The scalar types a form parses inline, by the type name of the OptionRow. A
+# The scalar types a form parses inline, by the type name of the OptionInfo. A
 # value of any other type travels as its string; create_session parses it with
 # the declared option type (see validate_values).
 _TYPE_PARSERS = {
@@ -40,7 +40,7 @@ class FormValues:
 
 
 class WorkflowFormValidator:
-    """Apply the OptionRow rules to the form inputs and mark each input that
+    """Apply the OptionInfo rules to the form inputs and mark each input that
     fails. A scalar type parses inline for an immediate field error; every
     other value stays a string for create_session to parse."""
 
@@ -64,7 +64,11 @@ class WorkflowFormValidator:
             return not widget.value
         elif row.action == "store_const":
             return row.const if widget.value else None
-        raise ValueError(f"Invalid action for Switch - {widget.name} - {row.action}")
+        raise ValueError(
+            f"option {widget.name!r} declares {row.action!r}, which is not a "
+            f"switch action - the switch actions are store_true, store_false "
+            f"and store_const."
+        )
 
     def _collect_radio_set_value(self, widget, row):
         for radio_button in widget.query(RadioButton):
@@ -128,7 +132,7 @@ class WorkflowFormValidator:
 
     @classmethod
     def _check_dependencies(cls, values, rows_by_name, errors):
-        """OptionRow.depends_on on the side of the form. A field with a value
+        """OptionInfo.depends_on on the side of the form. A field with a value
         demands that its dependencies also have a value. Only a field that
         the form shows takes part. A hidden option keeps the value of the
         parsed base, and the CLI commit points enforce it (see

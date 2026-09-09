@@ -19,7 +19,9 @@ class Stat(Static):
             await self.update_value()
 
     async def update_value(self):
-        raise NotImplementedError("Need to update self.value etc in here")
+        raise NotImplementedError(
+            "a Stat subclass implements update_value and sets self.value"
+        )
 
     def render(self):
         return f"{self.name}: {self.value}"

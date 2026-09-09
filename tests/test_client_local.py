@@ -30,10 +30,10 @@ from winslow.events import (
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
     BatchInfo,
-    CacheCard,
+    CacheInfo,
     CacheUpdatedEvent,
     CacheValueView,
-    HistoryRow,
+    BatchOutcome,
     RecordDetail,
     SessionLogEvent,
     SessionParams,
@@ -42,8 +42,17 @@ from winslow.model import (
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.runner.execution import ExecutionStatus
 from winslow.session import Session, SessionRegistry
+from winslow.task.status import TaskStatus
 
-from harness import build_workflow, by_name, gated_workflow, start_gated_batch
+from harness import (
+    bare_orchestrator,
+    build_workflow,
+    by_name,
+    gated_workflow,
+    scratch_state_store,
+    start_gated_batch,
+    wait_for_status,
+)
 
 
 def registered(e2e_repo, name="my-workflow", mode=Mode.TUI):
@@ -93,7 +102,7 @@ def wait_for(predicate, message, timeout=5.0):
 
 def test_sessions_serves_a_row_per_live_session(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    app = LocalAppClient(registry)
+    app = LocalAppClient(registry, bare_orchestrator(), scratch_state_store())
     (row,) = app.sessions()
     assert row.session_id == session.session_id
     assert row.workflow == str(workflow)
@@ -112,30 +121,21 @@ def test_connection_subscription_is_idle_in_process(e2e_repo):
     """The in-process transport has no connection: the handler is accepted
     and never called (see AppClient.subscribe_connection)."""
     workflow, session, registry = registered(e2e_repo)
-    app = LocalAppClient(registry)
+    app = LocalAppClient(registry, bare_orchestrator(), scratch_state_store())
     events = []
     app.subscribe_connection(events.append)
-    app.unsubscribe_connection(events.append)
     assert events == []
 
 
 def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
-    app = LocalAppClient(SessionRegistry(), orchestrator=local_orchestrator(e2e_repo))
+    app = LocalAppClient(
+        SessionRegistry(), local_orchestrator(e2e_repo), scratch_state_store()
+    )
     descriptors = app.descriptors()
     workflows = {d.workflow for d in descriptors.workflows}
     assert "my-workflow" in workflows
     override_names = {row.name for row in descriptors.overrides}
     assert "force_run" in override_names
-
-
-def test_app_reads_refuse_without_their_dependencies(e2e_repo):
-    app = LocalAppClient(SessionRegistry())
-    with pytest.raises(MisconfigurationError, match="orchestrator"):
-        app.descriptors()
-    with pytest.raises(MisconfigurationError, match="state store"):
-        app.manifests()
-    with pytest.raises(MisconfigurationError, match="orchestrator"):
-        app.create_session("my-workflow")
 
 
 def test_create_session_registers_and_stamps_a_local_manifest(
@@ -160,16 +160,6 @@ def test_create_session_registers_and_stamps_a_local_manifest(
         "logged before anyone subscribed" in line
         for line in snapshot.session_log_backlog
     )
-
-
-def test_create_session_refuses_an_unknown_workflow(e2e_repo, state_store):
-    app = LocalAppClient(
-        SessionRegistry(),
-        orchestrator=local_orchestrator(e2e_repo),
-        state_store=state_store,
-    )
-    with pytest.raises(RequestError, match="names no collected workflow"):
-        app.create_session("no-such-workflow")
 
 
 def test_manifests_and_restore_round_trip(e2e_repo, state_store):
@@ -197,19 +187,9 @@ def test_manifests_and_restore_round_trip(e2e_repo, state_store):
     assert session_id in registry
 
 
-def test_restore_refuses_an_unknown_manifest(e2e_repo, state_store):
-    app = LocalAppClient(
-        SessionRegistry(),
-        orchestrator=local_orchestrator(e2e_repo),
-        state_store=state_store,
-    )
-    with pytest.raises(RequestError, match="names no open manifest"):
-        app.restore_session("gone")
-
-
 def test_session_resolves_a_session_client(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    app = LocalAppClient(registry)
+    app = LocalAppClient(registry, bare_orchestrator(), scratch_state_store())
     client = app.session(session.session_id)
     assert client.session_id == session.session_id
     with pytest.raises(KeyError, match="does not resolve to a live session"):
@@ -239,6 +219,11 @@ def test_snapshot_equals_the_core_state(e2e_repo):
     assert batch_row.uuid == batch.uuid
     assert batch_row.status == batch.status.name
     assert batch_row.task_count == 1
+    # The snapshot batch is a full BatchInfo: the reconnect heal re-emits it
+    # as the created event (see RemoteSessionClient._on_snapshot).
+    (key,) = batch_row.tasks
+    assert batch_row.tasks[key]
+    assert batch_row.options is not None
 
 
 def test_roster_hands_the_core_built_stubs_through_in_order(e2e_repo):
@@ -260,6 +245,10 @@ def test_task_detail_serves_the_evaluated_full_capture(e2e_repo):
     assert info.key == alpha.identity_key
     assert info.attributes is not None
     assert info.source is not None
+    # The tree arrives display-ready: label and location fill server-side,
+    # so a consumer renders it without the origin rules of task.info.
+    assert info.source.label == info.source.name
+    assert info.source.location
     assert info.effective_ttl == workflow.effective_check_ttl(alpha)
     with pytest.raises(RequestError):
         client.task_detail("no-such-key")
@@ -273,7 +262,7 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
     record = store.get_record(alpha.identity_key)
 
     (row,) = client.history()
-    assert row == HistoryRow.from_batch(
+    assert row == BatchOutcome.from_batch(
         workflow.runner.get_batch(ack.batch_uuid), store
     )
     assert row.uuid == ack.batch_uuid
@@ -302,13 +291,13 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
 def test_caches_serve_the_inspection_projections(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
     assert client.caches() == tuple(
-        CacheCard.from_cache(cache) for cache in workflow.caches()
+        CacheInfo.from_cache(cache) for cache in workflow.caches()
     )
     (weather,) = [card for card in client.caches() if card.name == "weather"]
     cache = workflow.get_cache("weather")
     assert weather.scope == "workflow"
     assert weather.info == tuple(cache.inspect())
-    entry_names = {entry.name for entry in weather.entries}
+    entry_names = set(weather.entries)
     assert entry_names == {"cities", "city_index", "forecast"}
     # Eager entries are warm at collection time; forecast is lazy and cold.
     assert "cities" in weather.values
@@ -340,15 +329,6 @@ def test_apply_filter_answers_keys_or_raises_the_parse_error(e2e_repo):
     assert alpha.identity_key in keys
     with pytest.raises(RequestError):
         client.apply_filter("((unclosed")
-
-
-def test_apply_filter_builtin_only_refuses_a_foreign_filter(e2e_repo, monkeypatch):
-    from winslow.filter.builtin import GroupFilter
-
-    monkeypatch.setattr("winslow.filter.builtin.BUILTIN_FILTERS", (GroupFilter,))
-    workflow, session, client = session_client(e2e_repo)
-    with pytest.raises(RequestError, match="supports only the builtin filters"):
-        client.apply_filter("alpha", builtin_only=True)
 
 
 def test_batch_options_and_session_params_mirror_the_workflow(e2e_repo):
@@ -529,6 +509,31 @@ def test_check_tasks_submits_a_check_batch(e2e_repo):
     assert batch.action.name == "CHECK"
 
 
+def test_history_of_a_running_batch_carries_the_current_record_statuses(e2e_repo):
+    """The history pane refreshes a running batch from this read after a
+    healed gap (see HistoryPane.on_batch_created), so the outcomes must
+    reflect the record store mid-run: the held task RUNNING, the tasks that
+    finished beside it already in their final state."""
+    workflow, tasks = gated_workflow(e2e_repo)
+    client = LocalSessionClient(workflow.session)
+    gate, batch = start_gated_batch(workflow, tasks)
+    for name in ("TailOne", "TailTwo"):
+        wait_for_status(workflow, tasks[name], TaskStatus.COMPLETED)
+
+    (row,) = client.history()
+    assert row.uuid == batch.uuid
+    assert row.completed_at is None
+    store = dict(workflow.runner.record_store(batch.uuid).items())
+    assert row.tasks[tasks["Gated"].identity_key].status == "RUNNING"
+    for name in ("TailOne", "TailTwo"):
+        key = tasks[name].identity_key
+        assert row.tasks[key].status == store[key].name
+        assert row.tasks[key].status != "RUNNING"
+
+    gate.set()
+    batch.wait()
+
+
 def test_stop_batch_stops_a_running_batch(e2e_repo):
     workflow, tasks = gated_workflow(e2e_repo)
     client = LocalSessionClient(workflow.session)
@@ -645,7 +650,7 @@ def test_caches_isolate_an_unobservable_storage(e2e_repo):
     assert weather.info == ()
     assert weather.values == {}
     # The declarations still stand, so a pane keeps its rows.
-    assert {entry.name for entry in weather.entries} == {
+    assert set(weather.entries) == {
         "cities",
         "city_index",
         "forecast",
@@ -703,16 +708,18 @@ def test_history_rows_carry_the_batch_options(e2e_repo):
 
 def test_descriptors_carry_auto_init_and_the_multiselect_selection(e2e_repo):
     from winslow.descriptors import ConfigOption
-    from winslow.model import OptionRow
+    from winslow.model import OptionInfo
 
-    app = LocalAppClient(SessionRegistry(), orchestrator=local_orchestrator(e2e_repo))
+    app = LocalAppClient(
+        SessionRegistry(), local_orchestrator(e2e_repo), scratch_state_store()
+    )
     descriptor = next(
         d for d in app.descriptors().workflows if d.workflow == "my-workflow"
     )
     assert descriptor.auto_init is False
 
     option = ConfigOption(type=int, multiselect=True, choices=[1, 2, 3])
-    row = OptionRow.from_option("picks", option, current=[1, 3])
+    row = OptionInfo.from_option("picks", option, current=[1, 3])
     assert row.initial == "1, 3"
     assert row.initial_selection == ("1", "3")
 

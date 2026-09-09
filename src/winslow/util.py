@@ -19,6 +19,11 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 
 
+def new_uuid():
+    """An opaque unique id. generate_id makes the readable, sortable kind."""
+    return str(uuid.uuid4())
+
+
 def generate_id(name):
     """Make a readable and sortable identifier that has no collision. It has
     three parts: a name for the user, a UTC timestamp and a random suffix. The

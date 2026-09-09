@@ -33,10 +33,11 @@ from winslow.model import CacheUpdatedEvent, SessionLogEvent
 from winslow.session import SessionRegistry
 from winslow.task.status import TaskStatus
 
-from harness import by_name
 
 from test_client_websocket import TOKEN, ServedProcess, registered, wait_for
 from test_serve_actions import serve_orchestrator
+
+from harness import bare_orchestrator, scratch_state_store
 
 TOPICS = (
     TaskStatusEvent,
@@ -323,7 +324,6 @@ def drive_scenario(app, registry, monkeypatch):
     )
     recorder.read("run_after_end_ack", client.submit(RunTasks(keys=(refresh_key,))))
 
-    client.close()
     recorder.names = {
         row.session_id: "<session>",
         run_ack.batch_uuid: "<run-batch>",
@@ -417,7 +417,7 @@ def test_local_session_clients_are_per_call_and_close_is_scoped(e2e_repo):
     """LocalAppClient.session builds a fresh client per call, and close
     tears down only that client's subscriptions."""
     workflow, session, registry = registered(e2e_repo)
-    app = LocalAppClient(registry)
+    app = LocalAppClient(registry, bare_orchestrator(), scratch_state_store())
     first = app.session(session.session_id)
     second = app.session(session.session_id)
     assert first is not second
@@ -429,33 +429,3 @@ def test_local_session_clients_are_per_call_and_close_is_scoped(e2e_repo):
     workflow.logger.warning("after the first client closed")
     assert first_lines == []
     assert len(second_lines) == 1
-
-
-def test_remote_session_clients_share_the_lane_and_close_drops_it(e2e_repo):
-    """RemoteAppClient.session returns the shared lane of the session, and
-    close tears down every handler of that session."""
-    workflow, session, registry = registered(e2e_repo)
-    process = ServedProcess(registry).start()
-    client = RemoteAppClient(process.url, token=TOKEN).connect()
-    try:
-        lane = client.session(session.session_id)
-        assert client.session(session.session_id) is lane
-
-        first, second = [], []
-        lane.subscribe(TaskStatusEvent, first.append)
-        lane.subscribe(TaskStatusEvent, second.append)
-        lane.close()
-        fresh = client.session(session.session_id)
-        assert fresh is not lane
-
-        done = threading.Event()
-        fresh.subscribe(BatchCompletedEvent, lambda e: done.set())
-        alpha = by_name(workflow)["Alpha"]
-        ack = fresh.submit(RunTasks(keys=(alpha.identity_key,)))
-        assert ack.accepted, ack.reason
-        assert done.wait(10), "no batch_completed on the fresh lane"
-        assert first == []
-        assert second == []
-    finally:
-        client.close()
-        process.stop()

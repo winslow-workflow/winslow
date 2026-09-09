@@ -26,7 +26,7 @@ def test_preseeded_task_lands_completed_previously(workflow):
 def test_recheck_after_run_keeps_completed(workflow):
     """The demotion guard: a task that really ran stays COMPLETED when a later
     check batch re-probes it. The check phase alone can't tell a first probe
-    from a re-probe - _has_been_run on the task instance can."""
+    from a re-probe - the runner's has_run can."""
     tasks = by_name(workflow)
     run_all(workflow)
     workflow.store.assert_history_equals(tasks["Alpha"], COMPLETED_LADDER)

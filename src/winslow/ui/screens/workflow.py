@@ -32,6 +32,7 @@ from winslow.ui.workflow_events import (
 )
 
 from winslow.actions import CheckTasks, RunTasks
+from winslow.exceptions import RegistrationError
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
@@ -83,10 +84,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
     search_input_id = "filter-input"
 
-    def __init__(self, client, session_row):
+    def __init__(self, client, session_info):
         self.client = client
-        self.session_row = session_row
-        self.session_id = session_row.session_id
+        self.session_info = session_info
+        self.session_id = session_info.session_id
         self._init_search()
         self._asyncio_tasks: set[asyncio.Task] = set()
         # {batch uuid: toast verb} of the bulk submits that wait for their
@@ -97,7 +98,9 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
 
         self.snapshot = client.snapshot()
         self.session_status = self.snapshot.status
-        self.roster = client.roster()
+        # The roster of an ended session is released; the history rows then
+        # label by identity key (see RecordRow).
+        self.roster = () if self._has_ended else client.roster()
         # The toggles of this client: view state, seeded from the session
         # baseline and sent with every submit (see RunTasks.options).
         self.batch_options = dict(client.batch_options())
@@ -113,17 +116,21 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         # for the user. The subtitle holds the technical kebab identifier, which
         # helps to debug when the two names are different, and the identifier
         # options of the instance.
-        display_name = session_row.display_name
-        kebab_name = session_row.instance_name
+        display_name = session_info.display_name
+        kebab_name = session_info.instance_name
         self.title = display_name
         parts = [kebab_name] if kebab_name != display_name else []
-        if session_row.identifier_suffix:
-            parts.append(session_row.identifier_suffix)
+        if session_info.identifier_suffix:
+            parts.append(session_info.identifier_suffix)
         self.sub_title = " | ".join(parts)
 
     @property
     def logger(self):
         return self.app.logger
+
+    @property
+    def _has_ended(self):
+        return self.session_status in ("ENDED", "ERROR")
 
     @property
     def task_rows(self):
@@ -132,21 +139,31 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     # --- port subscriptions ---------------------------------------------------
 
     def connect(self):
-        """Wire the screen onto the session events of the port, once, right
-        after the install. The bus close at session end disconnects every
-        lane except the cache lane (see _on_session_ended)."""
-        for topic, method in (
-            (TaskStatusEvent, self._on_task_status),
-            (ExecutionStatusEvent, self._on_execution_status),
-            (BatchCreatedEvent, self._on_batch_created),
-            (BatchCompletedEvent, self._on_batch_completed),
-            (LogLineEvent, self._on_log_line),
-            (SessionEndedEvent, self._on_session_ended),
-            (CacheUpdatedEvent, self._on_cache_updated),
-        ):
-            handler = partial(self._relay, method)
-            self._port_handlers[topic] = handler
-            self.client.subscribe(topic, handler)
+        """Wire the screen onto the session events of the port, once, at the
+        first mount: only a mounted screen can receive a post from a worker
+        thread. The bus close at session end disconnects every lane except
+        the cache lane (see _port_session_ended)."""
+        if self._port_handlers:
+            return
+        try:
+            # The methods carry a _port_ prefix on purpose: an _on_ name is a
+            # Textual handler name, and a message dispatch would call it.
+            for topic, method in (
+                (TaskStatusEvent, self._port_task_status),
+                (ExecutionStatusEvent, self._port_execution_status),
+                (BatchCreatedEvent, self._port_batch_created),
+                (BatchCompletedEvent, self._port_batch_completed),
+                (LogLineEvent, self._port_log_line),
+                (SessionEndedEvent, self._port_session_ended),
+                (CacheUpdatedEvent, self._port_cache_updated),
+            ):
+                handler = partial(self._relay, method)
+                self._port_handlers[topic] = handler
+                self.client.subscribe(topic, handler)
+        except RegistrationError:
+            # The session ended before the first view: the screen renders the
+            # read-only history and needs no live lanes.
+            self._port_handlers.clear()
 
     def _relay(self, method, event):
         """A port handler body: move the event to the UI thread. The publish
@@ -167,36 +184,36 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     def handle_store_event(self, event):
         event.apply()
 
-    def _on_task_status(self, event):
+    def _port_task_status(self, event):
         self.propagate_task_status(event.key, event.status)
 
-    def _on_execution_status(self, event):
+    def _port_execution_status(self, event):
         self._dispatch_to_slot(
             Slots.TASKS_PANE,
             ExecutionStatusChanged(event.batch_uuid, event.task_key, event.status),
         )
 
-    def _on_batch_created(self, event):
+    def _port_batch_created(self, event):
         if verb := self._pending_bulk.pop(event.info.uuid, None):
             count = event.info.task_count
             self.notify(f"{verb} {count} task{'s' if count != 1 else ''}")
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCreated(event.info))
 
-    def _on_batch_completed(self, event):
+    def _port_batch_completed(self, event):
         self._dispatch_to_slot(Slots.TASKS_PANE, BatchCompleted(event.info))
 
-    def _on_log_line(self, event):
+    def _port_log_line(self, event):
         self._dispatch_to_slot(
             Slots.TASKS_PANE,
             TaskLogUpdated(event.batch_uuid, event.task_key, event.line),
         )
 
-    def _on_session_ended(self, event):
+    def _port_session_ended(self, event):
         self.session_status = "ENDED"
         self._disconnect_topic(CacheUpdatedEvent)
         self._dispatch_to_slot(Slots.TASKS_PANE, SessionEnded())
 
-    def _on_cache_updated(self, event):
+    def _port_cache_updated(self, event):
         self._dispatch_to_slot(Slots.TASKS_PANE, CacheUpdated())
 
     # --- lifecycle --------------------------------------------------------------
@@ -213,6 +230,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             self.propagate_task_status(key, TaskStatus[name])
 
     async def on_mount(self):
+        # An ended session has no live lanes to subscribe to: the screen is
+        # a read-only history from the start.
+        if not self._has_ended:
+            self.connect()
         await self._refresh_from_snapshot()
 
     async def on_screen_resume(self):
@@ -257,7 +278,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.snapshot = port_read(self, self.client.snapshot, default=self.snapshot)
         context = WorkflowRenderContext(
             client=self.client,
-            session=self.session_row,
+            session=self.session_info,
             snapshot=self.snapshot,
             roster=self.roster,
             task_statuses=self.statuses_by_key,
@@ -289,8 +310,13 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.activate_plugin_tab(TaskOverviewPlugin)
 
     def show_cache_detail(self, card):
-        self._dispatch_to_slot(Slots.TASK_OVERVIEW, CacheSelected(card))
+        self.refresh_cache_detail(card)
         self.activate_plugin_tab(CacheOverviewPlugin)
+
+    def refresh_cache_detail(self, card):
+        """Update the overview without bringing its tab forward: the caches
+        refresh pushes fresh state into an already-open detail."""
+        self._dispatch_to_slot(Slots.TASK_OVERVIEW, CacheSelected(card))
 
     @on(TaskRow.Selected)
     async def handle_task_selection(self, event):
@@ -336,7 +362,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         if not ack.accepted:
             return
         # The batch_created event carries the admitted count. The toast waits
-        # for it (see _on_batch_created).
+        # for it (see _port_batch_created).
         self._pending_bulk[ack.batch_uuid] = verb
 
     async def _handle_bulk_run(self):
@@ -357,7 +383,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
                 registry=self.plugin_registry,
                 client=self.client,
                 task_key=key,
-                root_dir=self.session_row.root_dir,
+                root_dir=self.session_info.root_dir,
             )
         )
 
@@ -385,7 +411,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         if params is None:
             return
         self.app.push_screen(
-            WorkflowParams(self.session_row.instance_name, params)
+            WorkflowParams(self.session_info.instance_name, params)
         )
 
     @on(Input.Submitted, "#filter-input")

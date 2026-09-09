@@ -520,11 +520,6 @@ class SessionPersistenceAdapter:
                 {key: list(lines) for key, lines in entry.logs.items()},
             )
 
-    @property
-    def write_failures(self):
-        """The count of queued writes that never landed on the store."""
-        return self._write_failures
-
     def _report_dropped_writes(self):
         if self._write_failures:
             LOGGER.error(

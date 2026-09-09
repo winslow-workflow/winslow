@@ -46,7 +46,7 @@ class NotNode(FilterNode):
 
 class AndNode(FilterNode):
     def __init__(self, children):
-        self.children = children
+        self.children = tuple(children)
 
     def evaluate(self, task):
         return all(child.evaluate(task) for child in self.children)
@@ -78,7 +78,7 @@ class AndNode(FilterNode):
 
 class OrNode(FilterNode):
     def __init__(self, children):
-        self.children = children
+        self.children = tuple(children)
 
     def evaluate(self, task):
         return any(child.evaluate(task) for child in self.children)

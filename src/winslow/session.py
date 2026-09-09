@@ -22,7 +22,7 @@ class SessionStatus(Enum):
 
 
 class Session:
-    def __init__(self, workflow, session_id=None):
+    def __init__(self, workflow, session_id=None, log_buffer=None):
         self.workflow = workflow
         self.status = SessionStatus.ACTIVE
         # A readable identity for this execution session, ordered by time. The
@@ -44,9 +44,9 @@ class Session:
         # The inbound half of the session boundary: every presentation layer
         # submits its actions here (see ActionHandler).
         self.actions = ActionHandler(self)
-        # A log backlog a caller attached before any subscriber existed (see
-        # SessionLogBuffer). None unless something sets it.
-        self.log_buffer = None
+        # The log backlog attached before any subscriber existed, so a client
+        # that connects late reads the init lines (see SessionLogBuffer).
+        self.log_buffer = log_buffer
         # The workflow exists before its session, so the session connects itself
         # here. The runner reads the logging identity of this run through this
         # link (see runner.task_scope and ContextStampFilter). Persistence also
@@ -106,7 +106,10 @@ class Session:
         with an error."""
         with self._lifecycle_lock:
             if self.is_ending or self.has_ended:
-                raise SessionEndingError(f"{self.session_id} no longer accepts batches")
+                raise SessionEndingError(
+                    f"{self.session_id} is ending and accepts no new batches "
+                    f"- the running batches drain first."
+                )
             yield
 
     def end(self):
@@ -174,10 +177,6 @@ class Session:
                 workflow_class=type(self.workflow).__name__,
                 session_id=self.session_id,
             )
-
-    @property
-    def screen_name(self):
-        return f"session-{self.session_id}"
 
     @property
     def task_status_summary(self):
@@ -373,8 +372,7 @@ def create_session(
             workflow_base=workflow_base,
             logger=workflow_logger,
         )
-        session = Session(workflow, session_id=session_id)
-        session.log_buffer = log_buffer
+        session = Session(workflow, session_id=session_id, log_buffer=log_buffer)
         registry.register(session)
         try:
             workflow.initialize_tasks(logger=workflow.logger)

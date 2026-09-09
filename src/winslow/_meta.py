@@ -16,6 +16,26 @@ class _DeclarationMeta(type):
         return result
 
 
+def _tagged(cls, marker):
+    """The methods of cls that a decorator marked with the attribute
+    `marker`, in declaration order. The dispatch tables derive from these
+    (see handles, winslow.serve.mcp.tool)."""
+    return tuple(member for member in vars(cls).values() if hasattr(member, marker))
+
+
+class handles:
+    """Mark a method as the handler of one class: a frame class on a Connection,
+    an action class on an ActionHandler. _tagged collects the marked methods
+    into the dispatch table of the owner."""
+
+    def __init__(self, key):
+        self.key = key
+
+    def __call__(self, method):
+        method.handles = self.key
+        return method
+
+
 def _check_attribute_clashes(
     cls_name, bases, dct, attr_names, *, exempt_types, error_cls, noun
 ):
