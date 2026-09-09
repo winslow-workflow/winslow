@@ -30,7 +30,7 @@ too, so the row keeps one visual line.
 
 ## The payload rule
 
-A Textual message and a store-listener callback carry values: the identity key of the task
+A Textual message and a session bus event carry values: the identity key of the task
 (`Task.identity_key`, a stable string) and `TaskInfo` captures. The task info modal set the precedent
 with `TaskDetailRenderContext.info` (see the context table above). A pane rendered from these payloads
 works the same on a remote client, because every payload can cross a process boundary.

@@ -19,7 +19,7 @@ class TasksPaneWidget(Widget):
 
     def on_mount(self):
         # One map serves both event kinds: every event names a task by its
-        # identity key (see StoreListener).
+        # identity key (see winslow.events).
         self._rows_by_key = {row.key: row for row in self.query(TaskRow).results()}
 
     @on(TaskStatusChanged)

@@ -1,4 +1,5 @@
-from winslow.store import BaseStore, StoreListener
+from winslow.events import ExecutionStatusEvent, LogLineEvent, Origin, TaskStatusEvent
+from winslow.store import BaseStore
 from winslow.logger import LOGGER
 
 from winslow.task.task import Task
@@ -8,34 +9,32 @@ from winslow.task.status import TaskStatus
 from .execution import ExecutionRecord
 
 
+def log_task_status(event: TaskStatusEvent):
+    """Log one task status transition. A headless workflow subscribes this
+    callback (see Workflow.__init__). The TUI shows each change in its
+    widgets instead."""
+    quiet = event.status is TaskStatus.INITIALIZED or event.origin is Origin.SEED
+    func = LOGGER.debug if quiet else LOGGER.info
+    func(f"Task {event.key} updated to {event.status}")
+
+
 class TaskStore(BaseStore):
     item_class = Task
     status_class = TaskStatus
 
-    def callback(self, task, status):
-        func = LOGGER.debug if status is TaskStatus.INITIALIZED else LOGGER.info
-        func(f"Task {task} updated to {status}")
 
-
-class InteractiveStore(TaskStore):
-    """No status logging. The widgets of the UI already show each change."""
-
-    def callback(self, task, status):
-        pass
-
-
-class ExecutionRecordStore(InteractiveStore):
+class ExecutionRecordStore(TaskStore):
     """Store of the task execution records for one batch. Its status writes are a
-    copy of the main store. It thus sends them as execution events, which are
-    scoped to the batch, and not as live task status. It writes no log line,
-    because the main store already logs each status. The store outlives the
+    copy of the main store. It thus publishes them as execution events, which are
+    scoped to the batch, and not as live task status. The store outlives the
     batch as history, so it keys by the identity key and holds TaskInfo values,
-    never a task (see release_tasks)."""
+    never a task (see release_tasks). It publishes on the session bus, so one
+    subscription covers every batch, past and future."""
 
     item_class = str
 
-    def __init__(self, batch_uuid, items, root_dir=None):
-        super().__init__(items)
+    def __init__(self, bus, batch_uuid, items, root_dir=None):
+        super().__init__(bus, items)
         self.batch_uuid = batch_uuid
         # The project root, so the sweep labels a source the same way as the
         # live detail view (see TaskInfo.from_task).
@@ -62,14 +61,17 @@ class ExecutionRecordStore(InteractiveStore):
     def records(self):
         return tuple(self._records.values())
 
-    def _emit_status(self, task_key, status, excluded_callbacks=None):
-        self._emit(
-            StoreListener.on_execution_status,
-            task_key,
-            status,
-            self.batch_uuid,
-            excluded=excluded_callbacks,
+    def _publish(self, task_key, status, origin):
+        self.bus.publish(
+            ExecutionStatusEvent(
+                task_key=task_key,
+                status=status,
+                batch_uuid=self.batch_uuid,
+                origin=origin,
+            )
         )
 
     def emit_log_appended(self, task_key, line):
-        self._emit(StoreListener.on_log_appended, task_key, self.batch_uuid, line)
+        self.bus.publish(
+            LogLineEvent(task_key=task_key, batch_uuid=self.batch_uuid, line=line)
+        )

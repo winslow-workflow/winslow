@@ -5,10 +5,11 @@ end."""
 import pytest
 
 from winslow.constants import Mode
+from winslow.events import TaskStatusEvent
 from winslow.exceptions import RegistrationError
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.session import Session
-from winslow.state import SessionPersistenceAdapter, StaleSweeper
+from winslow.state import StaleSweeper
 
 from harness import build_workflow
 
@@ -36,7 +37,7 @@ def test_creation_writes_an_open_manifest(e2e_repo, state_store):
 
 def test_a_clean_end_leaves_no_open_manifest(e2e_repo, state_store):
     workflow, session = persisted_session(e2e_repo, state_store)
-    workflow.runner.bulk_run(workflow.runner.eligible_tasks(workflow.tasks))
+    workflow.runner.bulk_run(workflow.tasks)
     session.end()
     assert state_store.list_open_manifests() == []
     assert (state_store.ended_directory / session.session_id).is_dir()
@@ -95,7 +96,6 @@ def test_a_session_without_a_store_persists_nothing(e2e_repo):
     workflow.record_batch_options()
     session.end()
     assert workflow.persistence_listener is None
-    assert workflow.state_store is None
 
 
 def test_a_second_init_state_registers_nothing(e2e_repo, state_store):
@@ -107,24 +107,17 @@ def test_a_second_init_state_registers_nothing(e2e_repo, state_store):
 
     assert workflow.persistence_listener is listener
     assert workflow.stale_sweeper is sweeper
-    kinds = (SessionPersistenceAdapter, StaleSweeper)
-    for kind in kinds:
-        assert sum(isinstance(lst, kind) for lst in workflow.store.listeners) == 1
+    subscribed = [callback for _, callback in workflow.bus._receivers]
+    assert subscribed.count(listener.on_task_status) == 1
+    assert subscribed.count(sweeper.on_task_status) == 1
 
 
-def test_the_listener_slots_refuse_a_second_listener(e2e_repo, state_store):
+def test_the_bus_refuses_a_duplicate_subscription(e2e_repo, state_store):
     workflow, session = persisted_session(e2e_repo, state_store)
-    adapter = SessionPersistenceAdapter(state_store, session.session_id)
-    sweeper = StaleSweeper(workflow)
+    listener = workflow.persistence_listener
 
-    try:
-        with pytest.raises(RegistrationError):
-            workflow.persistence_listener = adapter
-        with pytest.raises(RegistrationError):
-            workflow.stale_sweeper = sweeper
-    finally:
-        adapter.close()
-        sweeper.close()
+    with pytest.raises(RegistrationError):
+        workflow.bus.subscribe(TaskStatusEvent, listener.on_task_status)
 
 
 def _explode(*args, **kwargs):
@@ -144,7 +137,7 @@ def test_a_registration_failure_leaves_no_open_manifest(
     assert state_store.list_open_manifests() == []
     assert workflow.persistence_listener is None
     assert workflow.stale_sweeper is None
-    assert workflow.store.listeners == ()
+    assert workflow.bus._receivers == {}
 
 
 def test_a_manifest_write_failure_degrades_to_a_non_persistent_session(
@@ -155,12 +148,11 @@ def test_a_manifest_write_failure_degrades_to_a_non_persistent_session(
     session = Session(workflow)
     workflow.init_state(state_store, origin="tui")
 
-    assert workflow.state_store is None
     assert workflow.persistence_listener is None
 
     # The degraded session still runs and ends.
     workflow.check_pipeline_eligibility()
-    workflow.runner.bulk_run(workflow.runner.eligible_tasks(workflow.tasks))
+    workflow.runner.bulk_run(workflow.tasks)
     session.end()
     assert session.has_ended
 

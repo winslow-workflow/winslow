@@ -27,24 +27,49 @@ versions may include breaking changes).
   Restore pane and rebuilds a session under its original id: terminal statuses seed from the snapshots,
   mid-flight batches land in history as `ExecutionStatus.INTERRUPTED`, and their unsettled tasks come
   back `READY_TO_PROCESS`.
-- `check_ttl`: a workflow-level default with a per-task override, in seconds. A passing snapshot younger
-  than the effective TTL counts as verified wherever a check would run, without a probe. Snapshots are
-  session-scoped, so the trust window spans a kill and a restore of the same session and never leaks
-  into another session. The default `None` keeps today's behavior: always probe.
+- `check_ttl`: a workflow-level default with a per-task override, in seconds. The trust rule lives in
+  the state writers: a restore seeds a passing snapshot younger than the effective TTL as its recorded
+  status, and the sweeper flips a live status to STALE when its TTL lapses. The runner reads the store:
+  a passing status skips the pre-run check and satisfies dependencies, and an explicit check batch
+  always probes. Snapshots are session-scoped, so the trust window spans a kill and a restore of the
+  same session and never leaks into another session. The default `None` keeps today's behavior: an
+  old success seeds as STALE and re-probes on first touch.
 - `TaskStatus.STALE`: a passing status beyond its trust window turns STALE. A sweeper thread flips a
   status whose TTL lapses live, a restore seeds an untrusted success as STALE, and the next touch
   re-verifies it. The snapshot keeps the real outcome; `TaskInfo` carries `checked_at` and
   `effective_ttl` for the detail modal.
 - The History pane filters by status: a dropdown beside the record search narrows the rows to one task
   status, and composes with the search and the hide-completed toggle.
+- The session event bus (`SessionBus`, on `Workflow.bus`): one event path per session. Every component
+  that observes a session subscribes once, by event class (`winslow.events`), with
+  `bus.subscribe(TaskStatusEvent, callback)`. The vocabulary is declared on
+  `SessionBus.event_classes`, and a subclass extends it; an undeclared event class refuses loudly.
+  The bus dispatches synchronously on the publishing thread with no defined subscriber order, logs
+  and skips a raising subscriber, and `bus.close()` at session end disconnects every remaining
+  subscriber. blinker >= 1.9 joins the core dependencies.
+- `Origin` on every store event: `RUN` for a live transition, `SEED` for a restore write. The
+  persistence subscriber skips `SEED` events itself, so every other subscriber observes seed writes
+  with their origin.
+- `SessionEndedEvent` publishes at session end, after the durable writes. The dashboard session row
+  and the Caches pane subscribe to it instead of polling `has_ended`.
+- The action handler (`ActionHandler`, on `session.actions`): the one inbound path of a session, the
+  counterpart of the bus. A presentation layer submits one frozen action (`winslow.actions`: `RunTasks`,
+  `CheckTasks`, `StopBatch`, `EndSession`, `SetBatchOptions`) and receives a typed ack: accepted with the
+  batch uuid, or refused with a reason. The handler resolves identity keys, gates admission, and never
+  raises across the boundary. The TUI submits every mutating action through it.
 
 ### Changed
 
 - Breaking for plugin authors: `TaskStatusChanged` carries `(key, status)`; it carried the live task.
   `ExecutionStatusChanged` and `TaskLogUpdated` name the task with `task_key`; the attribute was
   `task_uuid`.
-- Breaking for plugin authors: `StoreListener.on_task_status(key, status)` receives the identity key.
-  `on_execution_status` and `on_log_appended` receive it as `task_key`. Every listener payload is a value.
+- Breaking for plugin authors: the session bus replaces the store listener API. A subscriber connects
+  one callback per event class and receives one frozen event object; `TaskStatusEvent.key` is the
+  identity key, `ExecutionStatusEvent` and `LogLineEvent` carry it as `task_key`. Every event payload
+  is a value.
+- Breaking: `ReactiveDict.set(key, value, origin=Origin.RUN)` replaces the `excluded_callbacks`
+  parameter on `set`, `set_status` and the emit path. `Workflow.generate_store` receives the bus as
+  its first argument, and the stores take it at construction.
 - Breaking for plugin authors: the Task Overview pane receives the statuses-by-key mapping
   (`WorkflowRenderContext.task_statuses`); it received the live store.
 - `TaskInfo.uuid` and `TaskRef.uuid` are renamed to `key`, and the value is the identity key. Equality
@@ -54,11 +79,37 @@ versions may include breaking changes).
   status history of the store all hold identity keys.
 - The Caches pane is unchanged: its rows keep the live `BaseCache` objects, which are process-local UI
   state.
+- `Graph` takes `logger` at construction and the workflow hands its session logger in, so the task
+  initialization messages reach the session log pane. A project `graph_class` subclass that overrides
+  `__init__` must accept the keyword.
+- Breaking: the task stores key by identity key. A read accepts a task or its key
+  (`store[task]` and `store[task.identity_key]` return the same status); iteration and `items()` yield
+  the string keys, and `workflow.task_index` resolves a key back to the live task. `store.current` is
+  the storage: an immutable snapshot dict, replaced on each write, so one bind reads a consistent view.
+  `ReactiveDict` is no longer a `dict` subclass. The bus publishes each transition outside the store
+  lock, on the writing thread; a subscriber that renders state reads `store.current`.
+- Breaking: the status log line moved from the store onto the bus. A headless workflow subscribes
+  `log_task_status` to `TaskStatusEvent`; `InteractiveStore` is gone, and both modes use `TaskStore`.
+- `Workflow.tasks` is the owned task list, set at initialization in index order and cleared by
+  `release_tasks`; it was a property derived from the store keys.
+- Breaking for plugin authors: `BatchCreatedEvent` and `BatchCompletedEvent` carry `info`, a frozen
+  `BatchInfo` value (uuid, action and status names, the roster as `{key: label}`, the option snapshot,
+  epoch timestamps); they carried the live `ExecutionBatch` as `batch`. An in-process consumer resolves
+  the live batch with `runner.get_batch(info.uuid)`. Batch lookup itself moved behind accessors:
+  `runner.get_batch(uuid)`, `runner.batches`, `runner.record_store(uuid)`, `runner.record_stores()`.
+- Batch records persist through the session bus: `SessionPersistenceAdapter` subscribes to the batch
+  and log events and is the only writer. The close record queues behind the status snapshots of the
+  batch on the writer thread, so a closed record implies durable outcomes by queue order.
 
 ### Removed
 
 - `Task.uuid`. The identity key replaces it everywhere: log routing uses `Task.log_key`, and everything
   session-durable uses `Task.identity_key`.
+- `StoreListener` and the store subscription methods (`add_listener`, `remove_listener`, `listeners`)
+  on the task stores. The session bus owns every subscription. The cache containers keep
+  `CacheListener` and their own `add_listener`, which are process-scoped.
+- `ReactiveDict.callback` and `winslow.store.StatusHistoryMixin`. The write path has no hook: status
+  logging subscribes to the bus, and a write-order observer overrides the under-lock `_apply` seam.
 
 ## [0.5.1] — 2026-08-17
 

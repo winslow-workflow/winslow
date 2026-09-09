@@ -3,7 +3,14 @@ from functools import partial, wraps
 from textual.message import Message
 
 from winslow.cache import CacheListener
-from winslow.store import StoreListener
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    ExecutionStatusEvent,
+    LogLineEvent,
+    SessionEndedEvent,
+    TaskStatusEvent,
+)
 
 
 class StoreEvent(Message):
@@ -27,9 +34,9 @@ def on_ui_thread(method):
     return wrapper
 
 
-class TuiStoreAdapter(StoreListener):
-    """Send the store events to the Textual UI. The store thus has no dependency
-    on Textual."""
+class TuiStoreAdapter:
+    """Send the bus events to the Textual UI: the proxy between the session
+    bus and the Textual messages. The bus thus has no dependency on Textual."""
 
     def __init__(self, app, screen_name):
         self.app = app
@@ -39,25 +46,44 @@ class TuiStoreAdapter(StoreListener):
     def _screen(self):
         return self.app.get_screen(self.screen_name)
 
-    @on_ui_thread
-    def on_task_status(self, key, status):
-        self._screen.propagate_task_status(key, status)
+    def attach(self, workflow):
+        """Wire each handler onto its session event. The bus close at the
+        session end disconnects the adapter (see Workflow.archive_state)."""
+        for event, handler in (
+            (TaskStatusEvent, self.on_task_status),
+            (ExecutionStatusEvent, self.on_execution_status),
+            (BatchCreatedEvent, self.on_batch_created),
+            (BatchCompletedEvent, self.on_batch_completed),
+            (LogLineEvent, self.on_log_line),
+            (SessionEndedEvent, self.on_session_ended),
+        ):
+            workflow.subscribe(event, handler)
 
     @on_ui_thread
-    def on_execution_status(self, task_key, status, batch_uuid):
-        self._screen.propagate_execution_status(task_key, status, batch_uuid)
+    def on_task_status(self, event):
+        self._screen.propagate_task_status(event.key, event.status)
 
     @on_ui_thread
-    def on_batch_created(self, batch):
-        self._screen.propagate_batch_created(batch)
+    def on_execution_status(self, event):
+        self._screen.propagate_execution_status(
+            event.task_key, event.status, event.batch_uuid
+        )
 
     @on_ui_thread
-    def on_batch_completed(self, batch):
-        self._screen.propagate_batch_completed(batch)
+    def on_batch_created(self, event):
+        self._screen.propagate_batch_created(event.info)
 
     @on_ui_thread
-    def on_log_appended(self, task_key, batch_uuid, line):
-        self._screen.propagate_task_log(task_key, batch_uuid, line)
+    def on_batch_completed(self, event):
+        self._screen.propagate_batch_completed(event.info)
+
+    @on_ui_thread
+    def on_log_line(self, event):
+        self._screen.propagate_task_log(event.task_key, event.batch_uuid, event.line)
+
+    @on_ui_thread
+    def on_session_ended(self, event):
+        self._screen.propagate_session_ended()
 
 
 class TuiCacheAdapter(CacheListener):
@@ -105,7 +131,7 @@ class SessionLifecycleEvent(Message):
         self.apply = apply
 
 
-class SessionLifecycleAdapter(StoreListener):
+class SessionLifecycleAdapter:
     """The transport for the drain rule (Session.finalize_if_drained). A batch
     completes on a worker thread, but the finalization clears the store, so it
     must run on the UI thread. It is thus serialized with each widget that reads
@@ -115,5 +141,8 @@ class SessionLifecycleAdapter(StoreListener):
         self.app = app
         self.session = session
 
-    def on_batch_completed(self, batch):
+    def attach(self, workflow):
+        workflow.subscribe(BatchCompletedEvent, self.on_batch_completed)
+
+    def on_batch_completed(self, event):
         self.app.post_message(SessionLifecycleEvent(self.session.finalize_if_drained))

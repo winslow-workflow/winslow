@@ -1,7 +1,6 @@
-import time
 
 from contextlib import contextmanager
-from dataclasses import asdict, replace
+from dataclasses import replace
 from datetime import datetime
 from functools import partial
 
@@ -30,7 +29,7 @@ from winslow.task.context import (
     scoped_log_context,
 )
 
-from winslow.state import BatchRecord, is_trusted
+from winslow.events import Origin
 from winslow.util import execute_in_threads
 from winslow.cache import reset_phase_cache
 from winslow.task.eligibility import check_task_eligibility
@@ -75,9 +74,9 @@ class BaseRunner(_Base):
         self.workflow_config = workflow_config
         # The workflow and the UI share this object and change it live.
         self.batch_options = batch_options
-        # On the base class, so both runners share it. History and the UI look up
-        # a batch by its uuid.
-        self.execution_batches_map = {}
+        # On the base class, so both runners share it. Callers look up a batch
+        # through get_batch and batches.
+        self._execution_batches_map = {}
 
     def _new_execution_context(self, batch_uuid):
         """Snapshot the batch options. A later change in the UI does not affect
@@ -92,22 +91,35 @@ class BaseRunner(_Base):
         )
 
     def _execution_context_for(self, batch_uuid):
-        return self.execution_batches_map[batch_uuid].execution_context
+        return self._execution_batches_map[batch_uuid].execution_context
+
+    def get_batch(self, batch_uuid):
+        """Return the batch with this uuid, or None when the runner holds no
+        batch under it."""
+        return self._execution_batches_map.get(batch_uuid)
+
+    @property
+    def batches(self):
+        # A copy, so iteration survives a map update from another thread.
+        return list(self._execution_batches_map.values())
+
+    def record_store(self, batch_uuid):
+        """Return the execution record store of this batch, or None when the
+        runner keeps no records."""
+        return None
+
+    def record_stores(self):
+        """Return the execution record stores, in batch creation order."""
+        return []
 
     @property
     def active_batches(self):
-        # Iterate over a list. Iteration over the dict fails if another thread
-        # updates the map during the read.
-        return [
-            b
-            for b in list(self.execution_batches_map.values())
-            if b.completed_at is None
-        ]
+        return [b for b in self.batches if b.completed_at is None]
 
     def release_batch_errors(self):
         """Replace the error of each retained batch with a value-only copy, so
         nothing on it keeps a task alive (see ExecutionBatch.release_error)."""
-        for batch in list(self.execution_batches_map.values()):
+        for batch in self.batches:
             batch.release_error()
 
     def _log_context(self, task, batch_uuid):
@@ -206,83 +218,19 @@ class BaseRunner(_Base):
                 if self.orchestrator_config.reraise_errors:
                     raise
 
-    def set_status(self, task, status, batch_uuid, excluded_callbacks=None):
+    def set_status(self, task, status, batch_uuid, origin=Origin.RUN):
         # The current runners abort on ERROR, but a custom runner may
         # introduce retry logic in a batch. An errored task can then run
         # again in the same batch, and the RUNNING write must reset the flag.
-        batch = self.execution_batches_map.get(batch_uuid)
+        batch = self._execution_batches_map.get(batch_uuid)
         if batch is not None:
             if status is TaskStatus.RUNNING:
                 batch.errored.discard(task.identity_key)
             elif status is TaskStatus.ERROR:
                 batch.errored.add(task.identity_key)
-        # A replay of a stored snapshot excludes the persistence listener of
-        # the session: a fresh stamp would move checked_at without a probe
-        # (see SessionPersistenceAdapter).
-        self.store.set(task, status, excluded_callbacks=excluded_callbacks)
-
-    def _batch_record(self, batch, tasks):
-        """The audit record of one batch: the option snapshot and the roster.
-        The snapshots hold the task statuses (see winslow.state)."""
-        context = batch.execution_context
-        options = asdict(context) if context is not None else None
-        if options is not None:
-            options.pop("batch_uuid")
-        return BatchRecord(
-            batch_uuid=batch.uuid,
-            session_id=self.workflow.session_id,
-            action=batch.action.name,
-            created_at=batch.created_at.timestamp(),
-            execution_options=options,
-            tasks={task.identity_key: str(task) for task in tasks},
-        )
-
-    def _record_batch_open(self, batch, tasks):
-        """A record with no close mark seeds as INTERRUPTED on restore. A
-        persistence failure must not refuse the batch."""
-        store = self.workflow.state_store
-        if store is None:
-            return
-        try:
-            store.save_batch(self._batch_record(batch, tasks))
-        except Exception:
-            self.logger.error(
-                f"Could not store the record of batch {batch.uuid[:8]}",
-                exc_info=True,
-            )
-
-    def _record_batch_close(self, batch, tasks):
-        """A persistence failure must not mask the batch result."""
-        # One lookup: the session end can deregister the listener while the
-        # close runs, and a second lookup then reads None.
-        listener = self.workflow.persistence_listener
-        if listener is None:
-            return
-        try:
-            # The snapshots of the batch land before its close stamp: a closed
-            # record implies durable outcomes (see SessionPersistenceAdapter).
-            listener.flush()
-            closed = replace(
-                self._batch_record(batch, tasks),
-                closed_status=batch.status.name,
-                completed_at=batch.completed_at.timestamp(),
-            )
-            listener.state_store.save_batch(closed)
-            if logs := self._batch_log_dump(batch):
-                listener.state_store.save_batch_logs(
-                    self.workflow.session_id, batch.uuid, logs
-                )
-        except Exception:
-            self.logger.error(
-                f"Could not close the record of batch {batch.uuid[:8]}",
-                exc_info=True,
-            )
-
-    def _batch_log_dump(self, batch):
-        """{identity key: log lines} to archive at the close. Only the
-        interactive runner captures per-batch logs; the session log file
-        holds the complete stream in every mode."""
-        return {}
+        # A seed write stamps SEED: a fresh stamp would move checked_at
+        # without a probe (see SessionPersistenceAdapter).
+        self.store.set(task, status, origin=origin)
 
     def seed_interrupted_batches(self, records):
         """Each record that a dead process left open becomes an INTERRUPTED
@@ -309,10 +257,10 @@ class BaseRunner(_Base):
                 # that marks a batch as active (see active_batches).
                 completed_at=created_at,
             )
-            self.execution_batches_map[batch.uuid] = batch
+            self._execution_batches_map[batch.uuid] = batch
             self._register_seeded_batch(batch)
             try:
-                self.workflow.state_store.save_batch(
+                self.workflow.persistence_listener.save_batch(
                     replace(
                         record,
                         closed_status=ExecutionStatus.INTERRUPTED.name,
@@ -379,28 +327,6 @@ class BaseRunner(_Base):
             self.set_status(task, TaskStatus.FORCE_SUCCESS, batch_uuid)
         return True
 
-    def _trusted_by_snapshot(self, task, batch_uuid):
-        """The check_ttl gate: a passing entry inside its TTL replaces the
-        probe. Every check path passes _check_task_success, so the rule is
-        uniform (see docs/sessions.md)."""
-        workflow = self.workflow
-        ttl = workflow.effective_check_ttl(task)
-        if ttl is None:
-            return False
-        entry = workflow.load_snapshot(task.identity_key)
-        if entry is None:
-            return False
-        status = TaskStatus.__members__.get(entry.status)
-        if status not in PASSING_STATUSES:
-            return False
-        if not is_trusted(entry.checked_at, ttl, workflow.session.start, time.time()):
-            return False
-        self.logger.debug(f"{task} verified by its snapshot as {status} - no probe.")
-        self.set_status(
-            task, status, batch_uuid, excluded_callbacks=workflow.persistence_listener
-        )
-        return True
-
     def _check_task_success(self, task, batch_uuid, phase=ExecutionPhase.CHECK):
         if self._refuse_ineligible(task):
             return
@@ -408,9 +334,6 @@ class BaseRunner(_Base):
         if self._force_success(
             task, self._execution_context_for(batch_uuid), batch_uuid
         ):
-            return
-
-        if self._trusted_by_snapshot(task, batch_uuid):
             return
 
         self.logger.debug(f"Checking success: {task}")
@@ -438,7 +361,7 @@ class BaseRunner(_Base):
                 if result:
                     # A check that passes does not remove a defect. A task that
                     # errored after its last run attempt stays flagged.
-                    batch = self.execution_batches_map.get(batch_uuid)
+                    batch = self._execution_batches_map.get(batch_uuid)
                     flagged = batch is not None and task.identity_key in batch.errored
                     if flagged:
                         stat = TaskStatus.COMPLETED_WITH_ERROR

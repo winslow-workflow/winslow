@@ -13,6 +13,7 @@ from winslow.ui.store_adapter import (
     TuiCacheAdapter,
     TuiStoreAdapter,
 )
+from winslow.actions import EndSession
 from winslow.session import Session
 from winslow.state import create_state_store
 from winslow.util import generate_id
@@ -226,12 +227,13 @@ class Winslow(App):
             name=session.screen_name,
         )
 
-        workflow.store.add_listener(TuiStoreAdapter(self, session.screen_name))
-        workflow.store.add_listener(SessionLifecycleAdapter(self, session))
+        # The bus close at session end disconnects both bus adapters, so no
+        # explicit unsubscribe is necessary (see Workflow.archive_state).
+        TuiStoreAdapter(self, session.screen_name).attach(workflow)
+        SessionLifecycleAdapter(self, session).attach(workflow)
 
         cache_adapter = TuiCacheAdapter(self, session.screen_name)
-        workflow.workflow_cache.add_listener(cache_adapter)
-        workflow.global_cache.add_listener(cache_adapter)
+        workflow.add_cache_listener(cache_adapter)
         self._cache_adapters[session.session_id] = cache_adapter
 
     @on(SessionLifecycleEvent)
@@ -252,17 +254,12 @@ class Winslow(App):
 
         self.logger.debug(f"Ending session: {session_id} ({session.workflow})")
 
-        # Mark the session as ended, which freezes the elapsed timer, but keep
-        # the screen installed and the session in the store. The View button of
-        # the History tab can thus open the workflow screen, which is now
-        # read-only.
-        session.end()
-
-        # Detach the cache adapter: the global container outlives the session
-        # and would otherwise pin the dead adapter (see TuiCacheAdapter).
+        # Detach before the end: a quiet end releases the workflow cache at once.
         if adapter := self._cache_adapters.pop(session_id, None):
-            session.workflow.workflow_cache.remove_listener(adapter)
-            session.workflow.global_cache.remove_listener(adapter)
+            session.workflow.remove_cache_listener(adapter)
+
+        # The screen and the session stay installed for the History View button.
+        session.actions.submit(EndSession())
 
     @on(Button.Pressed, ".view-dashboard")
     async def view_dashboard(self):
