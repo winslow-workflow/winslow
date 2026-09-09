@@ -16,7 +16,7 @@ import pytest
 from winslow.constants import Mode
 from winslow.logger import RUNS_LOGGER_NAME
 from winslow.events import ExecutionStatusEvent
-from winslow.task.info import NOT_EVALUATED, TaskInfo, TaskRef
+from winslow.model import NOT_EVALUATED, TaskInfo, TaskRef
 from winslow.task.status import TaskStatus as S
 from winslow.task.task import Task
 
@@ -298,17 +298,21 @@ def test_buffered_record_with_object_extra_cannot_retain_it():
     assert ref() is None, "the buffered record retained the extra object"
 
 
-def test_history_search_refuses_a_builtin_filter_subclass():
-    """The search gate is by exact type: a project subclass of a builtin
-    filter can touch live-task API, so history must refuse it."""
-    from winslow.filter.builtin import GroupFilter, NameFilter
-    from winslow.ui.builtin_plugins.workflow.history import _foreign_filter_names
+def test_parse_syntax_checks_the_grammar_and_accepts_any_command():
+    """The client-side validator checks the query structure alone: any
+    command name parses, so the server keeps the one command vocabulary
+    (see Workflow.filter_keys)."""
+    import pytest
 
-    class ProjectFilter(NameFilter):
-        long_command = "project"
+    from winslow.filter.builtin import parse_syntax
 
-    filters = [NameFilter("a"), GroupFilter("b"), ProjectFilter("c")]
-    assert _foreign_filter_names(filters) == ["project"]
+    parse_syntax("!g infra & alpha")
+    parse_syntax("!some-project-filter value | beta")
+
+    with pytest.raises(ValueError):
+        parse_syntax("((unclosed")
+    with pytest.raises(ValueError):
+        parse_syntax("~!g foo")
 
 
 class _EventRecorder:

@@ -12,8 +12,8 @@ from winslow.ui.workflow_events import TaskStatusChanged, TaskLogUpdated
 class TasksPaneWidget(Widget):
     DEFAULT_CSS = package_css(__package__, "_pane_header.tcss", "tasks_pane.tcss")
 
-    def __init__(self, workflow, *args, **kwargs):
-        self.workflow = workflow
+    def __init__(self, context, *args, **kwargs):
+        self._context = context
         self._rows_by_key: dict = {}
         super().__init__(*args, **kwargs)
 
@@ -36,8 +36,14 @@ class TasksPaneWidget(Widget):
             row.log_line = event.line
 
     def compose(self):
-        yield TaskBar(workflow=self.workflow, classes="task-bar round pane-header")
-        yield TaskList(workflow=self.workflow, classes="round")
+        context = self._context
+        yield TaskBar(
+            options=context.client.batch_options(),
+            classes="task-bar round pane-header",
+        )
+        yield TaskList(
+            roster=context.roster, statuses=context.task_statuses, classes="round"
+        )
 
 
 class TasksPanePlugin(UIPlugin):
@@ -46,4 +52,4 @@ class TasksPanePlugin(UIPlugin):
     priority = 5
 
     def create_widget(self, context: RenderContext):
-        return TasksPaneWidget(workflow=context.workflow)
+        return TasksPaneWidget(context)

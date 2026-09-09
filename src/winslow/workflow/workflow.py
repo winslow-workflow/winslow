@@ -2,7 +2,6 @@ import operator
 import time
 import uuid
 from argparse import ArgumentParser, Namespace
-from dataclasses import asdict, replace
 from functools import cached_property
 
 from winslow._config import _ConfigBase
@@ -14,9 +13,10 @@ from winslow.cache import (
     workflow_cache_context,
 )
 from winslow.filter import FilterRegistry
+from winslow.filter.builtin import enforce_builtin_only
 from winslow.task import TaskIndex, TaskRegistry, TaskStatus
 from winslow.task.context import BatchOptions
-from winslow.task.info import TaskInfo
+from winslow.model import TaskInfo
 from winslow.task.status import PASSING_STATUSES, UNSUCCESSFUL_STATUSES
 from winslow.constants import Mode
 from winslow.runner.store import TaskStore, log_task_status
@@ -110,6 +110,8 @@ class Workflow(_ConfigBase):
         # references. initialize fills the list, release_tasks clears it.
         self.tasks = None
 
+        # The session baseline of the batch options, from the CLI. A submit can
+        # carry its own values; this never changes (see BatchOptions).
         self.batch_options = BatchOptions(
             dry_run=orchestrator_config.dry_run,
             force_run=orchestrator_config.force_run,
@@ -166,6 +168,12 @@ class Workflow(_ConfigBase):
     @property
     def disable_concurrency(self):
         return self.batch_options.disable_concurrency
+
+    @property
+    def root_dir(self):
+        """The project root of the process (see Orchestrator.directory). The
+        orchestrator stamps it onto the config; a bare test config has none."""
+        return getattr(self.orchestrator_config, "directory", None)
 
     @property
     def session(self):
@@ -367,9 +375,37 @@ class Workflow(_ConfigBase):
         self.global_cache.add_listener(listener)
 
     def remove_cache_listener(self, listener):
-        """Detach the listener from both caches (see add_cache_listener)."""
-        self.workflow_cache.remove_listener(listener)
+        """Detach the listener from both caches (see add_cache_listener). A
+        no-op on the workflow cache once the session end has released it
+        (see release_tasks): a teardown that races the session end must not
+        raise."""
+        if self._workflow_cache is not None:
+            self._workflow_cache.remove_listener(listener)
         self.global_cache.remove_listener(listener)
+
+    def caches(self):
+        """The caches this workflow can see, workflow scope first. After the
+        session end the read refuses with direction: the caches are released.
+        One read of the container, so the message matches the state."""
+        container = self._workflow_cache
+        if container is None:
+            if self.session is not None and self.session.has_ended:
+                raise ValueError(
+                    f"{self} has ended and released its caches - the recorded "
+                    f"cache reads live in the execution history (see "
+                    f"record_detail)."
+                )
+            raise InitializationError(
+                f"{self} caches read before initialize_tasks built them."
+            )
+        return (*container.caches(), *self.global_cache.caches())
+
+    def get_cache(self, name):
+        """The live cache named `name`, or None."""
+        for cache in self.caches():
+            if cache.get_name() == name:
+                return cache
+        return None
 
     def init_state(
         self,
@@ -467,27 +503,6 @@ class Workflow(_ConfigBase):
             # left it (see SessionPersistenceAdapter).
             self.runner.set_status(task, status, None, origin=Origin.SEED)
 
-    def record_batch_options(self):
-        """Fold the live batch options into the stored manifest. A restore
-        thus rebuilds the session with the toggles the user set."""
-        listener = self.persistence_listener
-        if listener is None:
-            return
-        try:
-            manifest = listener.load_manifest()
-            if manifest is None:
-                return
-            overrides = {
-                **(manifest.orchestrator_overrides or {}),
-                **asdict(self.batch_options),
-            }
-            listener.save_manifest(replace(manifest, orchestrator_overrides=overrides))
-        except Exception:
-            self.logger.error(
-                f"Could not update the manifest of {self.session_id}",
-                exc_info=True,
-            )
-
     def archive_state(self):
         """End persistence: stop the sweeper and the writer, unsubscribe them,
         then stamp and archive the manifest. After the durable writes the bus
@@ -547,6 +562,53 @@ class Workflow(_ConfigBase):
             # Report the bad filter and do not run everything silently. The parse
             # error message names the exact part that is wrong.
             raise MisconfigurationError(f"Invalid filter: {e}") from e
+
+    def roster_tasks(self):
+        """The tasks a roster read serves, in launch-filter order. A bad
+        launch filter logs and answers every task, so an interactive client
+        still renders the list (see get_filtered_tasks)."""
+        try:
+            return self.get_filtered_tasks()
+        except MisconfigurationError:
+            self.logger.error(
+                "The launch filter does not parse - the roster lists every task.",
+                exc_info=True,
+            )
+            return self.tasks
+
+    def record_infos(self):
+        """One TaskInfo per task with an execution record, across every
+        batch. The record stores survive the session end, so a history
+        search works after the task release (see ExecutionRecordStore)."""
+        return tuple(
+            {
+                record.info.key: record.info
+                for store in self.runner.record_stores()
+                for record in store.records
+            }.values()
+        )
+
+    def filter_keys(self, query, scope="tasks", builtin_only=False):
+        """The identity keys the query matches over the named corpus: 'tasks'
+        applies the full registry over the live tasks, 'history' the builtin
+        filters over the record infos. Raises ValueError with direction."""
+        if scope not in ("tasks", "history"):
+            raise ValueError(
+                f"{scope!r} names no filter scope - the scopes are "
+                f"'tasks' and 'history'."
+            )
+        parsed = self.filter_registry.parse(query)
+        if scope == "history":
+            enforce_builtin_only(parsed)
+            return tuple(info.key for info in parsed.apply(self.record_infos()))
+        if builtin_only:
+            enforce_builtin_only(parsed)
+        if self.tasks is None:
+            raise ValueError(
+                f"{self} has ended and released its tasks - search the "
+                f"execution records with scope='history'."
+            )
+        return tuple(task.identity_key for task in parsed.apply(self.tasks))
 
     def headless_run(self):
         # This looks unused, but the construction of the Session attaches it as

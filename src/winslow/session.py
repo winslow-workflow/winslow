@@ -1,3 +1,4 @@
+import logging
 import threading
 import time
 from contextlib import contextmanager
@@ -5,7 +6,7 @@ from enum import Enum
 
 from winslow.actions import ActionHandler
 from winslow.exceptions import SessionEndingError
-from winslow.logger import release_session_logging
+from winslow.logger import SessionLogBuffer, release_session_logging, run_logger_name
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
 from winslow.telemetry import emit_unscoped_error
 from winslow.task.context import LogContext, scoped_log_context
@@ -43,6 +44,9 @@ class Session:
         # The inbound half of the session boundary: every presentation layer
         # submits its actions here (see ActionHandler).
         self.actions = ActionHandler(self)
+        # A log backlog a caller attached before any subscriber existed (see
+        # SessionLogBuffer). None unless something sets it.
+        self.log_buffer = None
         # The workflow exists before its session, so the session connects itself
         # here. The runner reads the logging identity of this run through this
         # link (see runner.task_scope and ContextStampFilter). Persistence also
@@ -126,10 +130,10 @@ class Session:
             batch.request_stop()
 
     def finalize_if_drained(self):
-        """The rule from ENDING to ENDED, in one place: a session that is ending
-        finalizes when its last batch completes. The callers, which are the
-        lifecycle adapter of the app and the tests, call this when a batch
-        completes."""
+        """The rule from ENDING to ENDED, in one place: a session that is
+        ending finalizes when its last batch completes. The runner calls this
+        after each batch completion (see HeadlessRunner._execute_batch); on
+        any other state it is a no-op."""
         with self._lifecycle_lock:
             if self.is_ending and not self.active_batches:
                 self._finalize_end()
@@ -185,3 +189,256 @@ class Session:
         completed = sum(1 for s in statuses if s in PASSING_STATUSES)
         problematic = sum(1 for s in statuses if s in PROBLEMATIC_STATUSES)
         return completed, problematic, len(statuses)
+
+
+def _refuse_value(name, value, option):
+    if not option.choices:
+        return
+    # A multiselect value is a list; each element must be a choice.
+    items = (
+        value
+        if option.multiselect and isinstance(value, (list, tuple))
+        else [value]
+    )
+    choices = [str(c) for c in option.choices]
+    for item in items:
+        if str(item) not in choices:
+            raise ValueError(
+                f"{item!r} is not a choice of {name} - the choices are "
+                f"{choices}."
+            )
+
+
+def _convert_value(name, value, option):
+    """Parse a string value with the declared option type. A value that
+    already has a type passes through, so a typed payload stays as it is."""
+    if option.type is None or option.type is str or not isinstance(value, str):
+        return value
+    try:
+        return option.type(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"{value!r} is not a valid {name} - the option expects "
+            f"{option.type.__name__}: {exc}"
+        ) from exc
+
+
+def _converted(name, value, option):
+    if value is None:
+        return None
+    if option.multiselect and isinstance(value, (list, tuple)):
+        return [_convert_value(name, item, option) for item in value]
+    return _convert_value(name, value, option)
+
+
+def _manifest_value(option, value):
+    """A manifest-safe form of one option value. A JSON-native value stays
+    as it is; anything else stores as its formatted string, and the restore
+    parses it back through the option type (see _convert_value)."""
+    if isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_manifest_value(option, item) for item in value]
+    return option.format_value(value)
+
+
+def effective_workflow_values(workflow_kls, workflow_base, values):
+    """Every declared workflow option, resolved for the manifest: the caller
+    value, else the parsed CLI base, else the declared default. The manifest
+    thus rebuilds the session without the argv of the restoring process."""
+    effective = {}
+    for name, option in workflow_kls.config_meta.items():
+        value = (
+            values[name]
+            if name in values
+            else getattr(workflow_base, name, option.default)
+        )
+        if value is not None:
+            effective[name] = _manifest_value(option, value)
+    return effective
+
+
+def validate_values(
+    workflow_name, workflow_kls, orchestrator, values, overrides, workflow_base=None
+):
+    """Refuse a bad create payload with direction, before any initialization
+    work runs. Return (values, overrides), each string value parsed through
+    its declared option type. The CLI base satisfies a required option the
+    caller did not send."""
+    known_values = workflow_kls.config_meta
+    known_overrides = orchestrator.config_meta
+    for name in values:
+        if name not in known_values:
+            raise ValueError(
+                f"{name!r} names no option of {workflow_name} - the options "
+                f"are {sorted(known_values)}."
+            )
+        _refuse_value(name, values[name], known_values[name])
+    for name in overrides:
+        if name not in known_overrides:
+            raise ValueError(
+                f"{name!r} names no orchestrator override - the overrides "
+                f"are {sorted(known_overrides)}."
+            )
+        _refuse_value(name, overrides[name], known_overrides[name])
+    missing = [
+        name
+        for name, option in known_values.items()
+        if option.required
+        and option.default is None
+        and values.get(name) is None
+        and getattr(workflow_base, name, None) is None
+    ]
+    if missing:
+        raise ValueError(
+            f"{workflow_name} requires {', '.join(missing)} - descriptors "
+            f"names the options of the workflow."
+        )
+    return (
+        {
+            name: _converted(name, value, known_values[name])
+            for name, value in values.items()
+        },
+        {
+            name: _converted(name, value, known_overrides[name])
+            for name, value in overrides.items()
+        },
+    )
+
+
+def create_session(
+    orchestrator,
+    state_store,
+    registry,
+    workflow_name,
+    orchestrator_overrides=None,
+    workflow_values=None,
+    session_id=None,
+    seed=False,
+    origin="serve",
+):
+    """Build, initialize, persist, and register one session: the shared flow
+    behind the serve create_session request and the local AppClient. origin
+    stamps the manifest with the door that created the session. Raises with
+    a directional message on an unknown workflow; a failure after
+    registration marks the session errored and unregisters it.
+
+    session_id and seed serve a restore: the caller passes the id of the
+    stored manifest, so the session rebuilds under it, and seed=True replays
+    the stored snapshots onto the store after the eligibility pass (see
+    Workflow.seed_from_state)."""
+    try:
+        workflow_kls = orchestrator.workflow_registry[workflow_name]
+    except KeyError:
+        raise KeyError(
+            f"workflow {workflow_name!r} names no collected workflow. "
+            f"The workflows are {orchestrator.workflow_registry.names}."
+        ) from None
+
+    orchestrator_overrides = orchestrator_overrides or {}
+    workflow_values = workflow_values or {}
+    # The parsed CLI base fills every option the caller did not send, so an
+    # option outside the form keeps its command-line value (see
+    # Orchestrator.collect_workflow_args).
+    workflow_base = orchestrator.collect_workflow_args().get(workflow_kls)
+    workflow_values, orchestrator_overrides = validate_values(
+        workflow_name,
+        workflow_kls,
+        orchestrator,
+        workflow_values,
+        orchestrator_overrides,
+        workflow_base=workflow_base,
+    )
+    session_id = session_id or generate_id(workflow_name)
+    workflow_logger = logging.getLogger(run_logger_name(session_id))
+    workflow_logger.propagate = True
+    # Attached before any initialization work runs, so init and eligibility
+    # lines survive until a client subscribes (see SessionLogBuffer).
+    log_buffer = SessionLogBuffer()
+    workflow_logger.addHandler(log_buffer)
+
+    init_log_ctx = LogContext(
+        session_id=session_id,
+        workflow_name=workflow_name,
+        workflow_instance=workflow_name,
+        task_name=None,
+        task_instance=None,
+        batch_uuid=None,
+    )
+    with scoped_log_context(init_log_ctx):
+        workflow = orchestrator.initialize_workflow(
+            workflow_kls=workflow_kls,
+            orchestrator_overrides=orchestrator_overrides,
+            workflow_values=workflow_values,
+            workflow_base=workflow_base,
+            logger=workflow_logger,
+        )
+        session = Session(workflow, session_id=session_id)
+        session.log_buffer = log_buffer
+        registry.register(session)
+        try:
+            workflow.initialize_tasks(logger=workflow.logger)
+            workflow.check_pipeline_eligibility(logger=workflow.logger)
+            # Persistence starts only once the pipeline is runnable: a kill
+            # during the initialization above leaves no restore candidate.
+            # The manifest stores the effective workflow values, so a restore
+            # does not depend on the argv of its process (spec decision 9).
+            workflow.init_state(
+                state_store,
+                origin=origin,
+                orchestrator_overrides=orchestrator_overrides,
+                workflow_values=effective_workflow_values(
+                    workflow_kls, workflow_base, workflow_values
+                ),
+            )
+            if seed:
+                # After the eligibility pass: that pass overwrites earlier
+                # status writes (see Workflow.seed_from_state).
+                workflow.seed_from_state()
+        except Exception as exc:
+            registry.remove(session_id)
+            session.mark_error(exc)
+            raise
+    return session
+
+
+class SessionRegistry:
+    """The live sessions of one process, by session id. One registry serves
+    every consumer of the process: the TUI app, and the serve transports
+    (websocket, MCP), so each resolves the same map."""
+
+    def __init__(self):
+        self._sessions = {}
+        self._lock = threading.Lock()
+
+    def register(self, session):
+        with self._lock:
+            self._sessions[session.session_id] = session
+
+    def resolve(self, session_id):
+        """The live session under the id. Raises KeyError with direction."""
+        session = self.get(session_id)
+        if session is None:
+            raise KeyError(
+                f"session id {session_id!r} does not resolve to a live session - "
+                f"it ended, or it belongs to another process."
+            )
+        return session
+
+    def get(self, session_id):
+        return self._sessions.get(session_id)
+
+    def remove(self, session_id):
+        """Drop and return the session, or None: a teardown can run twice."""
+        with self._lock:
+            return self._sessions.pop(session_id, None)
+
+    def sessions(self):
+        # A tuple, so iteration survives a registration from another thread.
+        return tuple(self._sessions.values())
+
+    def __contains__(self, session_id):
+        return session_id in self._sessions
+
+    def __len__(self):
+        return len(self._sessions)

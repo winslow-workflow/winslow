@@ -1,26 +1,21 @@
+import asyncio
+
 from textual.containers import Horizontal
-from textual.message import Message
 from textual.reactive import reactive
 from textual.widget import Widget
 from textual.widgets import Label, Button, LoadingIndicator
 
-from winslow.events import SessionEndedEvent
-from winslow.session import SessionStatus
+from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.formatting import format_status_summary, format_elapsed
+from winslow.ui.reads import port_read
 
 SUMMARY_REFRESH_INTERVAL = 2
 
 
-class SessionEnded(Message):
-    def __init__(self, row, session):
-        super().__init__()
-        self.row = row
-        self.session = session
-
-
 class RestorableRow(Widget):
     """One open manifest on the dashboard: the session that a dead process
-    left behind, with its restore action (see Winslow._restore_session)."""
+    left behind, with its restore action. `manifest` is a ManifestRow value
+    (see AppClient.manifests)."""
 
     def __init__(self, manifest, *args, **kwargs):
         self.manifest = manifest
@@ -41,24 +36,37 @@ class RestorableRow(Widget):
 
 
 class SessionRow(Widget):
+    """One session on the dashboard, rendered from its SessionRow value. The
+    tick refreshes the value through the AppClient of the app."""
+
     MAX_TITLE_LENGTH = 20
 
     is_loading = reactive(True)
 
-    def __init__(self, workflow_name, session=None, error=None, *args, **kwargs):
+    def __init__(self, workflow_name, row=None, error=None, *args, **kwargs):
         self._workflow_name = workflow_name
-        self.session = session
+        self.row = row
         self.error = error
         super().__init__(*args, **kwargs)
 
-    def _summary_label(self):
-        return format_status_summary(*self.session.task_status_summary)
+    @property
+    def session_id(self):
+        return self.row.session_id if self.row is not None else None
+
+    @property
+    def has_ended(self):
+        return self.row is not None and self.row.status in ("ENDED", "ERROR")
 
     def _refresh_summary(self):
-        if self.session is None:
+        if self.row is None:
             return
-        self.query_one(".summary", Label).update(self._summary_label())
-        self.query_one(".elapsed", Label).update(format_elapsed(self.session.elapsed))
+        summary = self.row.task_status_summary
+        self.query_one(".summary", Label).update(
+            format_status_summary(
+                summary.completed, summary.problematic, summary.total
+            )
+        )
+        self.query_one(".elapsed", Label).update(format_elapsed(self.row.elapsed))
 
     def _truncate(self, title):
         if len(title) < self.MAX_TITLE_LENGTH:
@@ -67,10 +75,10 @@ class SessionRow(Widget):
 
     def on_mount(self):
         self.border_title = self._truncate(self._workflow_name)
-        # A history row has a session. A pending row gets its session at
+        # A history row has a session value. A pending row gets its value at
         # complete().
-        if self.session is not None:
-            self.border_subtitle = self.session.workflow.identifier_suffix
+        if self.row is not None:
+            self.border_subtitle = self.row.identifier_suffix
         self.query_one(".waiting", Label).display = False
 
         if self.error:
@@ -82,7 +90,7 @@ class SessionRow(Widget):
 
         # A history row is complete and its session has ended. Show the final
         # state immediately, with no timer for a live refresh.
-        if self.session is not None and self.session.has_ended:
+        if self.has_ended:
             self.query_one(".workflow-end").remove()
             self.is_loading = False
             self._refresh_summary()
@@ -93,20 +101,14 @@ class SessionRow(Widget):
         self.query_one(".loading-state").display = loading
         self.query_one(".ready-state").display = not loading
 
-    def complete(self, session):
-        self.session = session
-        self.border_subtitle = session.workflow.identifier_suffix
+    def complete(self, row):
+        self.row = row
+        self.border_subtitle = row.identifier_suffix
         self.is_loading = False
         self._refresh_summary()
-        # The bus fires the end once; the session-end sweep disconnects the
-        # subscription. The tick only refreshes the display.
-        session.workflow.subscribe(SessionEndedEvent, self._on_session_ended)
+        # The tick only refreshes the display; the app moves the row to the
+        # history on the session_ended event (see Winslow._connect_session).
         self.set_interval(SUMMARY_REFRESH_INTERVAL, self._tick)
-
-    def _on_session_ended(self, event):
-        # This is display only. The SessionLifecycleAdapter of the app does
-        # the finalization, and this row only reads the outcome.
-        self.post_message(SessionEnded(self, self.session))
 
     @classmethod
     def _waiting_text(cls, batches):
@@ -117,19 +119,41 @@ class SessionRow(Widget):
             f"({tasks} task{'s' if tasks != 1 else ''})..."
         )
 
-    def begin_ending(self):
+    def _active_batches(self):
+        """The active batch rows, or None when the read fails (an outage
+        skips one refresh; the tick reads again). Runs off the UI thread
+        (see _tick)."""
+        client = self.app.client.session(self.session_id)
+        snapshot = port_read(self, client.snapshot, quiet=True)
+        if snapshot is None:
+            return None
+        return [b for b in snapshot.batches if b.status in ACTIVE_BATCH_STATUSES]
+
+    async def begin_ending(self):
         label = self.query_one(".waiting", Label)
         label.display = True
-        label.update(self._waiting_text(self.session.active_batches))
+        batches = await asyncio.to_thread(self._active_batches)
+        if batches is not None:
+            label.update(self._waiting_text(batches))
 
-    def _tick(self):
-        self._refresh_summary()
-        if self.session is None:
+    def fetch_row(self):
+        """The current SessionRow value of this session, or the last known
+        one when the read fails or finds no match. Runs off the UI thread
+        (see _tick)."""
+        rows = port_read(self, self.app.client.sessions, quiet=True)
+        if rows is None:
+            return self.row
+        return next((r for r in rows if r.session_id == self.session_id), self.row)
+
+    async def _tick(self):
+        if self.row is None:
             return
-        if self.session.status is SessionStatus.ENDING:
-            self.query_one(".waiting", Label).update(
-                self._waiting_text(self.session.active_batches)
-            )
+        self.row = await asyncio.to_thread(self.fetch_row)
+        self._refresh_summary()
+        if self.row.status == "ENDING":
+            batches = await asyncio.to_thread(self._active_batches)
+            if batches is not None:
+                self.query_one(".waiting", Label).update(self._waiting_text(batches))
 
     def compose(self):
         with Horizontal(classes="loading-state"):

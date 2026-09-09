@@ -30,6 +30,7 @@ from winslow.exceptions import (
     SerializationError,
 )
 from winslow.logger import LOGGER
+from winslow.model import StatusSnapshot
 from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE, config
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
@@ -64,17 +65,6 @@ class SessionManifest:
     started_at: float
     ended_at: float | None = None
     outcome: str | None = None
-
-
-@dataclass(frozen=True)
-class StatusSnapshot:
-    """The latest snapshot of one task in one session. The key is the task
-    identity key; the status is a TaskStatus name; checked_at is a wall-clock
-    epoch."""
-
-    key: str
-    status: str
-    checked_at: float
 
 
 @dataclass(frozen=True)
@@ -385,6 +375,9 @@ class SessionPersistenceAdapter:
         self._batch_logs = {}
         self._queue = queue.Queue()
         self._closed = False
+        # Counts the writes the writer thread could not land. flush and close
+        # report them, so a broken store never passes as durable silently.
+        self._write_failures = 0
         self._writer = threading.Thread(
             target=self._drain_queue, name=f"state-{session_id}", daemon=True
         )
@@ -436,8 +429,8 @@ class SessionPersistenceAdapter:
         )
 
     def attach(self, workflow):
-        """Wire each handler onto its session event (see TuiStoreAdapter for
-        the same pattern on the UI side)."""
+        """Wire each handler onto its session event (see WorkflowScreen.connect
+        for the same pattern on the UI side)."""
         for event, handler in self._subscriptions():
             workflow.subscribe(event, handler)
 
@@ -513,6 +506,7 @@ class SessionPersistenceAdapter:
                 else:
                     self._state_store.save_status_snapshot(self.session_id, entry)
             except Exception:
+                self._write_failures += 1
                 LOGGER.error(f"Could not store {entry}", exc_info=True)
             finally:
                 self._queue.task_done()
@@ -526,11 +520,25 @@ class SessionPersistenceAdapter:
                 {key: list(lines) for key, lines in entry.logs.items()},
             )
 
+    @property
+    def write_failures(self):
+        """The count of queued writes that never landed on the store."""
+        return self._write_failures
+
+    def _report_dropped_writes(self):
+        if self._write_failures:
+            LOGGER.error(
+                f"{self._write_failures} state writes of session "
+                f"{self.session_id} failed and were dropped - the stored "
+                f"snapshots are incomplete, so a restore can re-run tasks."
+            )
+
     def flush(self):
         """Block until every queued write has landed on the store. The close
         of a batch flushes, so a closed record implies durable snapshots."""
         if not self._closed:
             self._queue.join()
+            self._report_dropped_writes()
 
     def close(self):
         """Flush and stop the writer thread. The session end calls this
@@ -540,6 +548,7 @@ class SessionPersistenceAdapter:
         self._queue.join()
         self._closed = True
         self._queue.put(_STOP)
+        self._report_dropped_writes()
 
 
 class StaleSweeper:
