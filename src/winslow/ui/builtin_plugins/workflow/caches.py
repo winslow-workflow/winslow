@@ -26,7 +26,7 @@ from winslow.ui.builtin_plugins.workflow.history import HistoryPlugin
 from winslow.ui.modals.cache_value import CacheValue
 from winslow.ui.widgets.common import TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
-from winslow.ui.workflow_events import CacheUpdated
+from winslow.ui.workflow_events import CacheUpdated, SessionEnded
 from winslow.util import execute_in_threads, safe_repr
 
 _CSS = package_css(__package__, "_pane_header.tcss", "caches.tcss")
@@ -170,6 +170,7 @@ class CachesPane(SearchFlowMixin, Widget):
 
     def __init__(self, workflow, *args, **kwargs):
         self.workflow = workflow
+        self._tick_timer = None
         self._rows = {}
         self._cards = {}
         self._search = ""
@@ -211,8 +212,18 @@ class CachesPane(SearchFlowMixin, Widget):
             self._cards[card.cache] = card
             for row in card.query(CacheEntryRow).results():
                 self._rows[(row.cache, row.entry_name)] = row
-        self.set_interval(CACHE_TICK_SECONDS, self._schedule_refresh)
-        self._schedule_refresh()
+        # A pane mounted after the session end is a static snapshot: the
+        # workflow cache is released, so a tick would read a dead container.
+        if not self.workflow.session.has_ended:
+            self._tick_timer = self.set_interval(
+                CACHE_TICK_SECONDS, self._schedule_refresh
+            )
+            self._schedule_refresh()
+
+    @on(SessionEnded)
+    def _stop_ticking(self):
+        if self._tick_timer is not None:
+            self._tick_timer.stop()
 
     # --- refresh: every render comes from a peek --------------------------
 

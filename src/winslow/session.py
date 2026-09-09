@@ -3,6 +3,7 @@ import time
 from contextlib import contextmanager
 from enum import Enum
 
+from winslow.actions import ActionHandler
 from winslow.exceptions import SessionEndingError
 from winslow.logger import release_session_logging
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
@@ -39,6 +40,9 @@ class Session:
         # batch can start in a session that is ending, and no end can occur
         # between the admission check of a batch and its registration.
         self._lifecycle_lock = threading.Lock()
+        # The inbound half of the session boundary: every presentation layer
+        # submits its actions here (see ActionHandler).
+        self.actions = ActionHandler(self)
         # The workflow exists before its session, so the session connects itself
         # here. The runner reads the logging identity of this run through this
         # link (see runner.task_scope and ContextStampFilter). Persistence also

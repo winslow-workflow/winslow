@@ -30,10 +30,13 @@ class Graph(_Base):
     workflow_cache = CacheContainerRef("_workflow_cache_container", get_workflow_cache)
     global_cache = CacheContainerRef("_global_cache_container", get_global_cache)
 
-    def __init__(self, orchestrator_config, workflow_config):
+    def __init__(self, orchestrator_config, workflow_config, logger=LOGGER):
         super().__init__(orchestrator_config)
 
         self.workflow_config = workflow_config
+        # The workflow hands its session logger in, so the initialization
+        # messages reach the log pane of the session.
+        self.logger = logger
 
         # Nothing stamps a graph, so the descriptors always use the fallbacks.
         self._workflow_cache_container = None
@@ -204,7 +207,7 @@ class Graph(_Base):
                     params = SimpleNamespace(**params)
 
                     if self._should_initialize_task(task_kls, parameters=params):
-                        LOGGER.debug(
+                        self.logger.debug(
                             f"Initializing {task_kls} with parameters {params}"
                         )
                         task_obj = self.initialize_task(task_kls, parameters=params)
@@ -224,9 +227,8 @@ class Graph(_Base):
             result = False
 
         if not result:
-            LOGGER.info(
-                f"Skipping initialization: {task_kls}. Config: {self.workflow_config}. Parameters: {parameters}"
-            )
+            suffix = f" Parameters: {parameters}." if parameters is not None else ""
+            self.logger.info(f"Skipping initialization: {task_kls}.{suffix}")
         return result
 
     def initialize_task(self, task_kls, parameters=None):

@@ -9,7 +9,7 @@ class CacheListener:
     events can run under the process-level population lock, so a callback
     must not call back into the cache runtime. A callback must not block, and
     must not take a lock that another thread holds while it waits on this one
-    (see StoreListener). An invalidation cascade emits once, after all drops,
+    (see SessionBus). An invalidation cascade emits once, after all drops,
     outside the field locks. A raising callback is logged and skipped (see
     ListenerMixin._emit).
 

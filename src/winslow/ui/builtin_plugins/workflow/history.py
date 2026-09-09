@@ -17,6 +17,7 @@ from textual.widgets import (
 )
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
+from winslow.actions import StopBatch
 from winslow.filter.builtin import BUILTIN_FILTERS
 from winslow.runner.execution import ExecutionStatus
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
@@ -208,8 +209,13 @@ class BatchCard(Widget):
 
     @on(Button.Pressed, ".stop-btn")
     def request_stop(self):
-        self.batch.request_stop()
-        self.query_one(".stop-btn", Button).disabled = True
+        # The workflow screen owns the session; the card reaches the action
+        # handler through it. The acceptance means "stop requested".
+        ack = self.screen.session.actions.submit(StopBatch(batch_uuid=self.batch.uuid))
+        if ack.accepted:
+            self.query_one(".stop-btn", Button).disabled = True
+        else:
+            self.notify(ack.reason, severity="warning")
 
 
 class HistoryPane(SearchFlowMixin, Widget):
@@ -296,7 +302,7 @@ class HistoryPane(SearchFlowMixin, Widget):
         self._apply_visibility()
 
     def _get_store(self, batch):
-        return self.workflow.runner.execution_record_store_map[batch.uuid]
+        return self.workflow.runner.record_store(batch.uuid)
 
     def _register_card(self, card):
         self._cards[card.batch.uuid] = card
@@ -326,12 +332,7 @@ class HistoryPane(SearchFlowMixin, Widget):
                     # checkbox column of the task bar has the same two rows.
                     yield Checkbox("placeholder", classes="placeholder", disabled=True)
         with VerticalScroll(id="cards-section"):
-            # Iterate over a list. Iteration over the dict fails if another
-            # thread updates the map during the read, because a worker thread
-            # registers a batch.
-            for batch in reversed(
-                list(self.workflow.runner.execution_batches_map.values())
-            ):
+            for batch in reversed(self.workflow.runner.batches):
                 yield from self._compose_batch(batch)
 
     async def on_mount(self):

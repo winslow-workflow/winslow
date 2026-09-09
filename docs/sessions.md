@@ -21,8 +21,8 @@ store. The directory holds three record kinds:
 - **Status snapshots** — one file per task, named by the task identity key, holding the latest terminal
   status (`COMPLETED`, `COMPLETED_WITH_ERROR`, `COMPLETED_PREVIOUSLY`, `FORCE_SUCCESS`, `FAILED`,
   `ERROR`) and the time of the check. Each terminal transition replaces the file atomically. The
-  writes drain through a writer thread of the session, and the close of a batch waits for them, so
-  a closed batch record implies that its snapshots are on disk. Snapshots are session-scoped: a
+  writes drain through a writer thread of the session, and the close record of a batch queues
+  behind them, so a closed batch record implies that its snapshots are on disk. Snapshots are session-scoped: a
   check result is evidence gathered under one session's configuration, so a fresh session always
   starts with zero trust, and only a restore under the same session id inherits the snapshots.
 - **Batch records** — one directory per batch: a `record.json` written on submit and stamped at the
@@ -110,11 +110,13 @@ class Extract(Task):
         ...
 ```
 
-The rule is uniform wherever a check would run: the check pass, dependency resolution, and the
-pre-run completion check all consult the session's snapshots first. A passing snapshot younger than
-the effective TTL counts as verified, the runner sets that status without calling `check()`, and
-the snapshot keeps its original check time. Because the snapshots survive a process death, the trust
-window spans a kill and a restore of the same session.
+The trust rule lives in the state writers, so the store status itself carries it. A restore seeds a
+passing snapshot younger than the effective TTL as its recorded status, and the session's sweeper
+flips a live status to [STALE](#stale) when its TTL lapses. The runner then reads the store: a
+passing status skips the pre-run completion check and satisfies dependency resolution, and an
+explicit check batch always runs `check()`. The seeded status keeps its original check time, and
+because the snapshots survive a process death, the trust window spans a kill and a restore of the
+same session.
 
 ## STALE
 

@@ -56,6 +56,13 @@ class TaskSelected(Message):
         super().__init__()
 
 
+class SessionEnded(Message):
+    """The session archived. A pane stops its live machinery, for example a
+    refresh timer."""
+
+    BUBBLE = False
+
+
 class CacheUpdated(Message):
     """Any cache event. The pane repaints from a fresh peek of the cache
     itself, so the message carries nothing."""

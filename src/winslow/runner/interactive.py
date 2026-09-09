@@ -5,6 +5,7 @@ from contextlib import contextmanager, nullcontext
 from winslow.cache import peek_phase_cache
 from winslow.cache.recording import recording_cache_reads
 from winslow.decorators import snapshot_transients
+from winslow.events import Origin
 from winslow.exceptions import TaskBlock
 from winslow.logger import InteractiveLogHandler, INLINE_FORMATTER, get_task_dispatcher
 from winslow.task import TaskStatus
@@ -35,7 +36,7 @@ class InteractiveRunner(HeadlessRunner):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.execution_record_store_map: dict[str, ExecutionRecordStore] = {}
+        self._execution_record_store_map: dict[str, ExecutionRecordStore] = {}
         # The thread id is part of the claim, so only same-thread reentrancy
         # (process -> check on one task) passes. Two threads of the same batch
         # that reach one task must wait, as in any other clash.
@@ -44,18 +45,23 @@ class InteractiveRunner(HeadlessRunner):
             threading.Condition()
         )  # protects _active_tasks, notified on a release
 
-    def set_status(self, task, status, batch_uuid, excluded_callbacks=None):
-        super().set_status(
-            task, status, batch_uuid, excluded_callbacks=excluded_callbacks
-        )
+    def record_store(self, batch_uuid):
+        return self._execution_record_store_map.get(batch_uuid)
+
+    def record_stores(self):
+        # A copy, so iteration survives a map update from another thread.
+        return list(self._execution_record_store_map.values())
+
+    def set_status(self, task, status, batch_uuid, origin=Origin.RUN):
+        super().set_status(task, status, batch_uuid, origin=origin)
         # A dependency that is probed for the batch is not part of the batch.
         # Only the tasks of the batch get an execution record.
-        store = self.execution_record_store_map.get(batch_uuid) if batch_uuid else None
+        store = self._execution_record_store_map.get(batch_uuid) if batch_uuid else None
         if store is not None and task.identity_key in store:
             store[task.identity_key] = status
 
     def _track(self, batch_uuid, task, phase):
-        store = self.execution_record_store_map[batch_uuid]
+        store = self._execution_record_store_map[batch_uuid]
         if task.identity_key not in store:
             return nullcontext()
         return store.get_record(task.identity_key).track_phase(phase)
@@ -124,13 +130,13 @@ class InteractiveRunner(HeadlessRunner):
             self._release_claim(task)
 
     def _mirror_batch_status(self, task, status, batch_uuid):
-        store = self.execution_record_store_map[batch_uuid]
+        store = self._execution_record_store_map[batch_uuid]
         if task.identity_key in store:
             store[task.identity_key] = status
 
     @contextmanager
     def task_log_scope(self, task, batch_uuid):
-        store = self.execution_record_store_map[batch_uuid]
+        store = self._execution_record_store_map[batch_uuid]
         if task.identity_key not in store:
             with super().task_log_scope(task, batch_uuid):
                 yield
@@ -163,7 +169,7 @@ class InteractiveRunner(HeadlessRunner):
             # The cache is reset at the next checkability gate only, so it is
             # still complete here. Snapshot the values that this phase
             # materialized.
-            store = self.execution_record_store_map[batch_uuid]
+            store = self._execution_record_store_map[batch_uuid]
             if task.identity_key in store:
                 record = store.get_record(task.identity_key)
                 if snapshot := snapshot_transients(
@@ -174,7 +180,7 @@ class InteractiveRunner(HeadlessRunner):
                     record.cache_snapshots[phase] = snapshots
 
     def _stop_requested(self, batch_uuid):
-        batch = self.execution_batches_map.get(batch_uuid)
+        batch = self._execution_batches_map.get(batch_uuid)
         return batch is not None and batch.stop_requested
 
     def _abort_if_stopped(self, task, batch_uuid) -> bool:
@@ -199,47 +205,28 @@ class InteractiveRunner(HeadlessRunner):
         # An empty record store: the tasks of the dead process left no
         # records, but the history pane reads a store for every batch.
         root_dir = getattr(self.orchestrator_config, "directory", None)
-        self.execution_record_store_map[batch.uuid] = ExecutionRecordStore(
-            batch.uuid, [], root_dir=root_dir
+        self._execution_record_store_map[batch.uuid] = ExecutionRecordStore(
+            self.workflow.bus, batch.uuid, [], root_dir=root_dir
         )
 
-    def _batch_log_dump(self, batch):
-        store = self.execution_record_store_map[batch.uuid]
-        return {
-            key: lines for key in store if (lines := list(store.get_record(key).logs))
-        }
-
-    def _batch_started(self, batch, tasks):
+    def _batch_admitted(self, batch, tasks):
         root_dir = getattr(self.orchestrator_config, "directory", None)
-        exec_store = ExecutionRecordStore(batch.uuid, [], root_dir=root_dir)
-        # The UI observers of the main store follow the batch and receive its
-        # execution events. The session-owned listeners subscribe to the main
-        # store only: a copy would pin them after the session end.
-        # TODO: replace the listener copy with the session event bus (see ROADMAP.md).
-        session_owned = {
-            self.workflow.persistence_listener,
-            self.workflow.stale_sweeper,
-        }
-        for listener in self.store.listeners:
-            if listener not in session_owned:
-                exec_store.add_listener(listener)
-
+        # The record store publishes on the session bus, so one subscription
+        # covers every batch, past and future.
+        exec_store = ExecutionRecordStore(
+            self.workflow.bus, batch.uuid, [], root_dir=root_dir
+        )
         for task in tasks:
             exec_store.register(task)
 
-        self.execution_record_store_map[batch.uuid] = exec_store
-        self.store.emit_batch_created(batch)
+        self._execution_record_store_map[batch.uuid] = exec_store
 
     def _batch_finished(self, batch, tasks):
         # The sweep replaces each stub with a full capture, so history shows
         # the attribute values after this execution (see TaskInfo.from_task).
-        store = self.execution_record_store_map[batch.uuid]
+        store = self._execution_record_store_map[batch.uuid]
         for task in tasks:
             store.capture(task)
-        self.store.emit_batch_completed(batch)
-
-    def eligible_tasks(self, tasks):
-        return [t for t in tasks if not self._refuse_ineligible(t)]
 
     def submit_check_single(self, task):
         return self._submit(ExecutionAction.CHECK, [task], self._single_check_body)
@@ -271,7 +258,7 @@ class InteractiveRunner(HeadlessRunner):
             self.set_status(tasks[0], TaskStatus.BLOCKED, batch.uuid)
 
     def _abort_unstarted(self, tasks, batch):
-        store = self.execution_record_store_map[batch.uuid]
+        store = self._execution_record_store_map[batch.uuid]
         for task in tasks:
             if store.get(task.identity_key) is TaskStatus.READY_TO_PROCESS:
                 self.set_status(task, TaskStatus.ABORTED, batch.uuid)

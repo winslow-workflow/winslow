@@ -6,10 +6,10 @@ import time
 
 import pytest
 
+from winslow.events import Origin, TaskStatusEvent
 from winslow.runner.execution import ExecutionStatus
 from winslow.session import Session
 from winslow.state import BatchRecord
-from winslow.store import StoreListener
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus as S
 
 from harness import build_workflow, by_name, run_batch
@@ -32,7 +32,7 @@ def died_mid_flight(e2e_repo, state_store, mode):
 
 def test_restore_seeds_the_terminal_statuses(e2e_repo, state_store, mode):
     first, session = died_mid_flight(e2e_repo, state_store, mode)
-    outcomes = {task.identity_key: status for task, status in first.store.items()}
+    outcomes = dict(first.store.items())
     # A dead batch that names every task: a snapshot wins over the roster, and
     # a roster task with no snapshot stays ready.
     state_store.save_batch(
@@ -135,7 +135,7 @@ def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):
     )
     second.seed_from_state()
 
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
     assert batch.task_count == 3
     # The stored option snapshot restores the context of the history card.
@@ -171,7 +171,7 @@ def test_a_record_close_failure_does_not_break_the_restore(
         second.seed_from_state()
 
     # The batch seeded in memory and the session stays a restore candidate.
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
     assert state_store.list_open_manifests()
     # Only the close stamp is lost: the next restore seeds the batch again.
@@ -205,7 +205,7 @@ def test_unsettled_tasks_of_a_dead_batch_stay_ready(e2e_repo, state_store, mode)
     # story. A rerun re-verifies through the normal pre-run check.
     assert second.store[tasks["Alpha"]] is S.READY_TO_PROCESS
     assert second.store[tasks["Ineligible"]] is S.SKIPPED
-    batch = second.runner.execution_batches_map["dead-batch"]
+    batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
 
 
@@ -242,18 +242,20 @@ def test_seed_writes_reach_the_other_listeners(e2e_repo, state_store, mode):
         e2e_repo, state_store, mode, session_id=session.session_id
     )
     seen = {}
+    origins = set()
 
-    class Recorder(StoreListener):
-        def on_task_status(self, key, status):
-            seen[key] = status
+    def record(event):
+        seen[event.key] = event.status
+        origins.add(event.origin)
 
-    second.store.add_listener(Recorder())
+    second.bus.subscribe(TaskStatusEvent, record)
     second.seed_from_state()
 
-    # Every replayed snapshot reached the listener as a normal store event;
-    # only the persistence listener was excluded.
+    # Every replayed snapshot reached the subscriber as a normal store event,
+    # stamped SEED; the persistence subscriber skips that origin itself.
     snapshots = state_store.load_status_snapshots(session.session_id)
     assert set(seen) == set(snapshots)
+    assert origins == {Origin.SEED}
     for key, entry in snapshots.items():
         expected = S[entry.status]
         if expected in PASSING_STATUSES:
