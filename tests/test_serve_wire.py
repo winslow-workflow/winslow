@@ -1,12 +1,26 @@
-"""Pure winslow.serve.wire function tests that need no live session or
-websocket: the payload builders take a cache/workflow/session object
-directly and return a plain dict."""
+"""Pure payload tests that need no live session or websocket: the DTO
+constructors take a cache object directly and return a plain dict, and a
+snapshot turns into the events that produced it."""
 
 import time
 from argparse import Namespace
 
 from winslow.cache import WorkflowCache, entry
-from winslow.serve.wire import cache_card_payload
+from dataclasses import asdict
+
+from winslow.events import (
+    BatchCompletedEvent,
+    BatchCreatedEvent,
+    Origin,
+    SessionEndedEvent,
+    TaskStatusEvent,
+)
+from winslow.model import BatchInfo, CacheInfo, SessionSnapshot
+from winslow.task.status import TaskStatus
+
+
+def cache_card_payload(cache):
+    return asdict(CacheInfo.from_cache(cache))
 
 
 class FlakyCache(WorkflowCache):
@@ -50,3 +64,52 @@ def test_cache_card_previews_a_warm_entry():
 
     card = cache_card_payload(cache)
     assert card["values"]["value"] == "first value"
+
+
+def _batch(uuid, completed_at=None):
+    return BatchInfo(
+        uuid=uuid,
+        action="RUN",
+        status="COMPLETED" if completed_at else "RUNNING",
+        task_count=1,
+        tasks={"k": "K"},
+        options=None,
+        created_at=1.0,
+        started_at=1.0,
+        completed_at=completed_at,
+        error=None,
+    )
+
+
+def test_a_snapshot_replays_as_the_events_that_produced_it():
+    """Batches first, each completed one right after its creation, then the
+    task statuses, then the end (see SessionSnapshot.as_events)."""
+    done, live = _batch("b-1", completed_at=2.0), _batch("b-2")
+    snapshot = SessionSnapshot(
+        session_id="s-1",
+        workflow="wf",
+        status="ENDED",
+        tasks={"a": "COMPLETED", "b": "RUNNING"},
+        session_log_backlog=(),
+        batches=(done, live),
+    )
+    assert snapshot.as_events() == (
+        BatchCreatedEvent(info=done),
+        BatchCompletedEvent(info=done),
+        BatchCreatedEvent(info=live),
+        TaskStatusEvent(key="a", status=TaskStatus.COMPLETED, origin=Origin.RUN),
+        TaskStatusEvent(key="b", status=TaskStatus.RUNNING, origin=Origin.RUN),
+        SessionEndedEvent(session_id="s-1"),
+    )
+
+
+def test_a_live_snapshot_replays_no_end():
+    snapshot = SessionSnapshot(
+        session_id="s-1",
+        workflow="wf",
+        status="ACTIVE",
+        tasks={},
+        session_log_backlog=(),
+        batches=(),
+    )
+    assert snapshot.as_events() == ()

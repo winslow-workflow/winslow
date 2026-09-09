@@ -11,8 +11,10 @@ from winslow.ui.screens.base import SlottedScreen
 from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
-from winslow.ui.reads import port_read
+from winslow.ui.reads import READ_FAILURES, port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
+
+SESSION_ADOPTION_INTERVAL = 2
 
 
 class DashboardScreen(SlottedScreen):
@@ -47,10 +49,18 @@ class DashboardScreen(SlottedScreen):
     async def on_mount(self):
         self.logger.info(f"{len(self.descriptors.workflows)} workflow classes loaded.")
 
-        await self._populate_restorable()
+        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
+        await self._refresh_restorable(manifests or ())
+
+        await self._adopt_sessions()
+        self.set_interval(SESSION_ADOPTION_INTERVAL, self._schedule_session_adoption)
 
         # Start each auto_init workflow without a form: create_session fills
-        # every value from the parsed base of the workflow.
+        # every value from the parsed base of the workflow. auto_init is the
+        # duty of the session owner, so a wire client starts none (see
+        # Orchestrator._auto_init_sessions).
+        if not self.app.owns_sessions:
+            return
         for descriptor in self.descriptors.workflows:
             if descriptor.auto_init:
                 self.logger.info(f"auto_init: initializing {descriptor.workflow}")
@@ -58,6 +68,42 @@ class DashboardScreen(SlottedScreen):
                     workflow_name=descriptor.workflow,
                     form_values=FormValues(),
                 )
+
+    def _schedule_session_adoption(self):
+        # exclusive: a new poll replaces a slow one instead of queueing.
+        self.run_worker(
+            self._adopt_sessions(), exclusive=True, group="session-adoption"
+        )
+
+    async def _adopt_sessions(self):
+        """Give this client a row and a screen for every session it does not
+        show: another client of the serve process created them. A live one
+        joins the session list, an ended one the history; a session this
+        client creates enters through _start_session instead."""
+        rows = await asyncio.to_thread(
+            port_read, self, self.client.sessions, quiet=True
+        )
+        if rows is None:
+            return
+        widgets = list(self.query(SessionRow).results())
+        if any(widget.session_id is None for widget in widgets):
+            # A create of this client is in flight; the next poll adopts.
+            return
+        known = {widget.session_id for widget in widgets}
+        for row in rows:
+            if row.session_id in known or row.status == "ERROR":
+                continue
+            try:
+                await self.app.adopt_session(row)
+            except READ_FAILURES:
+                # The session ended between the read and the adoption; the
+                # poll reads again.
+                continue
+        manifests = await asyncio.to_thread(
+            port_read, self, self.client.manifests, quiet=True
+        )
+        if manifests is not None:
+            await self._refresh_restorable(manifests)
 
     @on(OptionList.OptionSelected, "#workflow-selector")
     def on_workflow_selected(self, event):
@@ -168,17 +214,26 @@ class DashboardScreen(SlottedScreen):
         row = next(a for a in event.button.ancestors if isinstance(a, SessionRow))
         self.app.push_screen(ErrorDetail(row.error))
 
-    async def _populate_restorable(self):
-        """Fill the Restore pane with the open manifests of the state store.
+    async def _refresh_restorable(self, manifests):
+        """Reconcile the Restore pane with the open manifests: another client
+        can restore or create one at any time, so the poll calls this again.
         With nothing to restore the pane stays hidden."""
         try:
             widget = self.query_one(RestorableWidget)
         except NoMatches:
             return
-        manifests = await asyncio.to_thread(port_read, self, self.client.manifests)
+        current = {
+            row.manifest.session_id for row in self.query(RestorableRow).results()
+        }
+        if current == {manifest.session_id for manifest in manifests}:
+            return
+        for row in list(self.query(RestorableRow).results()):
+            await row.remove()
+        await self.query("#restore-all").remove()
         if not manifests:
             widget.display = False
             return
+        widget.display = True
         self.query("#restorable-list-placeholder").add_class("hidden")
         restore_list = self.query_one("#restorable-list")
         restore_list.remove_class("hidden")
@@ -216,11 +271,11 @@ class DashboardScreen(SlottedScreen):
         await session_list.mount(row)
         return row
 
-    async def add_history_session(self, session_row) -> SessionRow:
+    async def add_history_session(self, session_info) -> SessionRow:
         self.query("#history-list-placeholder").add_class("hidden")
         history_list = self.query_one("#history-list")
         history_list.remove_class("hidden")
-        row = SessionRow(session_row.instance_name, row=session_row)
+        row = SessionRow(session_info.instance_name, row=session_info)
         await history_list.mount(row)
         return row
 

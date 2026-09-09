@@ -1,198 +1,17 @@
 """The data model of the session port: every value shape that crosses the
 port or the serve boundary (the payload rule, see winslow.events). Every
 field is JSON-safe. The local adapter hands these instances through
-in-process (see winslow.client.local). winslow.serve.wire serializes each
-with dataclasses.asdict and winslow.codec decodes the inbound frames, so a
-wire shape has exactly one declaration.
+in-process (see winslow.client.local). winslow.protocol.codec writes each
+to the wire and decodes the payload back, so a wire shape has exactly one
+declaration.
 
 The producing side keeps the from_x classmethods, for example from_task and
 from_batch. A constructor that needs core machinery imports it inside the
 method, so this module imports nothing from winslow at module level."""
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Optional
-
-
-# --- inbound frame envelopes -------------------------------------------------
-
-
-@dataclass(frozen=True)
-class ActionFrame:
-    """One inbound action frame, decoded at the serve edge before dispatch
-    (see winslow.serve.wire.build_action)."""
-
-    type: str
-    session_id: str
-    action: str
-    request_id: str | None = None
-    fields: dict = field(default_factory=dict)
-
-
-@dataclass(frozen=True)
-class DescriptorsRequest:
-    """A descriptors request (see winslow.serve.wire.Requests.DESCRIPTORS)."""
-
-    type: str
-    kind: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class CreateSessionRequest:
-    """A create_session request. overrides and values default to {} at the
-    handler, so None and an absent field behave the same."""
-
-    type: str
-    kind: str
-    workflow: str
-    request_id: str | None = None
-    overrides: dict | None = None
-    values: dict | None = None
-
-
-@dataclass(frozen=True)
-class HistoryRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class LogTailRequest:
-    type: str
-    kind: str
-    session_id: str
-    batch_uuid: str
-    task_key: str
-    request_id: str | None = None
-    limit: int | None = None
-
-
-@dataclass(frozen=True)
-class TaskDetailRequest:
-    type: str
-    kind: str
-    session_id: str
-    task_key: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class RosterRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class CachesRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class CacheValueRequest:
-    type: str
-    kind: str
-    session_id: str
-    cache_name: str
-    entry_name: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class RecordDetailRequest:
-    type: str
-    kind: str
-    session_id: str
-    batch_uuid: str
-    task_key: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class BatchOptionsRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class SessionParamsRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class ApplyFilterRequest:
-    """An apply_filter request. scope names the corpus: 'tasks' or 'history'
-    (see Workflow.filter_keys)."""
-
-    type: str
-    kind: str
-    session_id: str
-    query: str
-    request_id: str | None = None
-    builtin_only: bool = False
-    scope: str = "tasks"
-
-
-@dataclass(frozen=True)
-class ManifestsRequest:
-    type: str
-    kind: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class SessionsRequest:
-    type: str
-    kind: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class SnapshotRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class RestoreSessionRequest:
-    type: str
-    kind: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class SubscribeFrame:
-    """One inbound subscribe or unsubscribe frame, decoded at the serve
-    edge. unsubscribe reads only session_id."""
-
-    type: str
-    session_id: str
-    request_id: str | None = None
-
-
-@dataclass(frozen=True)
-class TaskLogSubscribeFrame:
-    """One inbound subscribe_task_log or unsubscribe_task_log frame."""
-
-    type: str
-    session_id: str
-    task_key: str
-    request_id: str | None = None
 
 
 # --- the cache value shapes --------------------------------------------------
@@ -291,13 +110,19 @@ AttributeSection = tuple[str, tuple[str, ...], tuple[tuple[str, ...], ...]]
 
 @dataclass(frozen=True)
 class SourceNode:
-    """A node in the inheritance source tree of a task."""
+    """A node in the inheritance source tree of a task. label and location
+    are display-ready, so a consumer renders the tree without the origin
+    rules of winslow.task.info."""
 
     name: str
     module: str
     source: str
     path: str | None  # the absolute source file
     children: tuple["SourceNode", ...]
+    # The name, with the location in parentheses only for an ambiguous name.
+    label: str = ""
+    # The project-relative path, or the dotted module outside the project.
+    location: str = ""
 
 
 @dataclass(frozen=True)
@@ -397,8 +222,8 @@ class TaskInfo:
             _attribute_sections,
             _display_parameters,
             _safe_sourcefile,
-            _source_tree,
             _task_docs,
+            labeled_source_tree,
         )
 
         full = full or evaluate
@@ -433,7 +258,7 @@ class TaskInfo:
             ),
             attributes=_attribute_sections(task, root_dir, evaluate) if full else None,
             docs=_task_docs(task) if full else None,
-            source=_source_tree(task_cls) if full else None,
+            source=labeled_source_tree(task_cls, root_dir) if full else None,
             transients=(
                 tuple(sorted(declared_transient_properties(task_cls))) if full else None
             ),
@@ -449,9 +274,7 @@ def _batch_options(batch):
     if context is None:
         return None
     return {
-        name: value
-        for name, value in asdict(context).items()
-        if name != "batch_uuid"
+        name: value for name, value in asdict(context).items() if name != "batch_uuid"
     }
 
 
@@ -477,47 +300,35 @@ class BatchInfo:
 
     @classmethod
     def from_batch(cls, batch, tasks):
+        return cls._build(batch, {task.identity_key: str(task) for task in tasks})
+
+    @classmethod
+    def from_stored(cls, batch, store):
+        """The info of a stored batch: the labels come from its records, so
+        a snapshot carries the value the created event carried. The
+        reconnect heal re-emits it (see RemoteSessionClient._on_snapshot)."""
+        labels = (
+            {key: store.get_record(key).info.label for key, _ in store.items()}
+            if store is not None
+            else {}
+        )
+        return cls._build(batch, labels)
+
+    @classmethod
+    def _build(cls, batch, tasks):
         return cls(
             uuid=batch.uuid,
             action=batch.action.name,
             status=batch.status.name,
             task_count=batch.task_count,
-            tasks={task.identity_key: str(task) for task in tasks},
+            tasks=tasks,
             options=_batch_options(batch),
             created_at=batch.created_at.timestamp(),
-            started_at=(
-                batch.started_at.timestamp() if batch.started_at else None
-            ),
+            started_at=(batch.started_at.timestamp() if batch.started_at else None),
             completed_at=(
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
             error=batch.error,
-        )
-
-
-@dataclass(frozen=True)
-class BatchRow:
-    """One batch of a session snapshot: the identity and the lifecycle
-    stamps. HistoryRow is the row that adds the per-task outcomes."""
-
-    uuid: str
-    action: str
-    status: str
-    task_count: int
-    created_at: float
-    completed_at: float | None
-
-    @classmethod
-    def from_batch(cls, batch):
-        return cls(
-            uuid=batch.uuid,
-            action=batch.action.name,
-            status=batch.status.name,
-            task_count=batch.task_count,
-            created_at=batch.created_at.timestamp(),
-            completed_at=(
-                batch.completed_at.timestamp() if batch.completed_at else None
-            ),
         )
 
 
@@ -535,16 +346,14 @@ class TaskOutcome:
     def from_record(cls, status, record):
         return cls(
             status=status.name,
-            started_at=(
-                record.started_at.timestamp() if record.started_at else None
-            ),
+            started_at=(record.started_at.timestamp() if record.started_at else None),
             duration=record.duration,
             last_log=record.last_log,
         )
 
 
 @dataclass(frozen=True)
-class HistoryRow:
+class BatchOutcome:
     """One batch of the history, with the per-task outcomes of its record
     store. A client that subscribes after the batch renders these rows
     without one log_tail call per task."""
@@ -593,7 +402,7 @@ class StatusSnapshot:
     checked_at: float
 
 
-# --- the session rows and snapshots -------------------------------------------
+# --- the session info and snapshots -------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -607,9 +416,8 @@ class TaskStatusSummary:
 
 
 @dataclass(frozen=True)
-class SessionRow:
-    """One row of the session list, and the shape of a session's entry in
-    the hello snapshot (see winslow.serve.wire.session_row)."""
+class SessionInfo:
+    """One row of the session list (see AppClient.sessions)."""
 
     session_id: str
     workflow: str
@@ -655,7 +463,7 @@ class SessionSnapshot:
     status: str
     tasks: dict[str, str]  # {identity key: TaskStatus name}
     session_log_backlog: tuple[str, ...]
-    batches: tuple[BatchRow, ...]
+    batches: tuple[BatchInfo, ...]
     # The cache names of the session, so a client can decide whether to show
     # a caches pane before the first caches read. None once the session has
     # ended and released its caches; an empty tuple means no registered caches.
@@ -683,17 +491,56 @@ class SessionSnapshot:
                 else ()
             ),
             batches=tuple(
-                BatchRow.from_batch(batch) for batch in workflow.runner.batches
+                BatchInfo.from_stored(batch, workflow.runner.record_store(batch.uuid))
+                for batch in workflow.runner.batches
             ),
             cache_names=cls._cache_names(workflow),
         )
+
+    def as_events(self):
+        """The events a live subscriber saw to reach this state: each batch
+        created, then completed if it is, then every task status, then the
+        end if the session ended. A subscriber that heals a sequence gap
+        replays them (see RemoteSessionClient._on_snapshot)."""
+        from winslow.events import (
+            BatchCompletedEvent,
+            BatchCreatedEvent,
+            Origin,
+            SessionEndedEvent,
+            TaskStatusEvent,
+        )
+        from winslow.task.status import TaskStatus
+
+        # A created event precedes the statuses of its tasks, as on the live bus.
+        batches = [
+            event
+            for info in self.batches
+            for event in (
+                BatchCreatedEvent(info=info),
+                *(
+                    [BatchCompletedEvent(info=info)]
+                    if info.completed_at is not None
+                    else []
+                ),
+            )
+        ]
+        statuses = [
+            TaskStatusEvent(key=key, status=TaskStatus[name], origin=Origin.RUN)
+            for key, name in self.tasks.items()
+        ]
+        end = (
+            [SessionEndedEvent(session_id=self.session_id)]
+            if self.status == "ENDED"
+            else []
+        )
+        return tuple(batches + statuses + end)
 
 
 # --- the record detail --------------------------------------------------------
 
 
 @dataclass(frozen=True)
-class PhaseRow:
+class PhaseInfo:
     """One entry of a record's phase timeline (see PhaseSpan)."""
 
     phase: str
@@ -706,9 +553,7 @@ class PhaseRow:
         return cls(
             phase=span.phase.value,
             started_at=span.started_at.timestamp(),
-            completed_at=(
-                span.completed_at.timestamp() if span.completed_at else None
-            ),
+            completed_at=(span.completed_at.timestamp() if span.completed_at else None),
             duration=span.duration,
         )
 
@@ -720,7 +565,7 @@ class RecordDetail:
     The snapshot dicts key by the phase name."""
 
     info: TaskInfo
-    phases: tuple[PhaseRow, ...]
+    phases: tuple[PhaseInfo, ...]
     transient_snapshots: dict
     cache_snapshots: dict[str, tuple[CacheReadSnapshot, ...]]  # by phase name
 
@@ -728,7 +573,7 @@ class RecordDetail:
     def from_record(cls, record):
         return cls(
             info=record.info,
-            phases=tuple(PhaseRow.from_span(span) for span in record.phases),
+            phases=tuple(PhaseInfo.from_span(span) for span in record.phases),
             transient_snapshots={
                 phase.value: snapshot
                 for phase, snapshot in record.transient_snapshots.items()
@@ -743,16 +588,6 @@ class RecordDetail:
 # --- the cache cards and value views -------------------------------------------
 
 
-def _display_style_label(display_style):
-    from winslow.cache import DisplayStyle
-
-    if display_style is DisplayStyle.TREE:
-        return "tree"
-    if display_style is DisplayStyle.RAW:
-        return "raw"
-    return "custom"
-
-
 def _entry_value_preview(cache, entry_name):
     from winslow.cache import StorageRecord
     from winslow.util import safe_repr
@@ -762,39 +597,24 @@ def _entry_value_preview(cache, entry_name):
 
 
 @dataclass(frozen=True)
-class CacheEntryCard:
-    """One declared entry of a cache card, before any value is peeked."""
-
-    name: str
-    display_style: str
-
-
-@dataclass(frozen=True)
-class CacheCard:
-    """One cache: identity, storage, the declared entries with their
-    display style, and the current value preview of each written entry
-    (see unobservable for the error form)."""
+class CacheInfo:
+    """One cache: identity, storage, the declared entry names, and the current
+    value preview of each written entry (see unobservable for the error form)."""
 
     name: str
     scope: str
     docstring: str | None
     storage: str
-    entries: tuple[CacheEntryCard, ...]
+    entries: tuple[str, ...]
     info: tuple[CacheEntryInfo, ...]
     values: dict[str, str | None]  # {entry name: safe_repr preview}
     error: str | None = None
 
     @classmethod
-    def _entry_cards(cls, cache):
+    def _entry_names(cls, cache):
         from winslow.cache import declared_entries
 
-        return tuple(
-            CacheEntryCard(
-                name=name,
-                display_style=_display_style_label(entry.display_style),
-            )
-            for name, entry in declared_entries(type(cache)).items()
-        )
+        return tuple(declared_entries(type(cache)))
 
     @classmethod
     def from_cache(cls, cache):
@@ -804,7 +624,7 @@ class CacheCard:
             scope=cache.scope,
             docstring=type(cache).__doc__,
             storage=cache.describe_storage(),
-            entries=cls._entry_cards(cache),
+            entries=cls._entry_names(cache),
             info=infos,
             values={
                 info.entry_name: _entry_value_preview(cache, info.entry_name)
@@ -815,14 +635,14 @@ class CacheCard:
 
     @classmethod
     def unobservable(cls, cache, error):
-        """The card of a cache whose inspect or peek raised: the declarations
-        stand, the states and the values stay empty."""
+        """The info of a cache whose inspect or peek raised. The declarations
+        stand, and the states and the values stay empty."""
         return cls(
             name=cache.get_name(),
             scope=cache.scope,
             docstring=type(cache).__doc__,
             storage=cache.describe_storage(),
-            entries=cls._entry_cards(cache),
+            entries=cls._entry_names(cache),
             info=(),
             values={},
             error=error,
@@ -833,7 +653,7 @@ class CacheCard:
 class CachesPayload:
     """Every cache of one session, in name order."""
 
-    caches: tuple[CacheCard, ...]
+    caches: tuple[CacheInfo, ...]
 
     @classmethod
     def from_workflow(cls, workflow):
@@ -842,13 +662,13 @@ class CachesPayload:
 
         def card(cache):
             try:
-                return CacheCard.from_cache(cache)
+                return CacheInfo.from_cache(cache)
             except Exception as exc:
                 workflow.logger.debug(
                     f"The caches read cannot observe '{cache.get_name()}'.",
                     exc_info=True,
                 )
-                return CacheCard.unobservable(cache, str(exc))
+                return CacheInfo.unobservable(cache, str(exc))
 
         return cls(caches=tuple(card(cache) for cache in workflow.caches()))
 
@@ -883,9 +703,7 @@ class CacheValueView:
         if record is MISSING:
             return cls._unrendered(cache, entry_name, EntryState.COLD, info.error)
         if record is EntryState.COMPUTING:
-            return cls._unrendered(
-                cache, entry_name, EntryState.COMPUTING, info.error
-            )
+            return cls._unrendered(cache, entry_name, EntryState.COMPUTING, info.error)
         display_style = declared_entries(type(cache))[entry_name].display_style
         rendered, summary, encoding = render_value(
             record.value, resolve_snapshot_cap(type(cache)), display_style
@@ -942,7 +760,7 @@ class SessionParams:
 
 
 @dataclass(frozen=True)
-class ManifestRow:
+class ManifestInfo:
     """One restorable session manifest (see SessionManifest)."""
 
     session_id: str
@@ -964,7 +782,7 @@ class ManifestRow:
 
 
 @dataclass(frozen=True)
-class OptionRow:
+class OptionInfo:
     """One ConfigOption as form metadata. Defaults travel as formatted
     strings: right for a form, accepted for an agent (see serve-spec 6.1).
     initial names the value a form should prefill. It is the live parsed
@@ -1023,7 +841,7 @@ class WorkflowDescriptor:
     Workflow.auto_init)."""
 
     workflow: str
-    options: tuple[OptionRow, ...]
+    options: tuple[OptionInfo, ...]
     auto_init: bool = False
 
 
@@ -1037,7 +855,7 @@ class Descriptors:
     excludes from the local selector is excluded here too."""
 
     workflows: tuple[WorkflowDescriptor, ...]
-    overrides: tuple[OptionRow, ...]
+    overrides: tuple[OptionInfo, ...]
 
     @classmethod
     def from_orchestrator(cls, orchestrator):
@@ -1045,9 +863,7 @@ class Descriptors:
         workflows = []
         for name in orchestrator.workflow_registry.names:
             workflow_kls = orchestrator.workflow_registry[name]
-            if not workflow_kls.should_be_initialized(
-                orchestrator.orchestrator_config
-            ):
+            if not workflow_kls.should_be_initialized(orchestrator.orchestrator_config):
                 continue
             parsed = workflow_args.get(workflow_kls)
             workflows.append(
@@ -1055,7 +871,7 @@ class Descriptors:
                     workflow=name,
                     auto_init=workflow_kls.auto_init,
                     options=tuple(
-                        OptionRow.from_option(
+                        OptionInfo.from_option(
                             option_name,
                             option,
                             current=getattr(parsed, option_name, None),
@@ -1066,12 +882,10 @@ class Descriptors:
                 )
             )
         overrides = tuple(
-            OptionRow.from_option(
+            OptionInfo.from_option(
                 option_name,
                 option,
-                current=getattr(
-                    orchestrator.orchestrator_config, option_name, None
-                ),
+                current=getattr(orchestrator.orchestrator_config, option_name, None),
             )
             for option_name, option in orchestrator.config_meta.items()
             if option.show_on_ui

@@ -6,6 +6,7 @@ from winslow.events import BatchCompletedEvent, BatchCreatedEvent
 from winslow.exceptions import TaskBlock
 from winslow.cache import batch_cache
 from winslow.model import BatchInfo
+from winslow.util import new_uuid
 
 from .base import BaseRunner
 from .execution import ExecutionAction, new_batch
@@ -22,17 +23,21 @@ class HeadlessRunner(BaseRunner):
             tasks = [t for t in tasks if not self._refuse_ineligible(t)]
             if not tasks:
                 return None, []
-            batch = new_batch(action, tasks)
-            batch.execution_context = self._new_execution_context(batch.uuid, options)
-            # The whole store, and not the task list of the batch. A dependency
-            # re-check reaches tasks outside the batch with the uuid of this
-            # batch.
-            batch.errored = {
-                k
-                for k, s in self.store.items()
-                if s in (TaskStatus.ERROR, TaskStatus.COMPLETED_WITH_ERROR)
-            }
-            self._execution_batches_map[batch.uuid] = batch
+            uuid = new_uuid()
+            batch = new_batch(
+                uuid,
+                action,
+                tasks,
+                execution_context=self._new_execution_context(uuid, options),
+                # Every task the batch can reach, not only its own: a dependency
+                # re-check probes tasks outside the batch under this uuid.
+                errored={
+                    k
+                    for k, s in self.store.items()
+                    if s in (TaskStatus.ERROR, TaskStatus.COMPLETED_WITH_ERROR)
+                },
+            )
+            self._execution_batches_map[uuid] = batch
         batch.start()
         self._batch_admitted(batch, tasks)
         # On the submitter thread, before any task work: a crash during the

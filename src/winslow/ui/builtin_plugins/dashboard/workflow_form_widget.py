@@ -25,15 +25,15 @@ class FormRow(Horizontal):
 
 
 def switch_checked(row):
-    """The checkbox state an OptionRow implies. A store_const value shows as
-    checked when the parsed initial holds any value (see OptionRow.initial)."""
+    """The checkbox state an OptionInfo implies. A store_const value shows as
+    checked when the parsed initial holds any value (see OptionInfo.initial)."""
     if row.action == "store_const":
         return row.initial is not None
     return row.initial == "True"
 
 
 class WorkflowFormGenerator:
-    """Generate the start form of one workflow from its OptionRow values:
+    """Generate the start form of one workflow from its OptionInfo values:
     the workflow options and the orchestrator overrides, in two sections.
     A CLI-supplied value prefills its field (see Descriptors)."""
 

@@ -28,7 +28,7 @@ class WorkflowRenderContext(RenderContext):
 
     # The SessionClient of the session (see winslow.client).
     client: object
-    # The SessionRow value of the session.
+    # The SessionInfo value of the session.
     session: object
     # The SessionSnapshot at compose time.
     snapshot: object
@@ -68,7 +68,7 @@ class TaskDetailRenderContext(RenderContext):
     # transient_snapshots.
     cache_snapshots: dict | None = None
     # The project root of the serving process, for the source-path display
-    # (see SessionRow.root_dir).
+    # (see SessionInfo.root_dir).
     root_dir: str | None = None
 
 
@@ -141,7 +141,7 @@ class UIPluginRegistry(BaseRegistry):
             qname = cls._qualified_name(source)
             raise PluginError(
                 f"Plugin {qname} declares replace={cls.replace!r} but has autoload=False "
-                f"and is not in enabled_tui_plugins — target would be evicted with nothing replacing it"
+                f"and is not in enabled_tui_plugins - the target would be evicted with nothing replacing it"
             )
         super()._register(cls, source)
 

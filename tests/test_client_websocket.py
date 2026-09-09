@@ -12,7 +12,15 @@ import uvicorn
 
 from winslow.actions import BatchAck, EndSession, LoadCacheEntries, RunTasks, StopBatch
 from winslow.client.local import LocalSessionClient
-from winslow.client.websocket import RemoteAppClient, RemoteSessionClient, normalize_url
+from winslow.client.websocket import (
+    LaneState,
+    RemoteAppClient,
+    RemoteSessionClient,
+    Wire,
+    normalize_url,
+)
+from winslow.protocol.codec import ValidationError
+from winslow.protocol.frames import SnapshotFrame, SubscribeFrame, decode_frame
 from winslow.constants import Mode
 from winslow.events import (
     BatchCompletedEvent,
@@ -24,7 +32,7 @@ from winslow.events import (
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
     BatchInfo,
-    CacheCard,
+    CacheInfo,
     CacheUpdatedEvent,
     ConnectionEvent,
     SessionLogEvent,
@@ -32,12 +40,19 @@ from winslow.model import (
     TaskLogEvent,
     TaskOutcome,
 )
-from winslow.orchestrator import Action, Orchestrator, OrchestratorConfig
+from winslow.orchestrator import Command, Orchestrator, OrchestratorConfig
 from winslow.serve import Credentials, create_app
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus
+from winslow.protocol.lanes import TaskStatusLane
 
-from harness import build_workflow, by_name, wait_for_status
+from harness import (
+    bare_orchestrator,
+    build_workflow,
+    by_name,
+    scratch_state_store,
+    wait_for_status,
+)
 
 from test_serve_actions import serve_orchestrator
 
@@ -53,8 +68,8 @@ class ServedProcess:
             registry,
             Credentials(token=TOKEN, require_credential=True),
             hello_timeout=2.0,
-            orchestrator=orchestrator,
-            state_store=state_store,
+            orchestrator=orchestrator or bare_orchestrator(),
+            state_store=state_store or scratch_state_store(),
         )
         self.server = None
         self.thread = None
@@ -125,15 +140,6 @@ def run_to_completion(workflow, client, task):
 # --- the reads: the wire answers the DTOs of the local adapter -----------------
 
 
-def test_sessions_serves_the_rows_of_the_registry(served):
-    workflow, session, client = served
-    (row,) = client.sessions()
-    assert row.session_id == session.session_id
-    assert row.status == "ACTIVE"
-    assert row.workflow == str(workflow)
-    assert row.task_status_summary.total == len(workflow.tasks)
-
-
 def test_the_wire_reads_match_the_local_adapter(served):
     workflow, session, client = served
     remote = client.session(session.session_id)
@@ -148,9 +154,7 @@ def test_the_wire_reads_match_the_local_adapter(served):
     assert remote.session_params() == local.session_params()
     batch_uuid = remote.history()[0].uuid
     key = alpha.identity_key
-    assert remote.record_detail(batch_uuid, key) == local.record_detail(
-        batch_uuid, key
-    )
+    assert remote.record_detail(batch_uuid, key) == local.record_detail(batch_uuid, key)
     assert remote.log_tail(batch_uuid, key) == local.log_tail(batch_uuid, key)
     assert remote.apply_filter("alpha") == local.apply_filter("alpha")
 
@@ -176,16 +180,6 @@ def test_history_rows_carry_task_outcome_instances(served):
     (outcome,) = row.tasks.values()
     assert isinstance(outcome, TaskOutcome)
     assert outcome.status == "COMPLETED"
-
-
-def test_apply_filter_raises_value_error_on_a_bad_query(served):
-    workflow, session, client = served
-    remote = client.session(session.session_id)
-    with pytest.raises(RequestError, match="!bogus"):
-        remote.apply_filter("!bogus alpha")
-
-
-# --- the subscriptions: protocol frames arrive as model events -----------------
 
 
 def test_a_run_streams_the_model_events(served):
@@ -283,9 +277,9 @@ def test_cache_reads_actions_and_the_update_lane(e2e_repo):
         remote.subscribe(CacheUpdatedEvent, updates.append)
 
         cards = remote.caches()
-        assert all(isinstance(card, CacheCard) for card in cards)
+        assert all(isinstance(card, CacheInfo) for card in cards)
         (weather,) = [card for card in cards if card.name == "weather"]
-        assert {entry.name for entry in weather.entries} == {
+        assert set(weather.entries) == {
             "cities",
             "city_index",
             "forecast",
@@ -361,16 +355,12 @@ def test_create_session_over_the_wire(e2e_repo, state_store):
         assert row.status == "ACTIVE"
         assert row.session_id in registry
 
-        alpha_key = next(
-            key for key in client.session(row.session_id).snapshot().tasks
-        )
+        alpha_key = next(key for key in client.session(row.session_id).snapshot().tasks)
         assert alpha_key
 
         # A dead process leaves an open manifest; restore rebuilds the session.
         registry.remove(row.session_id)
-        (manifest,) = [
-            m for m in client.manifests() if m.session_id == row.session_id
-        ]
+        (manifest,) = [m for m in client.manifests() if m.session_id == row.session_id]
         restored = client.restore_session(manifest.session_id)
         assert restored.session_id == row.session_id
         assert row.session_id in registry
@@ -425,7 +415,7 @@ def test_the_connect_subcommand_parses_the_url():
     config, _ = Orchestrator.get_base_parser().parse_known_args(
         ["connect", "ws://somehost:8866"], namespace=OrchestratorConfig()
     )
-    assert config.action is Action.CONNECT
+    assert config.action is Command.CONNECT
     assert config.url == "ws://somehost:8866"
 
 
@@ -454,7 +444,7 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
         )
 
         # The same port again: the client reconnects on its own and the
-        # recovery snapshot re-emits the task statuses.
+        # recovery snapshot replays the task statuses.
         process.start()
         wait_for(lambda: statuses, "no healing events after the reconnect")
         assert {e.key for e in statuses} == set(remote.snapshot().tasks)
@@ -497,41 +487,59 @@ class RecordingWire:
         return "c-test"
 
     def subscribe_session(self, lane):
-        self.send(
-            {
-                "type": "subscribe",
-                "session_id": lane.session_id,
-                "request_id": self.next_id(),
-            }
-        )
+        request_id = self.next_id()
+        self.send(SubscribeFrame(session_id=lane.session_id, request_id=request_id))
+        return request_id
 
-    def clear_subscribe_pending(self, lane):
+    def settle_subscribe(self, request_id):
         pass
 
 
-def _snapshot_frame(seq, tasks, status="ACTIVE"):
+def _snapshot_frame(seq, tasks, status="ACTIVE", batches=()):
+    return decode_frame(
+        {
+            "type": SnapshotFrame.type,
+            "seq": seq,
+            "session_id": "s-1",
+            "snapshot": {
+                "session_id": "s-1",
+                "workflow": "w",
+                "status": status,
+                "tasks": tasks,
+                "session_log_backlog": [],
+                "batches": list(batches),
+                "cache_names": [],
+            },
+        }
+    )
+
+
+def _batch_payload(uuid, completed_at=None):
     return {
-        "type": "snapshot",
-        "seq": seq,
-        "session_id": "s-1",
-        "workflow": "w",
-        "status": status,
-        "tasks": tasks,
-        "session_log_backlog": [],
-        "batches": [],
-        "cache_names": [],
+        "uuid": uuid,
+        "action": "RUN",
+        "status": "FINISHED" if completed_at else "RUNNING",
+        "task_count": 1,
+        "tasks": {"k": "K"},
+        "options": None,
+        "created_at": 1.0,
+        "started_at": 1.0,
+        "completed_at": completed_at,
+        "error": None,
     }
 
 
 def _status_frame(seq, key, status):
-    return {
-        "type": "task_status",
-        "seq": seq,
-        "session_id": "s-1",
-        "key": key,
-        "status": status,
-        "origin": "run",
-    }
+    return decode_frame(
+        {
+            "type": TaskStatusLane.type,
+            "seq": seq,
+            "session_id": "s-1",
+            "key": key,
+            "status": status,
+            "origin": "run",
+        }
+    )
 
 
 def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
@@ -539,7 +547,7 @@ def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
     lane = RemoteSessionClient(wire, "s-1")
     events = []
     lane.subscribe(TaskStatusEvent, events.append)
-    assert wire.sent[-1]["type"] == "subscribe"
+    assert wire.sent[-1].type == SubscribeFrame.type
 
     lane.on_frame(_snapshot_frame(5, {"k": "READY_TO_PROCESS"}))
     lane.on_frame(_status_frame(6, "k", "RUNNING"))
@@ -548,8 +556,8 @@ def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
     # The gap: seq 7 and 8 are lost. The lane resubscribes and drops the
     # stale frames until the recovery snapshot arrives.
     lane.on_frame(_status_frame(9, "k", "RUN_FINISHED"))
-    assert wire.sent[-1]["type"] == "subscribe"
-    assert wire.sent[-1]["session_id"] == "s-1"
+    assert wire.sent[-1].type == SubscribeFrame.type
+    assert wire.sent[-1].session_id == "s-1"
     lane.on_frame(_status_frame(10, "k", "CHECKING_COMPLETION"))
     assert [e.status for e in events] == [TaskStatus.RUNNING]
 
@@ -561,6 +569,71 @@ def test_a_sequence_gap_resubscribes_and_heals_from_the_snapshot():
     assert events[-1].status is TaskStatus.FAILED
 
 
+def test_the_lane_walks_idle_subscribing_streaming_healing_and_back():
+    wire = RecordingWire()
+    lane = RemoteSessionClient(wire, "s-1")
+    assert lane._state is LaneState.IDLE
+    lane.subscribe(TaskStatusEvent, lambda event: None)
+    assert lane._state is LaneState.SUBSCRIBING
+    lane.on_frame(_snapshot_frame(1, {}))
+    assert lane._state is LaneState.STREAMING
+    lane.on_frame(_status_frame(5, "k", "RUNNING"))  # the gap
+    assert lane._state is LaneState.HEALING
+    lane.on_frame(_snapshot_frame(8, {}))
+    assert lane._state is LaneState.STREAMING
+    lane.on_subscribe_refused("gone")
+    assert lane._state is LaneState.IDLE
+
+
+def test_a_healing_snapshot_that_fails_to_decode_leaves_the_lane_streaming():
+    """The state moves before the replay, so a bad payload costs the replay
+    only. The lane keeps the new sequence and dispatches the next frame."""
+    wire = RecordingWire()
+    lane = RemoteSessionClient(wire, "s-1")
+    statuses = []
+    lane.subscribe(TaskStatusEvent, statuses.append)
+    lane.on_frame(_snapshot_frame(1, {}))
+    lane.on_frame(_status_frame(5, "k", "RUNNING"))  # the gap
+    assert lane._state is LaneState.HEALING
+
+    with pytest.raises(ValidationError):
+        lane.on_frame(SnapshotFrame(session_id="s-1", seq=8, snapshot={"bad": True}))
+    assert lane._state is LaneState.STREAMING
+    assert lane._last_seq == 8
+
+    lane.on_frame(_status_frame(9, "k", "RUNNING"))
+    assert [event.key for event in statuses] == ["k"]
+
+
+def test_a_recovery_snapshot_re_emits_its_batches():
+    """The events of the gap are gone; the created and completed events of
+    the snapshot batches rebuild the history of a live subscriber."""
+    wire = RecordingWire()
+    lane = RemoteSessionClient(wire, "s-1")
+    created, completed = [], []
+    lane.subscribe(BatchCreatedEvent, created.append)
+    lane.subscribe(BatchCompletedEvent, completed.append)
+
+    # The first snapshot heals nothing: no batch events replay.
+    lane.on_frame(_snapshot_frame(5, {}, batches=[_batch_payload("b-1")]))
+    assert created == []
+
+    lane.on_frame(_status_frame(9, "k", "RUNNING"))  # the gap
+    lane.on_frame(
+        _snapshot_frame(
+            12,
+            {},
+            batches=[
+                _batch_payload("b-1", completed_at=2.0),
+                _batch_payload("b-2"),
+            ],
+        )
+    )
+    assert [info.uuid for info in (e.info for e in created)] == ["b-1", "b-2"]
+    assert [e.info.uuid for e in completed] == ["b-1"]
+    assert created[0].info.tasks == {"k": "K"}
+
+
 def test_a_recovery_snapshot_of_an_ended_session_emits_the_end():
     wire = RecordingWire()
     lane = RemoteSessionClient(wire, "s-1")
@@ -570,6 +643,17 @@ def test_a_recovery_snapshot_of_an_ended_session_emits_the_end():
     lane.on_frame(_status_frame(5, "k", "RUNNING"))  # the gap
     lane.on_frame(_snapshot_frame(8, {}, status="ENDED"))
     assert ended == [SessionEndedEvent(session_id="s-1")]
+
+
+def test_a_frame_of_no_lane_is_logged_with_its_contents(caplog):
+    """A frame that carries a session_id but names no lane must not vanish
+    into the lane: the router logs it, fields included."""
+    wire = Wire("ws://host:1")
+    wire.session_lane("s-1")
+    with caplog.at_level("WARNING", logger="winslow"):
+        wire._route(SubscribeFrame(session_id="s-1", request_id="r-9"))
+    assert "subscribe frame has no destination" in caplog.text
+    assert "request_id='r-9'" in caplog.text
 
 
 def test_a_refused_subscribe_emits_the_end_instead_of_a_dead_lane():

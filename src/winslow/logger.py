@@ -13,7 +13,6 @@ from logging.handlers import QueueHandler, QueueListener
 
 from winslow.settings import config
 from winslow.util import safe_repr
-from rich.logging import RichHandler
 
 
 LOGGER = logging.getLogger("winslow")
@@ -54,32 +53,52 @@ if LOG_UTC:
 
 INLINE_FORMATTER = logging.Formatter("%(levelname)s - %(message)s")
 
+# One JSON object per console record, for a pod whose log store queries
+# fields (see StructuredFormatter). The default stays human-readable.
+LOG_JSON = config("WINSLOW_LOG_JSON", default=False, cast=bool)
+
+
+def _console_handler():
+    """The console handler. WINSLOW_LOG_JSON selects JSON lines; a terminal
+    with rich installed gets rich; everything else gets plain lines."""
+    if LOG_JSON:
+        handler = logging.StreamHandler()
+        handler.setFormatter(StructuredFormatter())
+        return handler
+    if sys.stdout.isatty():
+        try:
+            from rich.logging import RichHandler
+        except ImportError:
+            pass
+        else:
+            formatter = logging.Formatter(
+                "%(asctime)s  %(message)s", datefmt=LOG_DATEFMT
+            )
+            if LOG_UTC:
+                formatter.converter = time.gmtime
+            handler = RichHandler(rich_tracebacks=True, show_time=False)
+            handler.setFormatter(formatter)
+            return handler
+    handler = logging.StreamHandler()
+    handler.setFormatter(INTERACTIVE_FORMATTER)
+    return handler
+
 
 def initialize_logging(debug_mode: bool):
     """Initialize the logging for the given debug mode."""
     logging_level = logging.DEBUG if debug_mode else logging.INFO
 
-    if sys.stdout.isatty():
-        formatter = logging.Formatter("%(asctime)s  %(message)s", datefmt=LOG_DATEFMT)
-        if LOG_UTC:
-            formatter.converter = time.gmtime
-        handler = RichHandler(rich_tracebacks=True, show_time=False)
-        handler.setFormatter(formatter)
-    else:
-        handler = logging.StreamHandler()
-        handler.setFormatter(INTERACTIVE_FORMATTER)
-
     logging.basicConfig(
         level=logging_level,
-        handlers=[handler],
+        handlers=[_console_handler()],
     )
 
     LOGGER.setLevel(logging_level)
 
 
-class InteractiveLogHandler(RichHandler):
+class InteractiveLogHandler(logging.Handler):
     def __init__(self, log_method=None, formatter=None):
-        logging.Handler.__init__(self)
+        super().__init__()
         self.log_method = log_method
         self.formatter = formatter or INTERACTIVE_FORMATTER
 
@@ -257,14 +276,26 @@ def get_task_dispatcher():
 
 
 class StructuredFormatter(logging.Formatter):
-    """Render a stamped record as one JSON object. This is the shared shape. The
-    file sink reads it now, and a websocket sink can read it later. The bytes to
-    the disk and to the network are thus the same."""
+    """Render a stamped record as one JSON object: the shared shape of the
+    file sink and the WINSLOW_LOG_JSON console. A log store reads one
+    queryable entry per record, with the traceback as a field."""
+
+    def __init__(self):
+        super().__init__(datefmt=LOG_DATEFMT)
+        if LOG_UTC:
+            self.converter = time.gmtime
+
+    def _traceback(self, record):
+        if record.exc_text:
+            return record.exc_text
+        if record.exc_info:
+            return self.formatException(record.exc_info)
+        return None
 
     def format(self, record):
         return json.dumps(
             {
-                "ts": self.formatTime(record),
+                "ts": self.formatTime(record, self.datefmt),
                 "level": record.levelname,
                 "session_id": getattr(record, "session_id", None),
                 "workflow_name": getattr(record, "workflow_name", None),
@@ -273,8 +304,18 @@ class StructuredFormatter(logging.Formatter):
                 "task_instance": getattr(record, "task_instance", None),
                 "batch_uuid": getattr(record, "batch_uuid", None),
                 "message": record.getMessage(),
+                "traceback": self._traceback(record),
             }
         )
+
+
+def stdout_json_sink():
+    """A run-log sink for a log store: one JSON object per record to stdout
+    (see StructuredFormatter). The serve process installs it under
+    WINSLOW_LOG_JSON, so a pod ships one stream instead of files."""
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setFormatter(StructuredFormatter())
+    return handler
 
 
 class SessionFileSink(logging.Handler):

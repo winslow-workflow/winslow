@@ -1,7 +1,7 @@
-"""The serve credentials (ROADMAP section 8): a bearer token for machine
-clients, a signed ticket for browsers. The ticket is user:expiry:signature,
-HMAC-SHA256 under the shared secret, minted by the front application; this
-module owns mint and verify, so both sides and the tests share one rule."""
+"""The serve credentials: a bearer token for machine clients and a signed ticket
+for browsers. The front application mints a ticket as user:expiry:signature under
+HMAC-SHA256 with the shared secret. This module owns mint and verify, so both
+sides share one rule."""
 
 import hashlib
 import hmac
@@ -24,7 +24,7 @@ def mint_ticket(secret, user, ttl=60.0):
 
 def verify_ticket(secret, ticket):
     """(user, None) for a valid ticket, (None, reason) otherwise. The reason
-    is wire-safe: it reaches the client in the refusal."""
+    reaches the client in the refusal."""
     try:
         user, expiry, signature = ticket.split(":")
     except (ValueError, AttributeError):
@@ -58,16 +58,16 @@ class Credentials:
         )
 
     def verify_hello(self, hello, origin):
-        """(user, None) for an accepted hello, (None, reason) for a refusal."""
+        """(user, None) for an accepted HelloFrame, (None, reason) for a refusal."""
         if not self.require_credential:
             return "local", None
         if origin is not None and origin not in self.allowed_origins:
             return None, f"origin {origin!r} is not allowed on this server"
-        if ticket := hello.get("ticket"):
+        if ticket := hello.ticket:
             if not self.ticket_secret:
                 return None, "this server accepts no tickets - use a bearer token"
             return verify_ticket(self.ticket_secret, ticket)
-        if token := hello.get("token"):
+        if token := hello.token:
             if self.token and hmac.compare_digest(token, self.token):
                 return "token-client", None
             return None, "bad bearer token"

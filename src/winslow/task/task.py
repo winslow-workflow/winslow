@@ -11,7 +11,7 @@ from winslow.constraints import (
     _ConstraintBase,
 )
 from winslow.util import to_tuple, safe_repr, flatten
-from winslow.logger import TASK_LOGGER_NAME, get_task_dispatcher
+from winslow.logger import LOGGER, TASK_LOGGER_NAME, get_task_dispatcher
 from winslow.settings import TASK_LOG_BUFFER_SIZE
 from winslow._parameterization import (
     _ParameterizationBase,
@@ -157,11 +157,6 @@ class Task(_ParameterizationBase):
         self._global_cache_container = None
         self._run_nonce = None
 
-        # True after run() of this instance started at least once, in any batch
-        # of this workflow. dry_run does not set it. The completion check uses
-        # it to separate COMPLETED from COMPLETED_PREVIOUSLY.
-        self._has_been_run = False
-
         self._log_buffer = None
 
         # Local flag that marks the task as eligible or ineligible. The graph can
@@ -201,10 +196,6 @@ class Task(_ParameterizationBase):
         """Buffered log records for the Logs tab of the info modal. None when the
         task is not interactive."""
         return self._log_buffer
-
-    @property
-    def _execution_context(self):
-        return get_execution_context()
 
     @property
     def _active_execution_context(self):
@@ -247,7 +238,8 @@ class Task(_ParameterizationBase):
 
         if not cls._is_parameterized:
             raise ValueError(
-                "There is no point trying to get parameters for non-parameterized tasks."
+                f"{cls.__name__} declares no parameters - get_parameters "
+                f"applies only to parameterized tasks."
             )
 
         raise _GetParametersNotImplemented(
@@ -306,7 +298,8 @@ class Task(_ParameterizationBase):
         calculate it."""
         if self._priority is None:
             raise MisconfigurationError(
-                f"{self} priority read before the graph assigned it."
+                f"{self} priority read before the graph assigned it - read it "
+                f"after initialize_tasks."
             )
         return self._priority
 
@@ -422,6 +415,31 @@ class Task(_ParameterizationBase):
         return (
             self._check_constraints(ConstraintType.ELIGIBILITY) and self.is_eligible()
         )
+
+    def _check_eligibility(self, logger=LOGGER):
+        """Resolve the eligibility one time and keep the result. The graph and
+        the runner both call this. A crash in is_eligible aborts the run."""
+        if self._is_eligible_result is not None:
+            logger.debug(
+                f"Eligibility already resolved for {self} - is_eligible will not be called."
+            )
+            return self._is_eligible_result
+
+        logger.debug(f"Checking eligibility: {self}")
+        try:
+            result = self._evaluate_is_eligible()
+        except exceptions.TaskSkip as e:
+            logger.info(e)
+            result = False
+        except Exception as e:
+            # A crash is not an answer. A False here drops the task silently, and
+            # its dependents run without it (see Graph).
+            logger.error(f"is_eligible crashed for {self}", exc_info=True)
+            raise exceptions.EligibilityError(
+                f"is_eligible crashed for {self}: {e}"
+            ) from e
+        self._is_eligible_result = result
+        return result
 
     def _evaluate_can_run(self):
         return self._check_constraints(ConstraintType.RUNNABILITY) and self.can_run()

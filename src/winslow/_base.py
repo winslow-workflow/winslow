@@ -85,6 +85,6 @@ class _Base:
             return cls.get_name()
         if not isinstance(display_name, str) or not display_name:
             raise MisconfigurationError(
-                f"Invalid display_name for {cls} ({display_name!r}) - Needs to be a non-empty string."
+                f"Invalid display_name for {cls} ({display_name!r}) - needs to be a non-empty string."
             )
         return display_name

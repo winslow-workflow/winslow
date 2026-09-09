@@ -21,7 +21,13 @@ from winslow.exceptions import (
     InitializationError,
     EligibilityError,
 )
-from winslow.logger import LOGGER, setup_run_logging, shutdown_run_logging
+from winslow.logger import (
+    LOG_JSON,
+    LOGGER,
+    setup_run_logging,
+    shutdown_run_logging,
+    stdout_json_sink,
+)
 from winslow.telemetry import (
     TelemetryRegistry,
     activate_telemetry_configurations,
@@ -33,7 +39,7 @@ from winslow.telemetry import (
 INDENT = "\t"
 
 
-class Action(Enum):
+class Command(Enum):
     RUN = "run"
     SHOW = "show"
     SERVE = "serve"
@@ -58,7 +64,7 @@ class OrchestratorConfig(argparse.Namespace):
     declare them. SHOW, for example, has no mode, and argparse then leaves the
     attribute unset."""
 
-    action = Action.RUN
+    action = Command.RUN
     mode = Mode.TUI
 
     @property
@@ -66,7 +72,7 @@ class OrchestratorConfig(argparse.Namespace):
         # This gates the interactive setup that SHOW does not need, especially
         # the log buffer of each task (see Graph). The store and the runner read
         # the mode instead.
-        return self.action is not Action.SHOW and self.mode is not Mode.HEADLESS
+        return self.action is not Command.SHOW and self.mode is not Mode.HEADLESS
 
 
 def _merged_config(base, overrides):
@@ -86,10 +92,9 @@ class Orchestrator(_ConfigBase):
 
     workflow = ConfigOption(
         help_text="Name of the workflow to view / run.",
-        required=False,
         subcommands=(
-            Action.RUN.value,
-            Action.SHOW.value,
+            Command.RUN.value,
+            Command.SHOW.value,
         ),
         # The UI has a workflow selection widget, so it needs no text input.
         show_on_ui=False,
@@ -98,7 +103,7 @@ class Orchestrator(_ConfigBase):
     host = ConfigOption(
         help_text="The bind address of the serve process. Loopback needs no credential.",
         default="127.0.0.1",
-        subcommands=Action.SERVE.value,
+        subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
 
@@ -106,7 +111,7 @@ class Orchestrator(_ConfigBase):
         help_text="The port of the serve process.",
         type=int,
         default=8866,
-        subcommands=Action.SERVE.value,
+        subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
 
@@ -114,7 +119,7 @@ class Orchestrator(_ConfigBase):
         help_text="Serve the MCP endpoint at /mcp (requires the mcp extra).",
         action="store_true",
         default=False,
-        subcommands=Action.SERVE.value,
+        subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
 
@@ -122,7 +127,7 @@ class Orchestrator(_ConfigBase):
         help_text="Serve without the websocket endpoint.",
         action="store_true",
         default=False,
-        subcommands=Action.SERVE.value,
+        subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
 
@@ -133,10 +138,9 @@ class Orchestrator(_ConfigBase):
             "boolean operators (& |), negation (~), grouping (()), "
             "and comma-separated OR shorthand (foo,bar)."
         ),
-        required=False,
         subcommands=(
-            Action.RUN.value,
-            Action.SHOW.value,
+            Command.RUN.value,
+            Command.SHOW.value,
         ),
         depends_on="initialize",
         show_on_ui=False,
@@ -144,25 +148,23 @@ class Orchestrator(_ConfigBase):
 
     initialize = ConfigOption(
         action="store_true",
-        required=False,
         default=False,
         help_text=(
             "Initialize a single workflow (chosen with --workflow) and list its "
             "tasks. Required in order to use --filter with show."
         ),
-        subcommands=Action.SHOW.value,
+        subcommands=Command.SHOW.value,
         show_on_ui=False,
     )
 
     with_deps = ConfigOption(
         action="store_true",
-        required=False,
         default=False,
         help_text=(
             "With --initialize, also list each task's dependencies, in the order "
             "they run."
         ),
-        subcommands=Action.SHOW.value,
+        subcommands=Command.SHOW.value,
         depends_on="initialize",
         show_on_ui=False,
     )
@@ -170,43 +172,39 @@ class Orchestrator(_ConfigBase):
     mode = ConfigOption(
         type=_parse_mode,
         choices=tuple(Mode),
-        required=False,
         help_text=(
             "How to run the workflow(s): 'tui' launches the interactive terminal"
             " UI; 'headless' runs single-thread/single-process with no UI, useful"
             " for CI and debugging."
         ),
         default=Mode.TUI,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
         show_on_ui=False,
     )
 
     check = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Checks the tasks in the workflow instead of running them"
             " - available in headless run mode."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
         show_on_ui=False,
     )
 
     disable_concurrency = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Disables all concurrency during task runs (e.g. task dependencies and task "
             "eligibility will be checked sequentially)."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
     )
 
     clear_cache = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Invalidate every cache entry at workflow initialization, before "
             "the eager population. Meaningful for persistent cache storage; "
@@ -214,62 +212,57 @@ class Orchestrator(_ConfigBase):
             "keeps its records, and a later read can promote them back."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
     )
 
     dry_run = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Run tasks in dry-run mode (dry_run method will be "
             "called on tasks, instead of run)"
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
     )
 
     force_run = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Skips implicit success checks before a task run. "
             "Runnability and dependency checks will still be in effect."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
     )
 
     force_success = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Mark tasks as successful (FORCE_SUCCESS) without running any checks "
             "or the task itself. Ineligible (skipped) tasks are left untouched."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
     )
 
     reraise_errors = ConfigOption(
         action="store_true",
-        required=False,
         help_text=(
             "Re-raise unexpected task errors after marking the task ERROR, "
             "aborting the run instead of continuing. For CI and debugging."
         ),
         default=False,
-        subcommands=Action.RUN.value,
+        subcommands=Command.RUN.value,
         show_on_ui=False,
     )
 
     debug = ConfigOption(
         action="store_true",
-        required=False,
         help_text="Enable debug mode and logging.",
         default=False,
         subcommands=(
-            Action.RUN.value,
-            Action.SHOW.value,
+            Command.RUN.value,
+            Command.SHOW.value,
         ),
         # The command line enables the debug mode.
         show_on_ui=False,
@@ -277,9 +270,6 @@ class Orchestrator(_ConfigBase):
 
     def __init__(self, orchestrator_config, directory=None, unknown_args=None):
         self.directory = directory or os.getcwd()
-        # The workflows and the runner see only the config, so the project
-        # root travels on it (see ExecutionRecordStore.capture).
-        orchestrator_config.directory = self.directory
         # argparse reads sys.argv if this is None. Normalize it at the boundary.
         self.unknown_args = list(unknown_args or ())
 
@@ -293,14 +283,9 @@ class Orchestrator(_ConfigBase):
             self.orchestrator_config
         )
 
-        # Set later if the interactive mode is enabled.
-        self.ui = None
+        # The TUI application. run and connect create it.
 
         self.logger = LOGGER
-
-    @property
-    def is_interactive(self):
-        return self.orchestrator_config.is_interactive
 
     @classmethod
     def _add_arguments(cls, parser, subcommand=None):
@@ -346,27 +331,27 @@ class Orchestrator(_ConfigBase):
             for name, conf in cls.config_meta.items()
             if conf.subcommands
         }
-        parser.set_defaults(action=Action.RUN, **all_defaults)
+        parser.set_defaults(**all_defaults)
 
         cls._generate_subcommand(
             subparsers,
-            action=Action.SHOW,
+            action=Command.SHOW,
             help_text="Show workflow / task information.",
         )
 
         cls._generate_subcommand(
-            subparsers, action=Action.RUN, help_text="Run workflow(s)."
+            subparsers, action=Command.RUN, help_text="Run workflow(s)."
         )
 
         cls._generate_subcommand(
             subparsers,
-            action=Action.SERVE,
+            action=Command.SERVE,
             help_text="Serve the live sessions over one websocket endpoint.",
         )
 
         connect_parser = cls._generate_subcommand(
             subparsers,
-            action=Action.CONNECT,
+            action=Command.CONNECT,
             help_text="Run the TUI against a serve process.",
         )
         # The ConfigOption machinery declares only --flag options, so the
@@ -442,31 +427,10 @@ class Orchestrator(_ConfigBase):
 
     @classmethod
     def _leftover_indices(cls, unknown, leftover):
-        """The positions in `unknown` that argparse did NOT claim for this
-        workflow.
-
-        The positions are matched, and not the values. This is important.
-
-        Two workflows each take a number, and the user runs:
-
-            --my-integer 7 --batch-size 7
-
-        Workflow A claims `--my-integer 7`. Workflow B claims `--batch-size 7`.
-        Each token is claimed, so the user must get no error.
-
-        A comparison by value makes the two `7` tokens equal: the leftover of A
-        holds a `7`, which belongs to B, and the leftover of B holds a `7`, which
-        belongs to A. The value `7` thus looks unclaimed and the result is the
-        wrong message "Unrecognized arguments: 7". The positions keep the two
-        tokens separate: the `7` of A is at position 1 and the `7` of B is at
-        position 3.
-
-            unknown = ['--my-integer', '7', '--batch-size', '7']
-            positions:  0              1     2               3
-
-        argparse keeps the leftovers in order. This method thus walks `unknown`,
-        matches the leftovers against it, and finds the positions that this
-        workflow did not claim."""
+        """The positions in `unknown` that argparse did not claim for this
+        workflow. The match is by position, because two workflows can claim
+        equal tokens: `--my-integer 7 --batch-size 7` leaves a `7` in each
+        leftover list, and a match by value would report that `7` as unclaimed."""
         positions = set()
         cursor = 0
         for i, token in enumerate(unknown):
@@ -524,15 +488,15 @@ class Orchestrator(_ConfigBase):
             if parameterized:
                 for declared_name, param in kls._parameterization_meta.items():
                     self.logger.info(
-                        f"{INDENT * 2}- {self._describe_parameter(declared_name, param)}"
+                        f"{INDENT * 2}- {self._describe_parameter(kls, declared_name, param)}"
                     )
 
     @classmethod
-    def _describe_parameter(cls, declared_name, param):
+    def _describe_parameter(cls, kls, declared_name, param):
         style = param.param_style.name.lower()
-        resolved = getattr(param, "_resolved_names", None)
-        if resolved:
-            return f"{declared_name} -> {', '.join(resolved)}  ({style})"
+        if param._compound:
+            names = ", ".join(kls._parameter_attrs[declared_name])
+            return f"{declared_name} -> {names}  ({style})"
         return f"{declared_name}  ({style})"
 
     def _display_tasks(self, workflow):
@@ -563,7 +527,9 @@ class Orchestrator(_ConfigBase):
                 continue
 
             workflow = workflow_kls(
-                self.orchestrator_config, workflow_args_map[workflow_kls]
+                self.orchestrator_config,
+                workflow_args_map[workflow_kls],
+                root_dir=self.directory,
             )
 
             if not self.check_filters(workflow):
@@ -587,7 +553,7 @@ class Orchestrator(_ConfigBase):
         if workflow_name not in self.workflow_registry:
             raise MisconfigurationError(
                 f"{workflow_name} not found in the workflow registry"
-                f" - (available workflows: {self.workflow_registry.names})"
+                f" - the available workflows are {self.workflow_registry.names}."
             )
 
         workflow_kls = self.workflow_registry[workflow_name]
@@ -595,10 +561,12 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_kls.should_be_initialized(self.orchestrator_config):
             raise InitializationError(
-                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+                f"Cannot initialize workflow {workflow_kls} - its should_be_initialized answered False for this configuration."
             )
 
-        workflow = workflow_kls(self.orchestrator_config, workflow_args)
+        workflow = workflow_kls(
+            self.orchestrator_config, workflow_args, root_dir=self.directory
+        )
         workflow.initialize_tasks()
         self._display_workflow(0, workflow, show_tasks=True)
 
@@ -629,13 +597,15 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_name:
             raise MisconfigurationError(
-                "Need to provide workflow name via --workflow parameter."
+                f"a headless run initializes one workflow - pass --workflow "
+                f"<name>; the collected workflows are "
+                f"{self.workflow_registry.names}."
             )
 
         if workflow_name not in self.workflow_registry:
             raise MisconfigurationError(
                 f"{workflow_name} not found in the workflow registry"
-                f" - (available workflows: {self.workflow_registry.names})"
+                f" - the available workflows are {self.workflow_registry.names}."
             )
 
         workflow_kls = self.workflow_registry[workflow_name]
@@ -643,14 +613,16 @@ class Orchestrator(_ConfigBase):
 
         if not workflow_kls.should_be_initialized(self.orchestrator_config):
             error = InitializationError(
-                f"Cannot initialize workflow {workflow_kls} - should_be_initialized check failed."
+                f"Cannot initialize workflow {workflow_kls} - its should_be_initialized answered False for this configuration."
             )
             emit_unscoped_error(
                 error, workflow_name=workflow_name, workflow_class=workflow_kls.__name__
             )
             raise error
 
-        workflow = workflow_kls(self.orchestrator_config, workflow_args)
+        workflow = workflow_kls(
+            self.orchestrator_config, workflow_args, root_dir=self.directory
+        )
 
         # A run that does not start is invisible under cron, so the telemetry
         # hook must report it. The catch is narrow on purpose:
@@ -684,16 +656,70 @@ class Orchestrator(_ConfigBase):
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
+        # The boundary must exist before the first session logs (see
+        # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
+        # for the log store of a pod; the default keeps the session files.
+        setup_run_logging(sinks=[stdout_json_sink()] if LOG_JSON else None)
+        registry = SessionRegistry()
+        state_store = create_state_store(config)
+        self._restore_sessions(registry, state_store)
+        self._auto_init_sessions(registry, state_store)
         app = create_app(
-            SessionRegistry(),
+            registry,
             Credentials.from_env(config.host),
             orchestrator=self,
-            state_store=create_state_store(config),
+            state_store=state_store,
             ws=not config.no_ws,
             mcp=config.mcp,
             base_url=f"http://{config.host}:{config.port}",
         )
-        uvicorn.run(app, host=config.host, port=config.port)
+        try:
+            # log_config=None: uvicorn's loggers propagate to the root
+            # handler, so its lines share the winslow format - JSON under
+            # WINSLOW_LOG_JSON (see _console_handler).
+            uvicorn.run(app, host=config.host, port=config.port, log_config=None)
+        finally:
+            shutdown_run_logging()
+
+    def _restore_sessions(self, registry, state_store):
+        """Rebuild every open manifest at serve startup: the sessions of a
+        dead process come back without a client, the way a local user's
+        restore brings them back. A failed rebuild logs and skips."""
+        from winslow.client import LocalAppClient
+
+        port = LocalAppClient(registry, orchestrator=self, state_store=state_store)
+        for manifest in port.manifests():
+            self.logger.info(f"restore: rebuilding {manifest.session_id}")
+            try:
+                port.restore_session(manifest.session_id)
+            except Exception:
+                self.logger.error(
+                    f"restore: the rebuild of '{manifest.session_id}' failed.",
+                    exc_info=True,
+                )
+
+    def _auto_init_sessions(self, registry, state_store):
+        """One session per auto_init workflow: the process that owns the
+        sessions runs auto_init, so a connecting client starts none. A
+        failed initialization logs and skips; the process serves on."""
+        from winslow.session import create_session
+
+        # A restored session satisfies auto_init: the workflow already runs.
+        live = {session.workflow.instance_name for session in registry.sessions()}
+        for name in self.workflow_registry.names:
+            workflow_kls = self.workflow_registry[name]
+            if not workflow_kls.auto_init or name in live:
+                continue
+            if not workflow_kls.should_be_initialized(self.orchestrator_config):
+                continue
+            self.logger.info(f"auto_init: initializing {name}")
+            try:
+                create_session(self, state_store, registry, name)
+            except Exception:
+                self.logger.error(
+                    f"auto_init: the initialization of '{name}' failed.",
+                    exc_info=True,
+                )
 
     def _handle_connect(self):
         """The remote TUI: the same app over the wire transport of the
@@ -712,15 +738,13 @@ class Orchestrator(_ConfigBase):
         client.connect()
         self.logger.info(f"Connected to {config.url}")
 
-        setup_run_logging()
-        self.app = Winslow(
-            orchestrator_config=config, orchestrator=self, client=client
-        )
+        # The tasks run on the serve process, so no run record reaches this
+        # one: run-log wiring here would only create an empty log directory.
+        app = Winslow(client=client, logger=self.logger, owns_sessions=False)
         try:
-            self.app.run()
+            app.run()
         finally:
             client.close()
-            shutdown_run_logging()
 
     def _handle_interactive_run(self):
         self.logger.debug("Interactive run")
@@ -742,17 +766,25 @@ class Orchestrator(_ConfigBase):
         # headless run keeps the console output.
         setup_run_logging()
 
-        self.app = Winslow(
-            orchestrator_config=self.orchestrator_config,
+        from winslow.client import LocalAppClient
+        from winslow.session import SessionRegistry
+        from winslow.state import create_state_store
+
+        # The composition root of the local TUI: this process owns the registry
+        # and the durable store (see winslow.state); the app consumes the port.
+        local_client = LocalAppClient(
+            SessionRegistry(),
             orchestrator=self,
+            state_store=create_state_store(self.orchestrator_config),
         )
+        app = Winslow(client=local_client, logger=self.logger, owns_sessions=True)
 
         # app.run() blocks until the TUI stops. Then flush and stop the
         # run-logging listener. This is in a finally clause, so it also occurs
         # after an error. If it does not occur, the listener thread and the open
         # file handles stay, and the buffered lines are lost.
         try:
-            self.app.run()
+            app.run()
         finally:
             shutdown_run_logging()
 
@@ -775,7 +807,11 @@ class Orchestrator(_ConfigBase):
         workflow_params = _merged_config(workflow_base, workflow_values)
 
         return workflow_kls(
-            orchestrator_config, workflow_params, store=task_store, logger=logger
+            orchestrator_config,
+            workflow_params,
+            store=task_store,
+            logger=logger,
+            root_dir=self.directory,
         )
 
     def _collect_caches(self):
@@ -807,7 +843,7 @@ class Orchestrator(_ConfigBase):
             self.orchestrator_config, subcommand=self.orchestrator_config.action.value
         )
 
-        if self.orchestrator_config.action is Action.CONNECT:
+        if self.orchestrator_config.action is Command.CONNECT:
             # A remote TUI reads everything over the wire, so the local
             # workflow and cache collection is skipped.
             return self._handle_connect()
@@ -815,11 +851,11 @@ class Orchestrator(_ConfigBase):
         self.workflow_registry.collect_classes(self.directory)
         self._collect_caches()
 
-        if self.orchestrator_config.action is Action.SHOW:
+        if self.orchestrator_config.action is Command.SHOW:
             self._handle_show()
-        elif self.orchestrator_config.action is Action.SERVE:
+        elif self.orchestrator_config.action is Command.SERVE:
             self._handle_serve()
-        elif self.orchestrator_config.action is Action.RUN:
+        elif self.orchestrator_config.action is Command.RUN:
             # Runs only: a show produces no errors worth a backend. The finally
             # flushes and unregisters, so an embedding process can start again.
             self.telemetry_registry.collect_classes(self.directory)

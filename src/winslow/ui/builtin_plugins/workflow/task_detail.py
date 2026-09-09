@@ -21,7 +21,6 @@ from winslow.model import SnapshotEncoding
 from winslow.runner.execution import ExecutionPhase
 from winslow.ui.modals.cache_value import CacheSnapshotValue
 from winslow.ui.reads import port_read
-from winslow.task.info import _ambiguous_names, _location, _origin_label
 from winslow.util import safe_repr
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, TaskDetailRenderContext, Slots
@@ -123,12 +122,6 @@ class CacheReadsTable(AttributeTable):
             self.app.push_screen(CacheSnapshotValue(snapshot))
 
 
-def _walk_nodes(node):
-    yield node
-    for child in node.children:
-        yield from _walk_nodes(child)
-
-
 class SourceTree(Tree):
     """The reverse inheritance tree for the Code tab, with the concrete task at
     the root. It is built from TaskInfo.source. Each node holds its SourceNode
@@ -140,20 +133,15 @@ class SourceTree(Tree):
     parentheses only if the same class name comes from more than one module, which
     means that the classes are different. The user can thus separate them."""
 
-    def __init__(self, root_node, root_dir):
+    def __init__(self, root_node):
         self._root_node = root_node
-        self._root_dir = root_dir
-        self._ambiguous = _ambiguous_names(_walk_nodes(root_node))
-        super().__init__(self._label(root_node), root_node)
+        super().__init__(root_node.label, root_node)
         self.auto_expand = False
-
-    def _label(self, node):
-        return _origin_label(node, self._ambiguous, self._root_dir)
 
     def on_mount(self):
         def add(widget_node, src_node):
             for child in src_node.children:
-                add(widget_node.add(self._label(child), data=child), child)
+                add(widget_node.add(child.label, data=child), child)
 
         add(self.root, self._root_node)
         self.root.expand_all()
@@ -168,13 +156,12 @@ class SourceView(Horizontal):
     pane is a Vertical with a path header above the syntax body, which
     scrolls."""
 
-    def __init__(self, root_node, root_dir):
+    def __init__(self, root_node):
         self._root_node = root_node
-        self._root_dir = root_dir
         super().__init__()
 
     def compose(self):
-        yield SourceTree(self._root_node, self._root_dir)
+        yield SourceTree(self._root_node)
         with Vertical(id="source-pane"):
             with Horizontal(id="source-header"):
                 yield Label(id="source-path")
@@ -189,7 +176,7 @@ class SourceView(Horizontal):
 
     def _show(self, node):
         self.query_one("#source-path", Label).update(
-            f"{node.name}  ·  {_location(node.module, node.path, self._root_dir)}"
+            f"{node.name}  ·  {node.location}"
         )
         log = self.query_one("#source-code", RichLog)
         log.clear()
@@ -229,7 +216,6 @@ class TaskDetailWidget(Widget):
         super().__init__(*args, **kwargs)
 
     def compose(self):
-        root_dir = self._root_dir
         info = self.w_info
         with TabbedContent(classes="main"):
             with TabPane("Logs"):
@@ -295,7 +281,7 @@ class TaskDetailWidget(Widget):
                                 yield MarkdownViewer(text, show_table_of_contents=False)
             if info.source:
                 with TabPane("Code"):
-                    yield SourceView(info.source, root_dir)
+                    yield SourceView(info.source)
 
     def _cache_reads(self):
         snapshots = self._cache_snapshots or {}

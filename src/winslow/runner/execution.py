@@ -1,8 +1,7 @@
 import collections
 import threading
-import uuid as _uuid
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
@@ -83,7 +82,7 @@ class ExecutionPhase(Enum):
         return self.value
 
 
-@dataclass
+@dataclass(frozen=True)
 class PhaseSpan:
     phase: ExecutionPhase
     started_at: datetime
@@ -107,11 +106,13 @@ class ExecutionRecord:
             maxlen=EXECUTION_RECORD_LOG_BUFFER_SIZE
         )
     )
+    # Each container below is rebound per write, so a reader on another
+    # thread holds a complete value (see track_phase).
     # PhaseSpan items in execution order. The same phase can occur more than one
     # time, for example when a later group probes a dependency again.
-    phases: list = field(default_factory=list)
+    phases: tuple = ()
     # ExecutionPhase -> {transient_property name: safe str | NOT_MATERIALIZED}.
-    # Captured per phase while the task runs (see InteractiveRunner.task_scope).
+    # Captured per phase while the task runs (see snapshot_phase).
     transient_snapshots: dict = field(default_factory=dict)
     # ExecutionPhase -> tuple[CacheReadSnapshot]. A repeated phase overwrites,
     # so the last occurrence wins, exactly like transient_snapshots.
@@ -150,12 +151,23 @@ class ExecutionRecord:
 
     @contextmanager
     def track_phase(self, phase):
+        """One phase of the timeline. The task runs on one worker at a time
+        (see InteractiveRunner._claims), so the record has one writer and the
+        rebinds need no lock."""
         span = PhaseSpan(phase, datetime.now())
-        self.phases.append(span)
+        self.phases = (*self.phases, span)
         try:
-            yield span
+            yield
         finally:
-            span.completed_at = datetime.now()
+            closed = replace(span, completed_at=datetime.now())
+            self.phases = tuple(closed if s is span else s for s in self.phases)
+
+    def snapshot_phase(self, phase, transients=None, cache_reads=None):
+        """The values that one phase materialized (see InteractiveRunner.task_scope)."""
+        if transients:
+            self.transient_snapshots = {**self.transient_snapshots, phase: transients}
+        if cache_reads:
+            self.cache_snapshots = {**self.cache_snapshots, phase: cache_reads}
 
     def append_log(self, line: str):
         with self._log_lock:
@@ -223,10 +235,6 @@ class ExecutionBatch:
             raise self._error
 
     @property
-    def is_bulk(self):
-        return self.task_count > 1
-
-    @property
     def stop_requested(self):
         return self._stop_event.is_set()
 
@@ -262,10 +270,12 @@ def _detached_error(exc):
         return RuntimeError(f"{type(exc).__name__}: {exc}")
 
 
-def new_batch(action, tasks):
+def new_batch(uuid, action, tasks, execution_context, errored):
     return ExecutionBatch(
-        uuid=str(_uuid.uuid4()),
+        uuid=uuid,
         action=action,
         created_at=datetime.now(),
         task_count=len(tasks),
+        execution_context=execution_context,
+        errored=errored,
     )

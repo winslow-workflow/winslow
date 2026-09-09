@@ -1552,13 +1552,13 @@ dependencies = [
     { name = "blinker" },
     { name = "networkx" },
     { name = "python-decouple" },
-    { name = "rich" },
 ]
 
 [package.optional-dependencies]
 connect = [
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "rich" },
     { name = "textual" },
     { name = "websockets" },
 ]
@@ -1584,6 +1584,7 @@ serve = [
 ]
 tui = [
     { name = "psutil" },
+    { name = "rich" },
     { name = "textual" },
 ]
 
@@ -1618,7 +1619,8 @@ requires-dist = [
     { name = "pydantic", marker = "extra == 'connect'", specifier = ">=2.0" },
     { name = "pydantic", marker = "extra == 'serve'", specifier = ">=2.0" },
     { name = "python-decouple", specifier = ">=3.8" },
-    { name = "rich", specifier = ">=13.0.0" },
+    { name = "rich", marker = "extra == 'connect'", specifier = ">=13.0.0" },
+    { name = "rich", marker = "extra == 'tui'", specifier = ">=13.0.0" },
     { name = "sentry-sdk", marker = "extra == 'sentry'", specifier = ">=2.0" },
     { name = "starlette", marker = "extra == 'otel'", specifier = ">=0.40" },
     { name = "starlette", marker = "extra == 'serve'", specifier = ">=0.40" },

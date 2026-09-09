@@ -2,7 +2,7 @@
 
 import collections
 from functools import cached_property
-from itertools import product
+from itertools import chain, product
 from types import SimpleNamespace
 
 from winslow._base import _Base
@@ -67,6 +67,14 @@ def _resolve_compound_names(cls_name, declared_name, param):
     return tuple(names)
 
 
+def _resolve_names(cls_name, declared_name, param):
+    """The attribute names that one declaration binds: several for a compound
+    parameter, one otherwise."""
+    if param._compound:
+        return _resolve_compound_names(cls_name, declared_name, param)
+    return (_resolve_singular_name(cls_name, declared_name, param),)
+
+
 class _ParameterizationMeta(_DeclarationMeta):
     def __new__(cls, name, bases, dct):
         parameters = cls._collect(bases, dct, Parameter, "_parameterization_meta")
@@ -77,17 +85,13 @@ class _ParameterizationMeta(_DeclarationMeta):
                 f"{name}: Parameter name(s) {sorted(underscore_names)} must not start with an underscore."
             )
 
-        # Flatten to the effective attribute names. A compound parameter has one
-        # declared name, but it binds more than one attribute.
-        attr_names = []
-        for declared_name, param in parameters.items():
-            if getattr(param, "_compound", False):
-                param._resolved_names = _resolve_compound_names(
-                    name, declared_name, param
-                )
-                attr_names.extend(param._resolved_names)
-            else:
-                attr_names.append(_resolve_singular_name(name, declared_name, param))
+        # The class owns the resolved names. One Parameter object can sit under
+        # another declared name in another class, so the object carries none.
+        attrs = {
+            declared_name: _resolve_names(name, declared_name, param)
+            for declared_name, param in parameters.items()
+        }
+        attr_names = list(chain.from_iterable(attrs.values()))
 
         duplicates = sorted({n for n in attr_names if attr_names.count(n) > 1})
         if duplicates:
@@ -109,9 +113,9 @@ class _ParameterizationMeta(_DeclarationMeta):
         for declared_name, param in parameters.items():
             if declared_name not in dct:
                 continue  # inherited and already expanded on the base
-            if getattr(param, "_compound", False):
+            if param._compound:
                 del dct[declared_name]
-                for member_name in param._resolved_names:
+                for member_name in attrs[declared_name]:
                     dct[member_name] = _ParameterMember(member_name)
             elif param.name and param.name != declared_name:
                 del dct[declared_name]
@@ -119,6 +123,7 @@ class _ParameterizationMeta(_DeclarationMeta):
 
         dct["_is_parameterized"] = bool(parameters)
         dct["_parameterization_meta"] = parameters
+        dct["_parameter_attrs"] = attrs
         dct["_parameter_names"] = tuple(attr_names)
 
         return super().__new__(cls, name, bases, dct)
@@ -184,7 +189,9 @@ def _check_hashability(task_kls, field_name, value):
         hash(value)
     except TypeError:
         raise ParameterizationError(
-            f"Unhashable value generated for parameter: {field_name}. ({value})",
+            f"{task_kls.__name__}.{field_name}: the parameter value "
+            f"{safe_repr(value)} is not hashable - a parameter value feeds "
+            f"the identity key, so it must hash and stay stable.",
             task_kls=task_kls,
         )
 
@@ -208,14 +215,11 @@ def _fields_by_attr(task_kls):
 
     The compound Parameter appears once for each attribute name that it
     binds."""
-    mapping = {}
-    for declared_name, field in task_kls._parameterization_meta.items():
-        if getattr(field, "_compound", False):
-            for attr in field._resolved_names:
-                mapping[attr] = field
-        else:
-            mapping[field.name or declared_name] = field
-    return mapping
+    return {
+        attr: field
+        for declared_name, field in task_kls._parameterization_meta.items()
+        for attr in task_kls._parameter_attrs[declared_name]
+    }
 
 
 def _validate_context(task_kls, context):
@@ -297,7 +301,9 @@ def _validate_sequential_value_lengths(task_kls, sequential_ctx):
         ]
 
         raise ParameterizationError(
-            f"Sequential parametrization values with different lengths were generated {', '.join(ctx_readable)}",
+            f"{task_kls.__name__}: sequential parameters must have the same "
+            f"number of values, got {', '.join(ctx_readable)} - align the "
+            f"value lists.",
             task_kls=task_kls,
         )
 
@@ -454,7 +460,7 @@ def _compound_axis(task_kls, field_name, field, workflow_config):
     """Build one cartesian axis for a compound parameter. The axis is a list of
     partial {attr: value} dicts. The kind of the parameter, from_tuple or
     from_dict, selects the method."""
-    names = field._resolved_names
+    names = task_kls._parameter_attrs[field_name]
     rows = _eval_rows(task_kls, field_name, field, workflow_config)
 
     if field._compound_kind == "dict":
@@ -537,8 +543,9 @@ def _generate_context_from_params(task_kls, workflow_config):
     if not axes:
         raise ParameterizationError(
             (
-                "Empty parameterization context was generated."
-                " - please check value generation functions if you are using any."
+                "the parameterization produced no parameter sets - a value "
+                "generation function answered nothing; a parameterized task "
+                "needs at least one set."
             ),
             task_kls=task_kls,
         )

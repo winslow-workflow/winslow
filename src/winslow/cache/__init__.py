@@ -36,7 +36,6 @@ from winslow.cache.container import (
 # The cache value shapes live in winslow.model with the other port DTOs;
 # this face keeps their import path.
 from winslow.model import (
-    PREVIEWABLE_STATES,
     CacheEntryError,
     CacheEntryInfo,
     CacheReadSnapshot,

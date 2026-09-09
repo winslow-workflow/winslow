@@ -6,7 +6,6 @@ from winslow._base import _Base
 from winslow.logger import LOGGER
 from winslow.cache import CacheContainerRef, get_global_cache, get_workflow_cache
 from winslow.task import Task
-from winslow.task.eligibility import check_task_eligibility
 
 from winslow._parameterization import _get_parameterization_context
 from winslow.exceptions import (
@@ -41,10 +40,6 @@ class Graph(_Base):
         # Nothing stamps a graph, so the descriptors always use the fallbacks.
         self._workflow_cache_container = None
         self._global_cache_container = None
-
-        # A parameterized task class can have more than one instance.
-        # key: task_kls, value: one or more task objects
-        self._task_class_map = collections.defaultdict(set)
 
     def _get_nx_graph(self, tasks_with_assigned_deps):
         nx_graph = nx.DiGraph()
@@ -88,7 +83,7 @@ class Graph(_Base):
                     f"Non-terminal task {task} cannot depend on terminal task {dep}."
                 )
 
-    def _assign_task_dependencies(self, task, registry):
+    def _assign_task_dependencies(self, task, registry, tasks_by_class):
         """
         Read the dependency context that the class-level attribute declares. It
         can hold strings, such as a task name or a group name, and also task
@@ -122,14 +117,15 @@ class Graph(_Base):
                 # a class name in string form.
                 if not task_classes:
                     raise MisconfigurationError(
-                        f"No matching task classes found in the registry for the dependency: {dep}",
-                        "Make sure you don't have stale dependencies set in string form.",
+                        f"{task}: the dependency {dep!r} matches no registered "
+                        f"task class - fix the name, or register the class."
                     )
             elif isinstance(dep, type) and issubclass(dep, Task):
                 task_classes = [dep]
             else:
                 raise MisconfigurationError(
-                    f"Invalid dependency value ({dep}, {type(dep)}), it can either be a task class or a string."
+                    f"{task}: {dep!r} ({type(dep).__name__}) is not a dependency - "
+                    f"declare a task class or its name as a string."
                 )
 
             dependency_classes.extend(task_classes)
@@ -148,8 +144,8 @@ class Graph(_Base):
         deps_unique = {
             dep_task
             for task_kls in dependency_classes
-            for dep_task in self._task_class_map[task_kls]
-            if task.depends_on(dep_task) and check_task_eligibility(dep_task)
+            for dep_task in tasks_by_class[task_kls]
+            if task.depends_on(dep_task) and dep_task._check_eligibility()
         }
 
         self._check_premier_dependencies(task, deps_unique)
@@ -168,11 +164,13 @@ class Graph(_Base):
     def generate_pipeline(self, registry):
         tasks = self._initialize_tasks(registry)
 
+        # A parameterized task class has more than one instance.
+        tasks_by_class = collections.defaultdict(set)
         for task in tasks:
-            self._task_class_map[task.__class__].add(task)
+            tasks_by_class[task.__class__].add(task)
 
         for task in tasks:
-            self._assign_task_dependencies(task, registry)
+            self._assign_task_dependencies(task, registry, tasks_by_class)
 
         nx_graph = self._get_nx_graph(tasks)
         self._check_cyclical_dependencies(nx_graph)

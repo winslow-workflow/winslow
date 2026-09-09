@@ -14,7 +14,7 @@ SUMMARY_REFRESH_INTERVAL = 2
 
 class RestorableRow(Widget):
     """One open manifest on the dashboard: the session that a dead process
-    left behind, with its restore action. `manifest` is a ManifestRow value
+    left behind, with its restore action. `manifest` is a ManifestInfo value
     (see AppClient.manifests)."""
 
     def __init__(self, manifest, *args, **kwargs):
@@ -36,7 +36,7 @@ class RestorableRow(Widget):
 
 
 class SessionRow(Widget):
-    """One session on the dashboard, rendered from its SessionRow value. The
+    """One session on the dashboard, rendered from its SessionInfo value. The
     tick refreshes the value through the AppClient of the app."""
 
     MAX_TITLE_LENGTH = 20
@@ -137,7 +137,7 @@ class SessionRow(Widget):
             label.update(self._waiting_text(batches))
 
     def fetch_row(self):
-        """The current SessionRow value of this session, or the last known
+        """The current SessionInfo value of this session, or the last known
         one when the read fails or finds no match. Runs off the UI thread
         (see _tick)."""
         rows = port_read(self, self.app.client.sessions, quiet=True)

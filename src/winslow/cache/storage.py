@@ -191,8 +191,8 @@ class ComposedStorage(BaseStorage):
 
     def __init__(self, cache_name, namespace):
         super().__init__(cache_name, namespace)
-        self._tiers = [kls(cache_name, namespace) for kls in self.storage_classes]
-        self._writable = [tier for tier in self._tiers if not tier.read_only]
+        self._tiers = tuple(kls(cache_name, namespace) for kls in self.storage_classes)
+        self._writable = tuple(tier for tier in self._tiers if not tier.read_only)
 
     def read(self, key):
         """The first hit wins. It is promoted verbatim into the writable tiers
