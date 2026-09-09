@@ -73,9 +73,7 @@ class WorkflowFormGenerator:
 
     def _generate_selection_list(self, row):
         selected = row.initial_selection or ()
-        selection_ctx = [
-            (choice, choice, choice in selected) for choice in row.choices
-        ]
+        selection_ctx = [(choice, choice, choice in selected) for choice in row.choices]
         return SelectionList(*selection_ctx, name=row.name)
 
     def _generate_option_list(self, row):

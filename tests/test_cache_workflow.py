@@ -18,7 +18,7 @@ from winslow.cache import (
     set_global_cache_registry,
     stray_workflow_caches,
 )
-from winslow import ConfigOption, Workflow
+from winslow import ConfigOption, Workflow, settings
 from winslow.constants import Mode
 from winslow.exceptions import InitializationError
 from winslow.logger import TASK_LOGGER_NAME
@@ -250,7 +250,7 @@ def test_an_abstract_cache_is_not_collected(tmp_path):
 
 
 def test_clear_cache_option_drops_the_persisted_records(tmp_path, monkeypatch):
-    monkeypatch.setenv("WINSLOW_CACHE_DIR", str(tmp_path / "cache-root"))
+    monkeypatch.setattr(settings, "CACHE_DIR", str(tmp_path / "cache-root"))
     loads = tmp_path / "loads.txt"
     loads.write_text("")
     repo = tmp_path / "repo"

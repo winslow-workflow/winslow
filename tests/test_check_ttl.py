@@ -20,7 +20,9 @@ SID = "ttl-20260819T000000-00000001"
 def seed_entry(state_store, task, status="COMPLETED", age=0.0):
     state_store.save_status_snapshot(
         SID,
-        StatusSnapshot(key=task.identity_key, status=status, checked_at=time.time() - age),
+        StatusSnapshot(
+            key=task.identity_key, status=status, checked_at=time.time() - age
+        ),
     )
 
 

@@ -23,6 +23,22 @@ Only run winslow in project directories and with dependencies you trust. This is
 by design and standard for the category (make, tox, pytest) — it is not itself a
 vulnerability.
 
+## Serve mode
+
+`winslow serve` exposes the sessions of one process over a websocket and, with
+`--endpoints mcp`, over an MCP endpoint. The rules, in full on the
+[serve page](https://winslow-workflow.org/serve/):
+
+- The default bind is `127.0.0.1:8866`, and a loopback bind accepts every hello
+  without a credential. Every process on the machine reaches it.
+- Any other bind requires `WINSLOW_TOKEN` (machine clients and MCP agents) or a
+  ticket signed with `WINSLOW_TICKET_SECRET` (browsers) on every connection.
+- A browser origin must be listed in `WINSLOW_ORIGINS`, on every bind.
+- There is one role. A credential grants every read and every action, including
+  `start_session`, which imports and runs the project code on the serving host,
+  and the task details it serves carry tracebacks and absolute paths of that
+  host. Hand a token to the people you would give a shell on the host.
+
 ## Reporting a vulnerability
 
 If you find a security issue that goes beyond the trust model above (e.g. code

@@ -31,7 +31,7 @@ from winslow.exceptions import (
 )
 from winslow.logger import LOGGER
 from winslow.model import StatusSnapshot
-from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE, config
+from winslow import settings
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
 
@@ -162,9 +162,7 @@ class FileStateStore(StateStore):
 
     def __init__(self, orchestrator_config):
         super().__init__(orchestrator_config)
-        base = Path(
-            self.base_directory or config("WINSLOW_STATE_DIR", default=".winslow/state")
-        )
+        base = Path(self.base_directory or settings.STATE_DIR)
         self.open_directory = base / "open"
         self.ended_directory = base / "ended"
         self.error_directory = base / "error"
@@ -256,9 +254,7 @@ class FileStateStore(StateStore):
             return
         self._write_text(
             path,
-            self._encode(
-                replace(manifest, ended_at=time.time(), outcome=outcome)
-            ),
+            self._encode(replace(manifest, ended_at=time.time(), outcome=outcome)),
         )
         self._archive(session_dir, target_directory)
 
@@ -296,7 +292,9 @@ class FileStateStore(StateStore):
             )
 
     def save_status_snapshot(self, session_id, entry):
-        self._write_text(self._snapshot_path(session_id, entry.key), self._encode(entry))
+        self._write_text(
+            self._snapshot_path(session_id, entry.key), self._encode(entry)
+        )
 
     def load_status_snapshots(self, session_id):
         directory = self._session_dir(session_id) / "tasks"
@@ -478,7 +476,7 @@ class SessionPersistenceAdapter:
         logs = self._batch_logs.setdefault(event.batch_uuid, {})
         lines = logs.setdefault(
             event.task_key,
-            collections.deque(maxlen=EXECUTION_RECORD_LOG_BUFFER_SIZE),
+            collections.deque(maxlen=settings.EXECUTION_RECORD_LOG_BUFFER_SIZE),
         )
         lines.append(event.line)
 
@@ -617,7 +615,7 @@ def register_state_backend(name, store_class):
 def create_state_store(orchestrator_config):
     """Build the backend that WINSLOW_STATE_BACKEND selects (default file).
     The backend receives the orchestrator config of the run."""
-    name = config("WINSLOW_STATE_BACKEND", default="file")
+    name = settings.STATE_BACKEND
     if name not in _BACKENDS:
         raise MisconfigurationError(
             f"WINSLOW_STATE_BACKEND={name!r} names no registered state "

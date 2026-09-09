@@ -125,9 +125,7 @@ class Winslow(App):
             # the failed row shows it for the ErrorDetail modal. A wire
             # refusal carries the server traceback (see RequestError.detail).
             tb = getattr(e, "detail", None) or traceback.format_exc()
-            self.logger.error(
-                f"Failed to initialize workflow '{workflow_name}': {e}"
-            )
+            self.logger.error(f"Failed to initialize workflow '{workflow_name}': {e}")
             await row_widget.remove()
             await self.dashboard.add_failed_session(workflow_name, tb)
             self.notify(

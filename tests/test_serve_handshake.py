@@ -122,6 +122,21 @@ def test_a_loopback_bind_needs_no_credential():
         assert ws.receive_json()["user"] == "local"
 
 
+def test_a_loopback_bind_keeps_the_origin_rule():
+    credentials = Credentials(require_credential=False)
+    with client(credentials=credentials).websocket_connect(
+        "/ws", headers={"Origin": "http://evil.example"}
+    ) as ws:
+        hello(ws)
+        expect_refusal(ws, 4401, "not allowed")
+
+
+def test_a_non_ascii_token_refuses_as_a_bad_token():
+    with client().websocket_connect("/ws") as ws:
+        hello(ws, token="tökén")
+        expect_refusal(ws, 4401, "bad bearer token")
+
+
 def test_a_disallowed_origin_refuses():
     with client().websocket_connect(
         "/ws", headers={"Origin": "http://evil.example"}

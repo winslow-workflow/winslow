@@ -175,9 +175,7 @@ class SourceView(Horizontal):
         self._show(event.node.data)
 
     def _show(self, node):
-        self.query_one("#source-path", Label).update(
-            f"{node.name}  ·  {node.location}"
-        )
+        self.query_one("#source-path", Label).update(f"{node.name}  ·  {node.location}")
         log = self.query_one("#source-code", RichLog)
         log.clear()
         log.write(

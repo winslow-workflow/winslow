@@ -179,9 +179,9 @@ def test_batch_events_carry_values_only(e2e_repo, state_store):
     assert completed.info.status == "FINISHED"
     for info in (created.info, completed.info):
         for name, value in asdict(info).items():
-            assert isinstance(
-                value, (str, int, float, dict, tuple, type(None))
-            ), f"{name} is not a value: {value!r}"
+            assert isinstance(value, (str, int, float, dict, tuple, type(None))), (
+                f"{name} is not a value: {value!r}"
+            )
     assert created.info.uuid == completed.info.uuid
     assert set(created.info.tasks) == {t.identity_key for t in workflow.tasks}
     assert created.info.options["dry_run"] is False

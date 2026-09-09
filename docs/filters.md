@@ -54,6 +54,8 @@ winslow run --filter '~(lint | typecheck)'      # The four tasks that are neithe
 ## The search box
 
 The terminal UI has a search box that accepts the same expressions. The task list narrows as you type.
+The History tab has its own search box. It accepts the name and group filters of this page, and it
+narrows the recorded batches of the session, an ended session included.
 
 ![The task list of the ci workflow, narrowed by a filter expression](images/workflow-filter.svg)
 

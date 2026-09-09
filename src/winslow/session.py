@@ -195,16 +195,13 @@ def _refuse_value(name, value, option):
         return
     # A multiselect value is a list; each element must be a choice.
     items = (
-        value
-        if option.multiselect and isinstance(value, (list, tuple))
-        else [value]
+        value if option.multiselect and isinstance(value, (list, tuple)) else [value]
     )
     choices = [str(c) for c in option.choices]
     for item in items:
         if str(item) not in choices:
             raise ValueError(
-                f"{item!r} is not a choice of {name} - the choices are "
-                f"{choices}."
+                f"{item!r} is not a choice of {name} - the choices are {choices}."
             )
 
 
@@ -318,7 +315,7 @@ def create_session(
 ):
     """Build, initialize, persist, and register one session: the shared flow
     behind the serve create_session request and the local AppClient. origin
-    stamps the manifest with the door that created the session. Raises with
+    stamps the manifest with the endpoint that created the session. Raises with
     a directional message on an unknown workflow; a failure after
     registration marks the session errored and unregisters it.
 

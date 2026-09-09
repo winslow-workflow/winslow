@@ -65,7 +65,7 @@ class SessionBus:
         BatchCompletedEvent,
         LogLineEvent,
         SessionEndedEvent,
-        )
+    )
 
     @classmethod
     def get_event_classes(cls):

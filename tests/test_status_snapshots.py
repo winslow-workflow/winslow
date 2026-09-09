@@ -52,7 +52,9 @@ def test_load_snapshot_reads_what_the_listener_wrote(e2e_repo, state_store, mode
 
     stored = state_store.load_status_snapshots(session.session_id)
     for task in workflow.tasks:
-        assert workflow.load_snapshot(task.identity_key) == stored.get(task.identity_key)
+        assert workflow.load_snapshot(task.identity_key) == stored.get(
+            task.identity_key
+        )
     # The spectrum fixture leaves at least one task with no snapshot at all.
     assert any(
         workflow.load_snapshot(task.identity_key) is None for task in workflow.tasks

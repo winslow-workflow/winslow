@@ -103,8 +103,7 @@ class CacheDependencies(Widget):
         for info in edges:
             widgets.append(Label(info.entry_name, classes="entry-name"))
             widgets.extend(
-                CacheDependencyRow(name, states.get(name))
-                for name in info.depends_on
+                CacheDependencyRow(name, states.get(name)) for name in info.depends_on
             )
         await container.mount(*widgets)
 

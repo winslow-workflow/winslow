@@ -1,6 +1,6 @@
 """A wrapper over pydantic TypeAdapter for the wire: a dataclass DTO to JSON
 text and back. pydantic arrives with the [serve] or the [connect] extra, so
-only the protocol, the wire client and the serve doors import this module."""
+only the protocol, the wire client and the serve endpoints import this module."""
 
 import functools
 import json

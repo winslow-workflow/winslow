@@ -36,6 +36,16 @@ plugin class that it finds. This happens before the first prompt.
     An entry names the package, or one plugin as `<package>.<plugin-name>`. A plugin class with
     `autoload = False` inverts the rule for itself: it loads only when the enabled list names it.
 
+## Where a plugin runs
+
+Under `winslow run` everything runs in one process, and one install covers both kinds. Under
+`winslow serve` the two kinds live on different sides:
+
+- A UI plugin runs in the terminal. Install it where `winslow connect` runs, and every terminal that
+  wants the tab installs it.
+- A filter plugin runs in the engine. The server parses every filter expression, from a terminal or an
+  agent, so install it where `winslow serve` runs.
+
 ## The name of a plugin
 
 Every plugin has a name, and the enabled and disabled lists refer to it:

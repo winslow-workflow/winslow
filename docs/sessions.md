@@ -1,44 +1,95 @@
 # Sessions and restore
 
-A session is one live execution of a workflow: it owns the task store, the batches, the caches and
-the logging of that run. When a session runs with a state store, Winslow persists everything a
-future process needs to pick the run back up: the inputs that rebuild the session, the verified
-outcome of every task, and the batches that were in flight. Kill the TUI mid-batch, relaunch, and
-the dashboard offers the session back, seeded to where it was.
+A session is one live execution of a workflow. The engine persists the state of every session as
+it runs, under `winslow serve` and `winslow run` alike: the inputs that rebuild it, the verified
+outcome of every task, and the batches in flight. Kill the process mid-batch, start it again, and
+the session comes back seeded to where it was.
 
-This page covers what persists and where, the [`check_ttl`](#trust-a-verified-success-check_ttl)
-declaration that lets a restored success count without a new probe, how a stale success
-[renders and re-probes](#stale), and the [restore flow](#restore-in-the-tui) in the TUI.
+Persistence is on by default. Three things are yours to decide: [where the state lives](#where-the-state-lives),
+[how long a verified success stays trusted](#trust-a-verified-success-check_ttl), and
+[when to restore](#restore-a-session).
 
-## What persists
+## Where the state lives
 
-Everything durable about one session lives in one directory, written through one adapter, the state
-store. The directory holds three record kinds:
+The state directory is `.winslow/state` under the working directory. Move it with one setting:
 
-- **The manifest** — the workflow name, the origin of the run, and the effective workflow values:
-  every declared option, resolved from the form values and the command line. The manifest is thus
-  the complete record that rebuilds the session, whatever arguments the restoring process started
-  with. The batch option toggles are view state of one client: each submit carries its own flags,
-  and the batch record below stores the flags the batch ran with.
-- **Status snapshots** — one file per task, named by the task identity key, holding the latest terminal
-  status (`COMPLETED`, `COMPLETED_WITH_ERROR`, `COMPLETED_PREVIOUSLY`, `FORCE_SUCCESS`, `FAILED`,
-  `ERROR`) and the time of the check. Each terminal transition replaces the file atomically. The
-  writes drain through a writer thread of the session, and the close record of a batch queues
-  behind them, so a closed batch record implies that its snapshots are on disk. Snapshots are session-scoped: a
-  check result is evidence gathered under one session's configuration, so a fresh session always
-  starts with zero trust, and only a restore under the same session id inherits the snapshots.
-- **Batch records** — one directory per batch: a `record.json` written on submit and stamped at the
-  close, plus a log dump. The record carries the audit trail of the batch: the action, the batch
-  option snapshot it ran under, both timestamps, and the roster of task identity keys with their
-  labels. The task statuses live only in the snapshots. At the close, the captured log lines of each
-  task land beside the record, one file per task.
+```bash
+export WINSLOW_STATE_DIR=/var/lib/winslow/state
+```
 
-## The state directory
+`open/` holds the live sessions. A session that ends moves to `ended/` and a session that fails
+moves to `error/`. Restore reads `open/` only, so the archives grow without a cost at startup. A
+deployment that wants the records in a database registers [another backend](#another-backend) and
+selects it with `WINSLOW_STATE_BACKEND`.
 
-The file backend is the default. It writes under `WINSLOW_STATE_DIR` (default `.winslow/state`,
-relative to the working directory). `open/` holds the live sessions. The end of a session stamps
-the manifest with `ended_at` and an outcome, then moves the whole session directory: a clean end
-into `ended/`, the audit archive, and a session that failed into `error/`, with the same structure:
+## Trust a verified success: check_ttl
+
+A restored success re-probes on its first touch: the session that verified it is gone, and a
+check is cheap by design. `check_ttl` keeps the trust for a number of seconds instead. Declare it
+on the workflow as the default of its tasks, and on a task as the override:
+
+```python title="workflows/etl/workflow.py"
+from winslow import Workflow
+
+
+class Etl(Workflow):
+    check_ttl = 3600  # trust every verified success for one hour
+```
+
+```python title="workflows/etl/tasks/extract.py"
+from winslow import Task
+
+
+class Extract(Task):
+    check_ttl = 300  # this source moves fast: trust it for five minutes
+
+    def check(self):
+        ...
+```
+
+A passing task younger than its TTL counts as verified: a run batch skips it, and a dependent task
+sees its dependency met. The stamp survives the process, so the window spans a kill and a restore
+of the same session. A check batch runs `check()` on every task it names, TTL or not.
+
+## Restore a session
+
+At start the dashboard lists every open session in a Restore pane, one row per session, with a
+restore-all button when there is more than one. Pick a row. The session comes back under its
+original id as an ordinary workflow screen, and every action works on it:
+
+- A task with a trusted success shows its recorded status.
+- A task with a success past its trust window shows `STALE`. Its next touch re-verifies it through
+  the normal check, so a run batch probes it before it skips the run.
+- A failure shows as it was.
+- A batch the dead process left running shows in History as `INTERRUPTED`, with the options it ran
+  under. A new batch re-verifies its tasks before any rerun.
+
+### Restore in serve mode
+
+Under `winslow serve` the engine restores every open session at startup, before the server accepts
+a connection, and a workflow with `auto_init = True` starts its session at the same point when no
+restored session runs it already. A terminal that connects sees the sessions in place, and a dashboard already connected
+adopts a new session on its next poll (see [Serve and connect](serve.md)).
+
+A headless run is its own complete lifecycle and writes no session state. The per-session log
+files under `WINSLOW_LOG_DIR` are the complete log stream in every mode.
+
+## How it works
+
+### The records
+
+One directory per session, written through the state store:
+
+- **The manifest**: the workflow name, the origin of the run, and the effective workflow values,
+  every declared option resolved from the form and the command line. It rebuilds the session in a
+  process started with other arguments.
+- **Status snapshots**: one file per task, named by the task identity key, with the latest terminal
+  status and the time of the check. Each terminal transition replaces the file atomically.
+  Snapshots belong to their session: a fresh session starts with zero trust, and a restore under the
+  same session id inherits them.
+- **Batch records**: one directory per batch with a `record.json` written on submit and stamped at
+  the close, the batch options it ran under, the roster of task keys, and one log file per task
+  captured at the close.
 
 ```
 .winslow/state/
@@ -55,15 +106,33 @@ into `ended/`, the audit archive, and a session that failed into `error/`, with 
     └── etl-20260817T173045-5e6f7a8b/...
 ```
 
-Restore reads only `open/`, so the archives grow without a cost to startup. Writes are strict JSON
-and publish atomically. A corrupt or unreadable file reads as missing, so a damaged state directory
-degrades to a cold start, never to an error.
+Writes are strict JSON and publish atomically. A file that fails to read counts as missing, so a
+damaged directory restores as a cold start.
 
-A package can register another backend, the way telemetry backends register, and a deployment
-selects it with `WINSLOW_STATE_BACKEND`. Each backend is constructed with the orchestrator config
-of the run, once per process at app start; workflow identity arrives in the records it stores. The
-natural database mapping is one row per record with a status column where the file backend uses the
-directories:
+### The restore steps
+
+1. Initialize the workflow from the manifest values, under the original session id.
+2. Initialize the tasks and run the eligibility pass, like a fresh start. The real world at
+   restore time decides which tasks the session holds.
+3. Seed every `READY_TO_PROCESS` task from its snapshot. A failure seeds as recorded, a success
+   within its TTL seeds as recorded, and a success past its TTL seeds as `STALE`.
+4. Register the batches left open as `INTERRUPTED` in History.
+
+The seeds arrive as normal store events, so every pane renders them the way it renders a live
+transition.
+
+### STALE
+
+`STALE` is a task status. A sweeper thread of the session flips a passing status to `STALE` when
+its TTL lapses while the session runs, and a restore seeds an untrusted success as `STALE`. The
+snapshot keeps the real outcome and its check time, and the task detail shows both. `checked_at`
+is a wall-clock epoch stamp; TTLs run minutes to hours, so clock skew between machines that share
+a state volume leaves the decisions unchanged.
+
+### Another backend
+
+A package registers a backend the way telemetry backends register. The backend is constructed once
+per process with the orchestrator config, and the workflow identity arrives in the records:
 
 ```python
 from winslow.state import StateStore, register_state_backend
@@ -84,79 +153,5 @@ register_state_backend("database", DatabaseStateStore)
 export WINSLOW_STATE_BACKEND=database
 ```
 
-## Trust a verified success: check_ttl
-
-By default a check snapshot is trusted only while the session that produced it stays live: every
-restored success seeds as [STALE](#stale) and re-probes on first touch. Checks are cheap by design,
-and workflows are paranoid by design.
-
-`check_ttl` relaxes this per declaration. It is a number of seconds, declared on the workflow as
-the default for its tasks, and on a task as the override:
-
-```python title="workflows/etl/workflow.py"
-from winslow import Workflow
-
-
-class Etl(Workflow):
-    check_ttl = 3600  # trust every verified success for one hour
-```
-
-```python title="workflows/etl/tasks/extract.py"
-from winslow import Task
-
-
-class Extract(Task):
-    check_ttl = 300  # this source moves fast - trust it for five minutes only
-
-    def check(self):
-        ...
-```
-
-The trust rule lives in the state writers, so the store status itself carries it. A restore seeds a
-passing snapshot younger than the effective TTL as its recorded status, and the session's sweeper
-flips a live status to [STALE](#stale) when its TTL lapses. The runner then reads the store: a
-passing status skips the pre-run completion check and satisfies dependency resolution, and an
-explicit check batch always runs `check()`. The seeded status keeps its original check time, and
-because the snapshots survive a process death, the trust window spans a kill and a restore of the
-same session.
-
-## STALE
-
-STALE is a task status. A passing status turns STALE when its snapshot is older than the effective
-TTL, or, with no TTL, when it predates the current session. A sweeper thread of the session flips
-a status whose TTL lapses while the session runs, and a restore seeds an untrusted success directly
-as STALE. The snapshot keeps the real outcome and its check time; the task detail modal shows both.
-A STALE task is not passing: its next touch re-verifies it through the normal completion check, and
-a run batch re-verifies it before it skips the run. The persistent cache tiers keep that re-check
-burst cheap (see [Caching](caching.md)).
-
-## Restore in the TUI
-
-At app start the dashboard lists every open manifest in a Restore pane, one row per session, with
-a restore-all button when there is more than one. A restore rebuilds the session in four steps:
-
-1. Initialize the workflow from the manifest inputs, under the original session id.
-2. Initialize the tasks and run the eligibility pass, exactly like a fresh start. The pass reads
-   the real world at restore time, and the real world is the golden source: it decides which tasks
-   the session holds, whatever they were before the death.
-3. Seed every task the eligibility pass left `READY_TO_PROCESS` from the snapshots: failures seed
-   as they are, a trusted success seeds with its recorded status, and an untrusted success seeds
-   as `STALE`.
-4. Register the batches the dead process left open as `INTERRUPTED` in history, with the option
-   snapshot their records preserved. An interrupted batch never continues: a roster task that has
-   no snapshot comes back as `READY_TO_PROCESS`, and a new batch re-verifies it through the normal
-   pre-run check before any rerun.
-
-The restored screen is an ordinary workflow screen: the seeds arrived as normal store events, and
-every action works. A restore that cannot initialize surfaces on the dashboard exactly like a
-failed start.
-
-A headless run is its own complete lifecycle: it neither writes session state nor consults it. The
-per-session log files (`WINSLOW_LOG_DIR`) remain the complete log stream in every mode; the batch
-log dump is a per-batch capture for the archive, taken at the close, so an interrupted batch
-archives without one.
-
-## Clock notes
-
-`checked_at` is a wall-clock epoch stamp. TTLs in practice are minutes to hours, so NTP-scale
-clock skew between machines that share a state volume does not change the decisions.
+The natural database mapping is one row per record, with a status column where the file backend
+uses the three directories.

@@ -82,8 +82,13 @@ def test_task_errors_reach_the_session_log(e2e_repo, mode, log_sink):
 
 def _record(**kwargs):
     return logging.LogRecord(
-        name="winslow", level=logging.ERROR, pathname=__file__, lineno=1,
-        msg="boom happened", args=(), **kwargs,
+        name="winslow",
+        level=logging.ERROR,
+        pathname=__file__,
+        lineno=1,
+        msg="boom happened",
+        args=(),
+        **kwargs,
     )
 
 
@@ -104,12 +109,13 @@ def test_the_structured_formatter_carries_the_traceback():
 
 def test_the_console_emits_json_under_the_env_switch(monkeypatch):
     import winslow.logger as logger_module
+    from winslow import settings
 
-    monkeypatch.setattr(logger_module, "LOG_JSON", True)
+    monkeypatch.setattr(settings, "LOG_JSON", True)
     handler = logger_module._console_handler()
     assert isinstance(handler.formatter, StructuredFormatter)
 
-    monkeypatch.setattr(logger_module, "LOG_JSON", False)
+    monkeypatch.setattr(settings, "LOG_JSON", False)
     handler = logger_module._console_handler()
     assert not isinstance(handler.formatter, StructuredFormatter)
 

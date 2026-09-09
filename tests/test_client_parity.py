@@ -359,14 +359,19 @@ def canonical_stream(recorder):
             lambda e: e.task_key,
             lambda e: (names.get(e.batch_uuid, "<uuid>"), e.status.name, e.origin.name),
         ),
-        "batches_created": canonical([e.info for e in events[BatchCreatedEvent]], names),
+        "batches_created": canonical(
+            [e.info for e in events[BatchCreatedEvent]], names
+        ),
         "batches_completed": canonical(
             [e.info for e in events[BatchCompletedEvent]], names
         ),
         "log_lines": by_task_key(
             events[LogLineEvent],
             lambda e: e.task_key,
-            lambda e: (names.get(e.batch_uuid, "<uuid>"), normalize_text(e.line, names)),
+            lambda e: (
+                names.get(e.batch_uuid, "<uuid>"),
+                normalize_text(e.line, names),
+            ),
         ),
         "session_log": sorted(
             normalize_text(e.line, names) for e in events[SessionLogEvent]

@@ -80,9 +80,7 @@ class WorkflowFormValidator:
 
     def _collect_option_list_value(self, widget, row):
         return (
-            self._convert_type(widget.value, row)
-            if widget.value is not None
-            else None
+            self._convert_type(widget.value, row) if widget.value is not None else None
         )
 
     @classmethod

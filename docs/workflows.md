@@ -91,7 +91,7 @@ identifier options next to each instance, for example `region=eu` and `region=us
 
 ![A list of workflow sessions, with the identifier values on each session footer](images/workflow-identifiers.svg)
 
-See [the introduction](index.md#pass-options-to-a-workflow) for a runnable example with the command lines.
+See [Getting started](getting-started.md#pass-options-to-a-workflow) for a runnable example with the command lines.
 
 ## How Winslow finds a workflow
 

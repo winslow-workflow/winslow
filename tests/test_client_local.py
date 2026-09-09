@@ -138,9 +138,7 @@ def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
     assert "force_run" in override_names
 
 
-def test_create_session_registers_and_stamps_a_local_manifest(
-    e2e_repo, state_store
-):
+def test_create_session_registers_and_stamps_a_local_manifest(e2e_repo, state_store):
     registry = SessionRegistry()
     app = LocalAppClient(
         registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
@@ -231,8 +229,7 @@ def test_roster_hands_the_core_built_stubs_through_in_order(e2e_repo):
     roster = client.roster()
     # asdict per row: TaskInfo equality compares only the key.
     assert [asdict(info) for info in roster] == [
-        asdict(workflow.task_info(task))
-        for task in workflow.get_filtered_tasks()
+        asdict(workflow.task_info(task)) for task in workflow.get_filtered_tasks()
     ]
     # Stubs: no full-capture fields.
     assert all(info.attributes is None for info in roster)
@@ -279,9 +276,7 @@ def test_history_and_record_detail_and_log_tail_match_the_record_store(e2e_repo)
         span.phase.value for span in record.phases
     ]
 
-    assert client.log_tail(ack.batch_uuid, alpha.identity_key) == record.log_tail(
-        200
-    )
+    assert client.log_tail(ack.batch_uuid, alpha.identity_key) == record.log_tail(200)
     with pytest.raises(RequestError, match="keeps no records"):
         client.record_detail("no-such-batch", alpha.identity_key)
     with pytest.raises(RequestError, match="not in the roster"):
@@ -622,9 +617,7 @@ def test_end_session_publishes_session_ended_and_refuses_later_actions(e2e_repo)
 
 
 def test_roster_falls_back_past_a_bad_launch_filter(e2e_repo):
-    workflow = build_workflow(
-        e2e_repo, "my-workflow", Mode.TUI, "--filter", "((broken"
-    )
+    workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI, "--filter", "((broken")
     session = Session(workflow)
     workflow.check_pipeline_eligibility()
     client = LocalSessionClient(session)
@@ -757,9 +750,7 @@ def test_validate_values_parses_strings_with_the_option_types():
         validate_values("wf", workflow_kls, orchestrator, {"count": "seven"}, {})
 
 
-def test_create_session_fills_unsent_options_from_the_cli_base(
-    e2e_repo, state_store
-):
+def test_create_session_fills_unsent_options_from_the_cli_base(e2e_repo, state_store):
     registry = SessionRegistry()
     app = LocalAppClient(
         registry,

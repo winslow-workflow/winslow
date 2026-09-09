@@ -16,13 +16,13 @@ A plugin declares a slot and a label, and builds one widget:
 ```
 
 `create_widget` returns any Textual widget. The `context` argument carries the state of the screen: the
-session port client and value shapes (see [the payload rule](#the-payload-rule)):
+`client` and the value shapes it returns (see [the payload rule](#the-payload-rule)):
 
 | The screen | The context | The useful attributes |
 | --- | --- | --- |
 | Dashboard | `DashboardRenderContext` | `client` (the `AppClient`), `descriptors` |
-| Workflow | `WorkflowRenderContext` | `client` (the `SessionClient`), `session`, `snapshot`, `roster`, `task_statuses` |
-| Task info modal | `TaskDetailRenderContext` | `info` (a `TaskInfo` value, not the task), `logs`, `client`, `task_key`, `root_dir` |
+| Workflow | `WorkflowRenderContext` | `client`, `session`, `snapshot`, `roster`, `task_statuses` |
+| Task info modal | `TaskDetailRenderContext` | `info`, `logs`, `client`, `task_key`, `root_dir`, snapshots |
 | Confirmation modal | `WorkflowConfirmationRenderContext` | `workflow` (the workflow name), `form_values` |
 
 The workflow context attributes:
@@ -35,6 +35,11 @@ The workflow context attributes:
 - `roster`: one stub `TaskInfo` per task, in launch-filter order.
 - `task_statuses`: the `{key: TaskStatus}` mapping that the screen maintains.
 
+`info` is a `TaskInfo` value. The task detail context opened from a history row also carries the
+captures of that batch:
+`transient_snapshots` and `cache_snapshots`, each a mapping from the phase name to the values the
+phase recorded.
+
 A slot with one plugin shows the widget directly. A slot with two or more plugins becomes a tab bar, and
 `label` names each tab. When one slot of a row becomes tabbed, the other slots of that row become tabbed
 too, so the row keeps one visual line.
@@ -46,14 +51,21 @@ A render context, a Textual message and a session bus event carry values: the id
 `winslow.model`. A pane reads through the context `client` and never holds a live core object. A pane
 built this way works the same on a remote client, because every payload can cross a process boundary.
 
-The task events of the workflow screen:
+The screen posts each message to the pane it concerns (`bubble=False`), and the handler on that pane
+receives it.
 
-| The event | The payload |
+The messages of the workflow screen:
+
+| The message | The payload |
 | --- | --- |
 | `TaskStatusChanged` | `key`, `status` |
 | `ExecutionStatusChanged` | `batch_uuid`, `task_key`, `status` |
 | `TaskLogUpdated` | `batch_uuid`, `task_key`, `line` |
 | `BatchCreated`, `BatchCompleted` | `info` (a `BatchInfo` value) |
+| `TaskSelected` | `task_info` (a `TaskInfo` value) |
+| `CacheSelected` | `card` (a `CacheInfo` value) |
+| `CacheUpdated` | none: the pane repaints from a fresh `caches()` read |
+| `SessionEnded` | none: the session is archived, and a pane stops its timers |
 
 A pane keys its rows by the identity key, and it reads the current statuses from
 `WorkflowRenderContext.task_statuses`, the `{key: TaskStatus}` mapping that the screen maintains:
@@ -76,9 +88,59 @@ class StatusBoard(Widget):
 A pane that needs more than its messages carry reads through the client, for example
 `context.client.task_detail(task_key)` for the full capture of one task, or
 `context.client.submit(RunTasks(keys=(key,)))` for an action. Every client method takes values and
-returns values, so the same pane renders a local session and a remote one.
+returns values, so the same pane renders a local session and a remote one. This pane lists the
+roster, follows the status messages, and runs the highlighted task through the client:
 
-Two panes are local by nature and stay outside the port: the system resources pane describes the
+```python
+from textual import on
+from textual.containers import Vertical
+from textual.widgets import Button, Label, ListItem, ListView
+
+from winslow.actions import RunTasks
+from winslow.ui.plugin import Slots, UIPlugin
+from winslow.ui.workflow_events import TaskStatusChanged
+
+
+class RunnerPlugin(UIPlugin):
+    slot = Slots.TASKS_PANE
+    label = "Runner"
+
+    def create_widget(self, context):
+        return Runner(context.client, context.roster, context.task_statuses)
+
+
+class Runner(Vertical):
+    def __init__(self, client, roster, statuses):
+        super().__init__()
+        self.client = client
+        self.roster = roster
+        self.statuses = dict(statuses)
+
+    def compose(self):
+        yield ListView(*(ListItem(Label(self.line(info))) for info in self.roster))
+        yield Button("Run highlighted", id="run")
+
+    def line(self, info):
+        return f"{info.label}  {self.statuses[info.key].value}"
+
+    @on(Button.Pressed, "#run")
+    def run_highlighted(self):
+        info = self.roster[self.query_one(ListView).index]
+        ack = self.client.submit(RunTasks(keys=(info.key,)))
+        if not ack.accepted:
+            self.notify(ack.reason, severity="warning")
+
+    @on(TaskStatusChanged)
+    def repaint(self, event):
+        self.statuses[event.key] = event.status
+        view = self.query_one(ListView)
+        for item, info in zip(view.children, self.roster):
+            item.query_one(Label).update(self.line(info))
+```
+
+The ack of a submit is a value too: `accepted` and, for a refusal, the `reason` the session gave.
+
+Two panes are local by nature and work without the client: the system resources pane describes the
 machine the widget runs on, and the dashboard log pane shows the log of the process the TUI runs in.
 
 ## The slots

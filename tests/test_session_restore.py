@@ -59,9 +59,7 @@ def test_restore_seeds_the_terminal_statuses(e2e_repo, state_store, mode):
         if entry is not None:
             # No TTL: a success from before this session seeds as STALE.
             expected = S[entry.status]
-            assert status is (
-                S.STALE if expected in PASSING_STATUSES else expected
-            )
+            assert status is (S.STALE if expected in PASSING_STATUSES else expected)
         else:
             assert status is S.READY_TO_PROCESS
     # The seeded store carries both outcome kinds of the spectrum fixture.
@@ -146,9 +144,7 @@ def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):
     assert state_store.load_open_batches(session.session_id) == []
 
 
-def test_a_record_close_failure_does_not_break_the_restore(
-    e2e_repo, state_store, mode
-):
+def test_a_record_close_failure_does_not_break_the_restore(e2e_repo, state_store, mode):
     first, session = died_mid_flight(e2e_repo, state_store, mode)
     state_store.save_batch(
         BatchRecord(
