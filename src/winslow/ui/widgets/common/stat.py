@@ -6,22 +6,14 @@ from textual.widgets import Static
 
 
 class Stat(Static):
+    """One name and value line. The parent pane feeds every Stat from one
+    sample through show (see SystemStats)."""
+
     name = var(None)
     value = reactive(0)
 
-    periodic_update = var(False)
-    update_frequency = var(1)
-
-    async def on_mount(self):
-        if self.periodic_update:
-            self.set_interval(self.update_frequency, self.update_value)
-        else:
-            await self.update_value()
-
-    async def update_value(self):
-        raise NotImplementedError(
-            "a Stat subclass implements update_value and sets self.value"
-        )
+    def show(self, stats):
+        raise NotImplementedError("a Stat subclass implements show and sets self.value")
 
     def render(self):
         return f"{self.name}: {self.value}"

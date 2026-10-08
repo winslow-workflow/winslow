@@ -778,6 +778,49 @@ class ManifestInfo:
         )
 
 
+@dataclass(frozen=True)
+class HostStats:
+    """The resources of the host that runs the sessions: memory in bytes, the
+    cpu load over the previous window (see HostStatsSampler), the hostname
+    and the user."""
+
+    hostname: str
+    user: str
+    cpu_percent: float
+    memory_used: int
+    memory_total: int
+    memory_percent: float
+
+    @classmethod
+    def sample(cls, cpu_percent):
+        import getpass
+        import socket
+
+        import psutil
+
+        memory = psutil.virtual_memory()
+        return cls(
+            hostname=socket.gethostname(),
+            user=getpass.getuser(),
+            cpu_percent=cpu_percent,
+            memory_used=memory.used,
+            memory_total=memory.total,
+            memory_percent=memory.percent,
+        )
+
+
+# --- the server environment -----------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EnvInfo:
+    """The environment name of the process that runs the sessions and its
+    header color, a CSS color (see winslow.settings.ENV_COLORS)."""
+
+    name: str
+    color: str
+
+
 # --- the form descriptors -------------------------------------------------------
 
 

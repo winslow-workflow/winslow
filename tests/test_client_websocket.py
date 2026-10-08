@@ -10,6 +10,7 @@ import time
 import pytest
 import uvicorn
 
+from winslow import settings
 from winslow.actions import BatchAck, EndSession, LoadCacheEntries, RunTasks, StopBatch
 from winslow.client.local import LocalSessionClient
 from winslow.client.websocket import (
@@ -31,6 +32,7 @@ from winslow.events import (
 )
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
+    EnvInfo,
     BatchInfo,
     CacheInfo,
     CacheUpdatedEvent,
@@ -119,6 +121,12 @@ def served(e2e_repo):
     finally:
         client.close()
         process.stop()
+
+
+def test_the_environment_comes_from_the_hello(served):
+    _, _, client = served
+    environment = client.environment()
+    assert environment == EnvInfo(name=settings.env, color=settings.ENV_COLOR)
 
 
 def wait_for(predicate, message, timeout=10.0):

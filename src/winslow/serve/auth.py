@@ -11,6 +11,19 @@ from dataclasses import dataclass
 from winslow import settings
 
 
+LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+
+
+def page_origins(host, port):
+    """The origins a browser sends for the web UI the serve process hands
+    out itself. A loopback bind answers under every loopback name."""
+    hosts = LOOPBACK_HOSTS if host in LOOPBACK_HOSTS else (host,)
+    return tuple(
+        f"http://[{name}]:{port}" if ":" in name else f"http://{name}:{port}"
+        for name in hosts
+    )
+
+
 def _sign(secret, user, expiry):
     return hmac.new(
         secret.encode(), f"{user}:{expiry}".encode(), hashlib.sha256
@@ -50,13 +63,15 @@ class Credentials:
     require_credential: bool = True
 
     @classmethod
-    def from_env(cls, host):
-        loopback = host in ("127.0.0.1", "::1", "localhost")
+    def from_env(cls, host, extra_origins=()):
+        """The policy of one bind. extra_origins adds the origins of the web
+        UI the process serves itself (see page_origins)."""
+        loopback = host in LOOPBACK_HOSTS
         origins = settings.SERVE_ORIGINS.split(",")
         return cls(
             token=settings.SERVE_TOKEN,
             ticket_secret=settings.SERVE_TICKET_SECRET,
-            allowed_origins=tuple(o for o in origins if o),
+            allowed_origins=tuple(o for o in origins if o) + tuple(extra_origins),
             require_credential=not loopback,
         )
 

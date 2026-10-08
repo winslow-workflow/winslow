@@ -204,7 +204,7 @@ def test_descriptors_carry_the_overrides_and_form_fields(e2e_repo):
     assert client["depends_on"] == []
 
     override_names = [o["name"] for o in result["overrides"]]
-    assert "dry_run" in override_names
+    assert override_names == ["clear_cache"]
     ws.close()
 
 

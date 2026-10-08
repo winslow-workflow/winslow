@@ -351,9 +351,9 @@ def test_descriptor_option_rows_carry_action_const_and_initial(e2e_repo):
     orchestrator = serve_orchestrator(e2e_repo)
     ws = connect(SessionRegistry(), orchestrator=orchestrator)
     result = request(ws, "r-27", "descriptors")
-    (dry_run,) = [o for o in result["result"]["overrides"] if o["name"] == "dry_run"]
-    assert dry_run["action"] == "store_true"
-    assert "initial" in dry_run
+    (row,) = [o for o in result["result"]["overrides"] if o["name"] == "clear_cache"]
+    assert row["action"] == "store_true"
+    assert "initial" in row
     ws.close()
 
 

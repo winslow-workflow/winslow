@@ -16,3 +16,6 @@ wheels/
 
 # MkDocs build output
 /site/
+
+# The built web UI (see web/); the wheel carries it, git does not.
+src/winslow/serve/static/

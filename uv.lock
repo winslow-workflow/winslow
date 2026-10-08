@@ -1564,6 +1564,7 @@ connect = [
 ]
 mcp = [
     { name = "mcp" },
+    { name = "psutil" },
     { name = "pydantic" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -1577,6 +1578,7 @@ sentry = [
     { name = "sentry-sdk" },
 ]
 serve = [
+    { name = "psutil" },
     { name = "pydantic" },
     { name = "starlette" },
     { name = "uvicorn" },
@@ -1613,6 +1615,8 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "opentelemetry-sdk", marker = "extra == 'otel'", specifier = ">=1.20" },
     { name = "psutil", marker = "extra == 'connect'", specifier = ">=6.1.0" },
+    { name = "psutil", marker = "extra == 'mcp'", specifier = ">=6.1.0" },
+    { name = "psutil", marker = "extra == 'serve'", specifier = ">=6.1.0" },
     { name = "psutil", marker = "extra == 'tui'", specifier = ">=6.1.0" },
     { name = "pydantic", marker = "extra == 'connect'", specifier = ">=2.0" },
     { name = "pydantic", marker = "extra == 'mcp'", specifier = ">=2.0" },

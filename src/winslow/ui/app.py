@@ -4,6 +4,7 @@ import traceback
 from functools import partial
 
 from textual import on
+from textual.color import Color, ColorParseError
 from textual.app import App, ScreenStackError
 from textual.widgets import Footer, Header, Button
 
@@ -64,13 +65,29 @@ class Winslow(App):
 
     def compose(self):
         """Create the child widgets of the app."""
-        yield Header()  # todo color coding on env and annotate debug mode
+        yield Header()
         yield Footer()
 
     def on_mount(self):
+        self._paint_environment()
         # The wire emits on its receiver thread; the message hops to the UI
         # thread. The local transport emits nothing (see subscribe_connection).
         self.client.subscribe_connection(self._relay_connection)
+
+    def _paint_environment(self):
+        """The header names the environment of the serving process and takes
+        its color (see winslow.settings.ENV_COLORS)."""
+        environment = self.client.environment()
+        self.sub_title = environment.name
+        try:
+            color = Color.parse(environment.color)
+        except ColorParseError:
+            self.logger.warning(
+                f"{environment.color!r} is not a color the header can paint - "
+                f"set WINSLOW_ENV_COLORS with a CSS color name or a hex value."
+            )
+            return
+        self.query_one(Header).styles.background = color
 
     def _relay_connection(self, event):
         self.post_message(

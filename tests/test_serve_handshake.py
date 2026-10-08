@@ -7,6 +7,7 @@ import pytest
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from winslow import settings
 from winslow.constants import Mode
 from winslow.serve import Credentials, create_app, mint_ticket, verify_ticket
 from winslow.session import Session, SessionRegistry
@@ -59,7 +60,12 @@ def expect_refusal(ws, code, reason_part):
 def test_a_ticket_reaches_hello_ok():
     with client().websocket_connect("/ws") as ws:
         hello(ws, ticket=mint_ticket(SECRET, "can"))
-        assert ws.receive_json() == {"type": HelloOkFrame.type, "user": "can"}
+        assert ws.receive_json() == {
+            "type": HelloOkFrame.type,
+            "user": "can",
+            "env": settings.env,
+            "env_color": settings.ENV_COLOR,
+        }
 
 
 def test_a_bearer_token_reaches_hello_ok():

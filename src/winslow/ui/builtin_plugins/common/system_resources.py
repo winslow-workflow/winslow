@@ -1,51 +1,49 @@
-import asyncio
-import getpass
-import socket
+"""The system resources pane: memory, cpu, host and user of the process that
+runs the sessions, over the host_stats read of the port. A remote terminal
+shows the server this way (see winslow.client)."""
 
-import psutil
+import asyncio
 
 from textual.containers import Vertical
 from textual.reactive import var
 
+from winslow.ui.reads import port_read
 from winslow.ui.widgets.common.stat import ColorStat, Stat
 from winslow.util import human_readable_size
+
+HOST_STATS_INTERVAL = 1
 
 
 class MemoryStat(ColorStat):
     name = var("memory")
-    periodic_update = var(True)
 
-    async def update_value(self):
-        mem = await asyncio.to_thread(psutil.virtual_memory)
-        used = human_readable_size(mem.used)
-        total = human_readable_size(mem.total)
-
-        self.percentage = mem.percent
-        self.value = f"{used} / {total} ({mem.percent}%)"
+    def show(self, stats):
+        used = human_readable_size(stats.memory_used)
+        total = human_readable_size(stats.memory_total)
+        self.percentage = stats.memory_percent
+        self.value = f"{used} / {total} ({stats.memory_percent}%)"
 
 
 class CpuStat(ColorStat):
     name = var("cpu")
-    periodic_update = var(True)
 
-    async def update_value(self):
-        value = await asyncio.to_thread(psutil.cpu_percent, interval=1)
-        self.percentage = value
-        self.value = f"{value:.2f} %"
+    def show(self, stats):
+        self.percentage = stats.cpu_percent
+        self.value = f"{stats.cpu_percent:.2f} %"
 
 
 class HostStat(Stat):
     name = var("host")
 
-    async def update_value(self):
-        self.value = socket.gethostname()
+    def show(self, stats):
+        self.value = stats.hostname
 
 
 class UserStat(Stat):
     name = var("user")
 
-    async def update_value(self):
-        self.value = getpass.getuser()
+    def show(self, stats):
+        self.value = stats.user
 
 
 class SystemStats(Vertical):
@@ -54,3 +52,17 @@ class SystemStats(Vertical):
         yield CpuStat()
         yield HostStat()
         yield UserStat()
+
+    async def on_mount(self):
+        await self.refresh_stats()
+        self.set_interval(HOST_STATS_INTERVAL, self.refresh_stats)
+
+    async def refresh_stats(self):
+        # The poll stays quiet: a wire outage shows in the connection bar already.
+        stats = await asyncio.to_thread(
+            port_read, self, self.app.client.host_stats, quiet=True
+        )
+        if stats is None:
+            return
+        for stat in self.query(Stat):
+            stat.show(stats)

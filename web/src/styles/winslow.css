@@ -1,0 +1,425 @@
+:root {
+  --ws-border: var(--bs-border-color);
+  --ws-pane-bg: var(--bs-body-bg);
+  --ws-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+body {
+  font-size: 0.9rem;
+}
+
+/* The environment color of the server paints the navbar edge and the badge (see ConnectionBar). */
+.env-bar {
+  border-bottom: 3px solid var(--ws-env-color, var(--ws-border));
+}
+
+.env-badge {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.1rem 0.45rem;
+  border-radius: 0.25rem;
+  border: 1px solid var(--ws-env-color, var(--ws-border));
+  color: var(--ws-env-color, var(--bs-secondary-color));
+}
+
+.min-h-0 {
+  min-height: 0;
+}
+
+.pane {
+  border: 1px solid var(--ws-border);
+  border-radius: 0.5rem;
+  background: var(--ws-pane-bg);
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pane-title {
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--bs-secondary-color);
+  padding: 0.35rem 0.75rem;
+  border-bottom: 1px solid var(--ws-border);
+}
+
+.pane-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+}
+
+.pane-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  align-items: center;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid var(--ws-border);
+}
+
+.log-view {
+  font-family: var(--ws-mono);
+  font-size: 0.78rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  overflow: auto;
+  height: 100%;
+}
+
+.mono {
+  font-family: var(--ws-mono);
+}
+
+.inline-log {
+  font-family: var(--ws-mono);
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.task-table {
+  table-layout: fixed;
+  width: 100%;
+}
+
+.task-table td,
+.task-table th {
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.task-table td.col-log {
+  max-width: 28rem;
+}
+
+.task-table td.col-name {
+  width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.task-table td.col-status {
+  width: 12%;
+}
+
+.task-table tr.row-selected > td {
+  background-color: rgba(var(--bs-primary-rgb), 0.18);
+}
+
+.task-table tr.filter-match > td {
+  background-color: rgba(var(--bs-success-rgb), 0.14);
+}
+
+.task-table tr.filter-dim > td {
+  opacity: 0.35;
+}
+
+.task-table tr.row-clickable {
+  cursor: pointer;
+}
+
+.status-icon {
+  display: inline-block;
+  width: 1.4em;
+  text-align: center;
+}
+
+.tag {
+  font-size: 0.7rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--ws-border);
+  text-transform: lowercase;
+}
+
+.tag.premier {
+  border-color: var(--bs-info);
+  color: var(--bs-info);
+}
+.tag.terminal {
+  border-color: var(--bs-warning);
+  color: var(--bs-warning);
+}
+.tag.noop {
+  border-color: var(--bs-secondary);
+  color: var(--bs-secondary-color);
+}
+.tag.dry-run {
+  border-color: var(--bs-info);
+  color: var(--bs-info);
+}
+.tag.force-run {
+  border-color: var(--bs-danger);
+  color: var(--bs-danger);
+}
+.tag.force-success {
+  border-color: var(--bs-success);
+  color: var(--bs-success);
+}
+.tag.disable-concurrency {
+  border-color: var(--bs-warning);
+  color: var(--bs-warning);
+}
+
+.session-layout {
+  display: grid;
+  grid-template-rows: minmax(0, 15fr) minmax(0, 3fr);
+  gap: 0.5rem;
+  height: 100%;
+  padding: 0.5rem;
+}
+
+.dashboard-layout {
+  display: grid;
+  grid-template-rows: minmax(0, 15fr) minmax(0, 3fr);
+  gap: 0.5rem;
+  height: 100%;
+  padding: 0.5rem;
+}
+
+.dashboard-top {
+  display: grid;
+  grid-template-columns: minmax(0, 3fr) minmax(0, 6fr) minmax(0, 3fr);
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+/* The 9 to 3 split of the TUI: a main pane and a side pane. */
+.session-top,
+.pane-row {
+  display: grid;
+  grid-template-columns: minmax(0, 9fr) minmax(0, 3fr);
+  gap: 0.5rem;
+  min-height: 0;
+}
+
+.host-stats .stat + .stat {
+  margin-top: 0.35rem;
+}
+
+.host-stats .label {
+  color: var(--bs-secondary-color);
+}
+
+.host-stats .progress {
+  height: 4px;
+  margin-top: 0.15rem;
+}
+
+.pane .nav-tabs {
+  padding: 0.35rem 0.75rem 0;
+  border-bottom: 1px solid var(--ws-border);
+}
+
+.pane .tab-content,
+.pane .tab-pane {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.pane .tab-pane:not(.active) {
+  display: none;
+}
+
+.info-rows .label {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--bs-secondary-color);
+}
+
+.info-rows .value {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.batch-card {
+  border: 1px solid var(--ws-border);
+  border-radius: 0.5rem;
+  margin: 0.5rem 0.75rem;
+}
+
+.batch-card > .batch-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.4rem 0.75rem;
+  border-bottom: 1px solid var(--ws-border);
+  font-size: 0.8rem;
+}
+
+.source-view {
+  display: grid;
+  grid-template-columns: minmax(12rem, 1fr) minmax(0, 3fr);
+  gap: 0.5rem;
+  min-height: 24rem;
+}
+
+.source-tree ul {
+  list-style: none;
+  padding-left: 1rem;
+  margin: 0;
+}
+
+.source-tree li > span {
+  cursor: pointer;
+  display: inline-block;
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+}
+
+.source-tree li > span.active {
+  background: rgba(var(--bs-primary-rgb), 0.25);
+}
+
+.source-code {
+  font-family: var(--ws-mono);
+  font-size: 0.78rem;
+  margin: 0;
+  overflow: auto;
+  max-height: 60vh;
+  counter-reset: line;
+}
+
+.source-code .line::before {
+  counter-increment: line;
+  content: counter(line);
+  display: inline-block;
+  width: 3em;
+  margin-right: 1em;
+  text-align: right;
+  color: var(--bs-secondary-color);
+}
+
+.json-tree ul {
+  list-style: none;
+  padding-left: 1.2rem;
+  margin: 0;
+}
+
+.json-tree .toggle {
+  cursor: pointer;
+  user-select: none;
+  display: inline-block;
+  width: 1.2em;
+}
+
+.markdown-body pre {
+  background: rgba(255, 255, 255, 0.05);
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.4rem;
+}
+
+.markdown-body table {
+  width: auto;
+}
+
+.markdown-body td,
+.markdown-body th {
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--ws-border);
+}
+
+.toast-stack {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 1090;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 26rem;
+}
+
+.form-help {
+  font-size: 0.75rem;
+  color: var(--bs-secondary-color);
+}
+
+.option-row {
+  display: grid;
+  grid-template-columns: minmax(8rem, 1fr) minmax(0, 3fr);
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--ws-border);
+}
+
+.option-row .option-label {
+  font-family: var(--ws-mono);
+  font-size: 0.8rem;
+  padding-top: 0.35rem;
+}
+
+.dependency-row {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding: 0.15rem 0;
+}
+
+.session-row {
+  border: 1px solid var(--ws-border);
+  border-radius: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  margin: 0.5rem 0.75rem;
+}
+
+.session-row.failed {
+  border-color: var(--bs-danger);
+}
+
+.summary .completed {
+  color: var(--bs-success);
+}
+.summary .problematic {
+  color: var(--bs-danger);
+}
+
+.selectable-list .list-group-item {
+  cursor: pointer;
+}
+
+.task-table td.col-index {
+  width: 3rem;
+}
+.task-table td.col-runtime {
+  width: 5rem;
+}
+.task-table td.col-actions {
+  width: 5rem;
+}
+.task-table td.col-actions-wide {
+  width: 12rem;
+}
+.task-table td.col-entry {
+  width: 14rem;
+}
+.task-table td.col-state {
+  width: 8rem;
+}
+
+.filter-input {
+  min-width: 16rem;
+  max-width: 24rem;
+}
+
+.detail-log {
+  height: 60vh;
+}
+
+.detail-dialog {
+  max-width: min(80vw, 90rem);
+}

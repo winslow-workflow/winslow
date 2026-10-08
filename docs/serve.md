@@ -4,7 +4,7 @@ A workflow that matters to a team runs on a machine the team shares: a build hos
 container next to the data. `winslow serve` runs the engine there, and everyone works against it
 from their own terminal with `winslow connect`. The sessions live on the host, so a batch keeps
 running when a laptop closes, two people watch the same run, and the History tab is the record of
-what the team did. With `--endpoints ws mcp` the same host also serves agents over MCP, with the
+what the team did. With `--endpoints ws web mcp` the same host also serves agents over MCP, with the
 same reads and actions a terminal has.
 
 Compared to `winslow run`, nothing changes in the workflow code or in the UI. The engine moves out
@@ -13,8 +13,8 @@ of the terminal into its own process, and the terminal becomes one client of it.
 The page starts with the two setups most people want, [a team on one host](#a-team-shares-one-host)
 and [an agent over MCP](#connect-an-agent). The rest is the reference: the
 [process picture](#the-process-picture), the [extras](#install), the [serve](#start-a-server) and
-[connect](#connect-a-terminal) commands, the [credential rules](#credentials), the
-[MCP endpoint](#the-mcp-endpoint) and the [log stream](#logs).
+[connect](#connect-a-terminal) commands, the [web UI](#open-the-web-ui), the
+[credential rules](#credentials), the [MCP endpoint](#the-mcp-endpoint) and the [log stream](#logs).
 
 ## A team shares one host
 
@@ -45,7 +45,7 @@ An agent gets the same reads and actions as a terminal, over MCP. On the host:
 2. Serve both endpoints:
 
     ```bash
-    winslow serve --endpoints ws mcp
+    winslow serve --endpoints ws web mcp
     ```
 
     The MCP endpoint is at `http://127.0.0.1:8866/mcp`. On a shared host the server binds the network
@@ -161,7 +161,7 @@ frame per tick.
 
 | extra | installs | for |
 |---|---|---|
-| `winslow[serve]` | starlette, uvicorn, websockets, pydantic | the server |
+| `winslow[serve]` | starlette, uvicorn, websockets, pydantic, psutil, the built web UI | the server |
 | `winslow[connect]` | websockets, pydantic and the TUI packages | a remote terminal, through `uvx` or a project |
 | `winslow[mcp]` | the serve packages plus mcp | a server with the MCP endpoint |
 
@@ -180,16 +180,26 @@ frame per tick.
 ## Start a server
 
 ```bash
-winslow serve                              # 127.0.0.1:8866, websocket at /ws
+winslow serve                              # 127.0.0.1:8866, websocket at /ws, web UI at /
 winslow serve --host 0.0.0.0 --port 9000   # reachable from other hosts
-winslow serve --endpoints ws mcp               # adds the MCP endpoint at /mcp
-winslow serve --endpoints mcp                  # MCP only
+winslow serve --endpoints ws web mcp       # adds the MCP endpoint at /mcp
+winslow serve --endpoints ws               # the websocket alone, no page at /
+winslow serve --endpoints mcp              # MCP only
 ```
+
+The endpoints are `ws`, the websocket the terminal and the web UI talk to, `web`, the browser UI
+at `/`, and `mcp`. The default is `ws web`.
 
 The engine reads the workflows of the working directory, like `winslow run`. At startup it
 rebuilds every open manifest of the state directory, so the sessions of a dead process come back
 before the first client connects (see [Sessions and restore](sessions.md#restore-in-serve-mode)).
 A workflow with `auto_init = True` starts one session in the engine at the same point.
+
+### Stop a server
+
+Ctrl+C stops the server. It closes the open connections, then asks every running batch to stop and
+waits for the workers. Each wait has a bound of five seconds. A batch stops at its next task boundary,
+so a task that is mid run completes first.
 
 ## Connect a terminal
 
@@ -204,6 +214,37 @@ A machine that connects often adds `winslow[connect]` to a project and runs `win
 there. The URL is the one positional argument. The dashboard and the workflow screens are the ones of
 `winslow run`, drawn from the snapshots the server sends. Every action goes to the engine, and
 the task logs stream back over the socket.
+
+## Open the web UI
+
+The serve process hands out a browser UI at the root of its address:
+
+```bash
+winslow serve
+open http://127.0.0.1:8866/
+```
+
+The page shows the dashboard and the session screens of the terminal, drawn from the same snapshots
+and events: the start form, the session rows, the task list with run and check, the History and
+Caches tabs, the task and cache detail views, and the session log. It connects to the websocket of
+its own origin, and the server lists that origin itself, so a loopback bind needs no configuration.
+
+A front application that embeds the page sets `window.WINSLOW` before the app script loads:
+
+```html
+<script>
+  window.WINSLOW = {
+    wsUrl: "wss://etl-host:8866/ws",
+    ticket: "can:1757400000.0:3f2a...",
+    ticketUrl: "/winslow/ticket/",
+  };
+</script>
+```
+
+`wsUrl` names the websocket, `ticket` is the credential of the page (see
+[Tickets for browsers](#tickets-for-browsers)), and `ticketUrl` answers a fresh ticket as text: the
+page fetches it when a ticket expires and reconnects. The origin of such a page goes in
+`WINSLOW_ORIGINS`. The source of the page is `web/` in the repository (see `web/README.md`).
 
 ## Credentials
 
@@ -259,6 +300,29 @@ ticket = mint_ticket(secret, user="can", ttl=60.0)   # user:expiry:signature
 The page opens the socket and sends the ticket in its hello. The server verifies the signature
 under `WINSLOW_TICKET_SECRET` and the expiry, and answers `hello_ok` with the user of the ticket.
 
+## The environment color
+
+The header of every client names the environment of the server and takes its color: the TUI header
+over `winslow connect`, the navbar of the web UI. The server reads the name from `WINSLOW_ENV` and the
+color from a table keyed by name:
+
+| environment | color |
+|---|---|
+| `prod` | red |
+| `uat` | gold |
+| `staging` | orange |
+| `dev` | green |
+| `local` | royalblue |
+
+`WINSLOW_ENV_COLORS` adds or replaces entries. A value is a CSS color name or a hex value:
+
+```bash
+export WINSLOW_ENV=qa
+export WINSLOW_ENV_COLORS=qa=purple,staging=#ff8800
+```
+
+A name outside the table shows in gray.
+
 ## The websocket handshake
 
 The first message on the socket is a hello. A machine client sends the token and a browser sends
@@ -289,20 +353,21 @@ client.
 
 ## The MCP endpoint
 
-`--endpoints mcp`, alone or beside `ws`, mounts an MCP server at `/mcp` over streamable HTTP. It is the
+`--endpoints ws web mcp`, or `mcp` alone, mounts an MCP server at `/mcp` over streamable HTTP. It is the
 tool layer over the same port: the tools read snapshots and submit actions, and every action tool
 answers the ack as data, accepted with the batch uuid or refused with the reason, so an agent reads
 the outcome as a value.
 
 | group | tools |
 |---|---|
-| discover | `list_sessions`, `descriptors`, `manifests` |
+| discover | `list_sessions`, `descriptors`, `manifests`, `host_stats` |
 | sessions | `start_session`, `restore_session`, `end_session` |
 | read | `snapshot`, `roster`, `task_detail`, `history`, `record_detail` |
 | act | `run_tasks`, `check_tasks`, `stop_batch`, `load_cache_entries`, `clear_cache_entries` |
 
 `descriptors` lists the workflows the engine can start with their options. Its rows fill the
-`values` of `start_session`. `run_tasks` and `check_tasks` take task identity keys from
+`values` of `start_session`. `host_stats` reports the memory, the cpu load, the hostname and the user
+of the machine the sessions run on. `run_tasks` and `check_tasks` take task identity keys from
 `snapshot` or `roster`, plus the batch flags as `options`, for example `{"force_run": true}`.
 
 An MCP client on a non-loopback bind sends the token as a bearer:

@@ -28,6 +28,7 @@ from winslow.model import (
     CacheInfo,
     CacheValueView,
     BatchOutcome,
+    HostStats,
     ManifestInfo,
     RecordDetail,
     SessionParams,
@@ -238,6 +239,10 @@ class McpAppPort:
             for row in _aslist(_refuses(self._bridge.call("manifests", {})))
         )
 
+    def host_stats(self):
+        row = _refuses(self._bridge.call("host_stats", {}))
+        return CODEC.decode(HostStats, row)
+
     def create_session(self, workflow, overrides=None, values=None):
         row = _refuses(
             self._bridge.call(
@@ -408,3 +413,13 @@ def test_restore_refuses_an_unknown_manifest(port):
     assert port.manifests() == ()
     with pytest.raises(RequestError, match="no open manifest"):
         port.restore_session("gone")
+
+
+def test_host_stats_describe_the_serving_host(port):
+    stats = port.host_stats()
+    assert isinstance(stats, HostStats)
+    assert stats.hostname
+    assert stats.user
+    assert 0 < stats.memory_used <= stats.memory_total
+    assert 0 <= stats.memory_percent <= 100
+    assert 0 <= stats.cpu_percent <= 100

@@ -11,7 +11,7 @@ import pytest
 
 from winslow.constants import Mode
 from winslow.exceptions import MisconfigurationError
-from winslow.model import Descriptors
+from winslow.model import Descriptors, HostStats
 from winslow.serve import Credentials, create_app
 from winslow.serve.app import ServeApp
 from winslow.session import Session, SessionRegistry
@@ -167,7 +167,7 @@ def test_the_cli_parses_the_doors():
     from winslow.orchestrator import Orchestrator
 
     parser = Orchestrator.get_base_parser()
-    assert parser.parse_args(["serve"]).endpoints == ["ws"]
+    assert parser.parse_args(["serve"]).endpoints == ["ws", "web"]
     assert parser.parse_args(["serve", "--endpoints", "mcp"]).endpoints == ["mcp"]
     assert parser.parse_args(["serve", "--endpoints", "ws", "mcp"]).endpoints == [
         "ws",
@@ -192,6 +192,13 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
     rows = asdict(Descriptors.from_orchestrator(orchestrator))
     assert result == json.loads(json.dumps(rows))
     assert {"workflows", "overrides"} <= set(result)
+
+
+def test_the_host_stats_tool_serves_the_dto_fields(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    (result,) = call_tools(mcp_app(registry), [("host_stats", {})])
+    assert set(result) == set(HostStats.__dataclass_fields__)
+    assert result["memory_total"] >= result["memory_used"] > 0
 
 
 def test_a_read_refuses_an_unknown_session_as_data(e2e_repo):

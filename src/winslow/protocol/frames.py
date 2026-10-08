@@ -106,7 +106,12 @@ class ActionFrame(Frame):
 
 @dataclass(frozen=True, kw_only=True)
 class HelloOkFrame(Frame):
+    """user is the resolved identity. env and env_color describe the process
+    behind the socket, for the header of a client (see winslow.settings)."""
+
     user: str
+    env: str
+    env_color: str
 
 
 @dataclass(frozen=True, kw_only=True)

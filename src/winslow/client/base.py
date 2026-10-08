@@ -23,6 +23,7 @@ from winslow.model import (
     CacheValueView,
     Descriptors,
     BatchOutcome,
+    HostStats,
     ManifestInfo,
     RecordDetail,
     SessionParams,
@@ -148,6 +149,11 @@ class AppClient(Port):
         doc="Return a ManifestInfo per restorable session: the open manifests "
         "that name no live session.",
     )
+    host_stats = Read(
+        result=HostStats,
+        doc="Return the HostStats of the process: memory, cpu load, hostname "
+        "and user of the host that runs the sessions.",
+    )
     create_session = Read(
         workflow=str,
         overrides=(dict | None, None),
@@ -165,6 +171,12 @@ class AppClient(Port):
         doc="Re-create the session of an open manifest under its stored id, "
         "seeded from state. Return its SessionInfo.",
     )
+
+    def environment(self):
+        """Return the EnvInfo of the process that runs the sessions. The wire
+        transport takes it from the hello_ok frame, so the call needs no
+        request (see HelloOkFrame)."""
+        raise NotImplementedError
 
     def session(self, session_id):
         """Return the SessionClient of one live session. The local transport

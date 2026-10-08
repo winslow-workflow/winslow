@@ -25,6 +25,7 @@ from winslow.events import (
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.logger import LOGGER
 from winslow.model import (
+    EnvInfo,
     ConnectionEvent,
     SessionSnapshot,
     TaskLogEvent,
@@ -114,6 +115,8 @@ class Wire:
         self._lanes = {}
         # The ConnectionEvent handlers (see subscribe_connection).
         self._connection_handlers = []
+        # The hello_ok of the last handshake: the user and the environment.
+        self.hello = None
 
     def connect(self):
         try:
@@ -274,6 +277,7 @@ class Wire:
                     f"{self.url} refused the connection - "
                     f"{getattr(reply, 'reason', 'no hello_ok answer')}"
                 )
+            self.hello = reply
         except BaseException:
             websocket.close()
             raise
@@ -374,6 +378,10 @@ class RemoteAppClient(AppClient):
     def read(self, spec, *args, **kwargs):
         frame = self.wire.request(spec, **spec.bind(args, kwargs))
         return _decode(spec, frame)
+
+    def environment(self):
+        hello = self.wire.hello
+        return EnvInfo(name=hello.env, color=hello.env_color)
 
     def session(self, session_id):
         return self.wire.session_lane(session_id)

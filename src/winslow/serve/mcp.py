@@ -194,6 +194,12 @@ class McpEndpoint:
         return await self._read(AppClient.manifests)
 
     @tool
+    async def host_stats(self) -> dict:
+        """The resources of the host that runs the sessions: memory in
+        bytes, the cpu load since the previous sample, hostname and user."""
+        return await self._read(AppClient.host_stats)
+
+    @tool
     async def start_session(
         self, workflow: str, overrides: dict | None = None, values: dict | None = None
     ) -> dict:

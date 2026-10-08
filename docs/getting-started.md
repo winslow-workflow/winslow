@@ -137,7 +137,7 @@ The terminal UI presents the same options as a form. Fill the form in, then star
 
 !!! info "The environment"
 
-    Winslow reads the environment name from the `WINSLOW_ENV` variable, and the default value is `dev`. A task
+    Winslow reads the environment name from the `WINSLOW_ENV` variable, and the default value is `local`. A task
     and a workflow both read the value from `self.env`.
 
 ## Trust model

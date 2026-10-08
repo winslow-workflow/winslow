@@ -55,8 +55,7 @@ class Forecast(WorkflowCache):
         return {city: index for index, city in enumerate(self.cities)}
 ```
 
-Disable the parallel pre-population with the `--disable-concurrency` command-line argument, or by
-selecting the option on the workflow start form in the TUI.
+Disable the parallel pre-population with the `--disable-concurrency` command-line argument.
 
 ## Read a cache
 
@@ -168,8 +167,8 @@ written back to every persistent tier.
 $ winslow run --mode headless --workflow weather --clear-cache
 ```
 
-In the TUI, the same option is available on the workflow start form, with the other orchestrator
-options: select it before starting the session.
+In the TUI and the web UI, the same option is on the workflow start form: select it before starting
+the session.
 
 ## User interface
 

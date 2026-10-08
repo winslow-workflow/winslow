@@ -8,6 +8,7 @@ from dataclasses import asdict
 
 import pytest
 
+from winslow import settings
 from winslow.actions import (
     BatchAck,
     CheckTasks,
@@ -29,6 +30,7 @@ from winslow.events import (
 )
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.model import (
+    EnvInfo,
     BatchInfo,
     CacheInfo,
     CacheUpdatedEvent,
@@ -127,6 +129,13 @@ def test_connection_subscription_is_idle_in_process(e2e_repo):
     assert events == []
 
 
+def test_the_environment_carries_the_setting_and_its_color(monkeypatch):
+    monkeypatch.setattr(settings, "env", "uat")
+    monkeypatch.setattr(settings, "ENV_COLOR", "gold")
+    app = LocalAppClient(SessionRegistry(), None, None)
+    assert app.environment() == EnvInfo(name="uat", color="gold")
+
+
 def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
     app = LocalAppClient(
         SessionRegistry(), local_orchestrator(e2e_repo), scratch_state_store()
@@ -135,7 +144,11 @@ def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
     workflows = {d.workflow for d in descriptors.workflows}
     assert "my-workflow" in workflows
     override_names = {row.name for row in descriptors.overrides}
-    assert "force_run" in override_names
+    assert "clear_cache" in override_names
+    # The Tasks pane sets the batch flags per batch; the form leaves them out.
+    assert override_names.isdisjoint(
+        {"dry_run", "force_run", "force_success", "disable_concurrency"}
+    )
 
 
 def test_create_session_registers_and_stamps_a_local_manifest(e2e_repo, state_store):

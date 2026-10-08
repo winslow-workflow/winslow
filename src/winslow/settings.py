@@ -6,7 +6,27 @@ from decouple import AutoConfig
 
 config = AutoConfig(search_path=os.getcwd())
 
-env = config("WINSLOW_ENV", default="dev")
+env = config("WINSLOW_ENV", default="local")
+
+
+def _pairs(text):
+    """{name: value} of a "name=value,name=value" setting. Blank items are skipped."""
+    items = (item.partition("=") for item in text.split(",") if item.strip())
+    return {name.strip(): value.strip() for name, _, value in items}
+
+
+# The header color per environment name, a CSS color name or a hex value. Every
+# client of one server shows the same color (see HelloOkFrame). WINSLOW_ENV_COLORS
+# adds or replaces entries: "qa=purple,staging=#ff8800".
+ENV_COLORS = {
+    "prod": "red",
+    "uat": "gold",
+    "staging": "orange",
+    "dev": "green",
+    "local": "royalblue",
+    **_pairs(config("WINSLOW_ENV_COLORS", default="")),
+}
+ENV_COLOR = ENV_COLORS.get(env, "gray")
 
 # The live buffer of a task and the log mirror of the execution record hold the
 # same stream for that task. Each has its own limit, so the memory of History

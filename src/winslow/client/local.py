@@ -2,9 +2,13 @@
 LocalSessionClient pass the dataclasses the core builds through unchanged
 (see winslow.model)."""
 
+import time
 from dataclasses import asdict
 from functools import partial
 
+import psutil
+
+from winslow import settings
 from winslow.cache import declared_entries
 from winslow.client.base import AppClient, SessionClient
 from winslow.exceptions import RequestError
@@ -19,6 +23,8 @@ from winslow.model import (
     CacheValueView,
     Descriptors,
     BatchOutcome,
+    EnvInfo,
+    HostStats,
     ManifestInfo,
     RecordDetail,
     SessionLogEvent,
@@ -64,6 +70,31 @@ def _emit_task_log(handler, task_key, line):
     handler(TaskLogEvent(task_key=task_key, line=line))
 
 
+class HostStatsSampler:
+    """A custom cpu percent over a window of `interval` seconds, shared by
+    every client. psutil.cpu_percent keeps its previous counters in a module
+    global, so several clients reading at once would need a lock."""
+
+    def __init__(self, interval=1.0):
+        self.interval = interval
+        # (stamp, cpu counters at the stamp, stats of the window that ended there)
+        self.window = (time.monotonic(), psutil.cpu_times(), None)
+
+    def read(self):
+        stamp, counters, stats = self.window
+        now = time.monotonic()
+        if stats is not None and now - stamp < self.interval:
+            return stats
+        fresh = psutil.cpu_times()
+        total = sum(fresh) - sum(counters)
+        idle = fresh.idle - counters.idle
+        cpu_percent = round(100 * (total - idle) / total, 1) if total else 0.0
+        stats = HostStats.sample(cpu_percent)
+        # One tuple swap: a racing read computes the same window and wins nothing.
+        self.window = (now, fresh, stats)
+        return stats
+
+
 class LocalAppClient(AppClient):
     """The dashboard scope over a live SessionRegistry. orchestrator and
     state_store serve descriptors, manifests, create and restore. A client
@@ -73,6 +104,7 @@ class LocalAppClient(AppClient):
         self.registry = registry
         self.orchestrator = orchestrator
         self.state_store = state_store
+        self.host_sampler = HostStatsSampler()
 
     def sessions(self):
         return tuple(
@@ -88,6 +120,12 @@ class LocalAppClient(AppClient):
             for manifest in self.state_store.list_open_manifests()
             if manifest.session_id not in self.registry
         )
+
+    def host_stats(self):
+        return self.host_sampler.read()
+
+    def environment(self):
+        return EnvInfo(name=settings.env, color=settings.ENV_COLOR)
 
     def create_session(self, workflow, overrides=None, values=None):
         try:

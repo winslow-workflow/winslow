@@ -133,7 +133,7 @@ class ProdOnlySentry(SentryConfiguration):
         return super().get_handler(orchestrator_config)
 ```
 
-Run the workflow again: no events arrive, because `WINSLOW_ENV` defaults to `dev`. With
+Run the workflow again: no events arrive, because `WINSLOW_ENV` defaults to `local`. With
 `WINSLOW_ENV=prod` the events flow as before.
 
 ## OpenTelemetry

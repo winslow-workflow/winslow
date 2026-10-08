@@ -234,6 +234,15 @@ class ExecutionBatch:
         if self._error is not None:
             raise self._error
 
+    def join(self, timeout=None):
+        """Block until the worker finishes, or the timeout. Returns True when
+        the worker is gone. wait() raises the recorded error, a shutdown drain
+        must not (see ServeApp.drain)."""
+        if self._worker is not None:
+            self._worker.join(timeout)
+            return not self._worker.is_alive()
+        return True
+
     @property
     def stop_requested(self):
         return self._stop_event.is_set()

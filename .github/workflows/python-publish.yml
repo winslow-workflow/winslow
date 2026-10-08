@@ -15,6 +15,15 @@ jobs:
       prerelease: ${{ steps.classify.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: web/.nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      # The wheel carries the built web UI (see web/README.md).
+      - name: Build the web UI
+        run: npm ci && npm run build
+        working-directory: web
       - uses: astral-sh/setup-uv@v3
       - run: uv build
       # Gate the tag: install the built wheel into a clean env and exercise the
@@ -27,6 +36,7 @@ jobs:
           uv pip install --python /tmp/smoke "${WHEEL}[tui]"
           /tmp/smoke/bin/python -c "import winslow; print('import OK')"
           /tmp/smoke/bin/winslow --help
+          unzip -l "${WHEEL}" | grep -q winslow/serve/static/index.html
       # A pre-release must not reach the permanent PyPI index, so it goes to
       # TestPyPI instead. is_prerelease is also true for .devN, aN, bN and rcN.
       - name: Classify the tag version

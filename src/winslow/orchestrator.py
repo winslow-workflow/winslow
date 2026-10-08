@@ -12,7 +12,7 @@ from winslow.cache import (
 )
 from winslow.workflow import WorkflowRegistry
 from winslow._config import _ConfigBase
-from winslow.constants import ENDPOINTS, Mode
+from winslow.constants import DEFAULT_ENDPOINTS, ENDPOINTS, Mode, SHUTDOWN_GRACE
 from winslow.descriptors import ConfigOption
 from winslow.util import iter_dir_module_names, classes_in_module
 
@@ -116,10 +116,13 @@ class Orchestrator(_ConfigBase):
     )
 
     endpoints = ConfigOption(
-        help_text="The endpoints to serve: ws, mcp, or both. mcp requires the mcp extra.",
+        help_text=(
+            "The endpoints to serve: ws (the websocket), web (the browser UI at /, "
+            "needs ws), mcp (requires the mcp extra)."
+        ),
         choices=list(ENDPOINTS),
         multiselect=True,
-        default=["ws"],
+        default=list(DEFAULT_ENDPOINTS),
         subcommands=Command.SERVE.value,
         show_on_ui=False,
     )
@@ -194,15 +197,15 @@ class Orchestrator(_ConfigBase):
         ),
         default=False,
         subcommands=Command.RUN.value,
+        # Off the start form: the Tasks pane sets it per batch.
+        show_on_ui=False,
     )
 
     clear_cache = ConfigOption(
         action="store_true",
         help_text=(
             "Invalidate every cache entry at workflow initialization, before "
-            "the eager population. Meaningful for persistent cache storage; "
-            "a memory cache starts cold anyway. A read-only storage tier "
-            "keeps its records, and a later read can promote them back."
+            "the eager population."
         ),
         default=False,
         subcommands=Command.RUN.value,
@@ -216,6 +219,8 @@ class Orchestrator(_ConfigBase):
         ),
         default=False,
         subcommands=Command.RUN.value,
+        # Off the start form: the Tasks pane sets it per batch.
+        show_on_ui=False,
     )
 
     force_run = ConfigOption(
@@ -226,6 +231,8 @@ class Orchestrator(_ConfigBase):
         ),
         default=False,
         subcommands=Command.RUN.value,
+        # Off the start form: the Tasks pane sets it per batch.
+        show_on_ui=False,
     )
 
     force_success = ConfigOption(
@@ -236,6 +243,8 @@ class Orchestrator(_ConfigBase):
         ),
         default=False,
         subcommands=Command.RUN.value,
+        # Off the start form: the Tasks pane sets it per batch.
+        show_on_ui=False,
     )
 
     reraise_errors = ConfigOption(
@@ -637,18 +646,22 @@ class Orchestrator(_ConfigBase):
     def _handle_serve(self):
         try:
             import uvicorn
-            from winslow.serve.app import create_app
+            from winslow.serve.app import ServeApp
         except ImportError as e:
             raise MisconfigurationError(
                 "Serve mode requires the serve extra - install with: "
                 "pip install 'winslow[serve]'"
             ) from e
-        from winslow.serve.auth import Credentials
+        from winslow.serve.auth import Credentials, page_origins
         from winslow.session import SessionRegistry
         from winslow.state import create_state_store
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
+        # The served page passes the Origin rule without configuration.
+        origins = (
+            page_origins(config.host, config.port) if "web" in config.endpoints else ()
+        )
         # The boundary must exist before the first session logs (see
         # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
         # for the log store of a pod; the default keeps the session files.
@@ -657,9 +670,9 @@ class Orchestrator(_ConfigBase):
         state_store = create_state_store(config)
         self._restore_sessions(registry, state_store)
         self._auto_init_sessions(registry, state_store)
-        app = create_app(
+        serve = ServeApp(
             registry,
-            Credentials.from_env(config.host),
+            Credentials.from_env(config.host, extra_origins=origins),
             orchestrator=self,
             state_store=state_store,
             endpoints=config.endpoints,
@@ -669,8 +682,16 @@ class Orchestrator(_ConfigBase):
             # log_config=None: uvicorn's loggers propagate to the root
             # handler, so its lines share the winslow format - JSON under
             # WINSLOW_LOG_JSON (see _console_handler).
-            uvicorn.run(app, host=config.host, port=config.port, log_config=None)
+            uvicorn.run(
+                serve.starlette(),
+                host=config.host,
+                port=config.port,
+                log_config=None,
+                timeout_graceful_shutdown=SHUTDOWN_GRACE,
+            )
         finally:
+            # A forced exit skips the lifespan, so the drain runs here for both paths.
+            serve.drain(SHUTDOWN_GRACE)
             shutdown_run_logging()
 
     def _restore_sessions(self, registry, state_store):

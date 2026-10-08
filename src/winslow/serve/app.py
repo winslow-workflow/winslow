@@ -5,13 +5,20 @@ jobs). create_app builds the ASGI app from a ServeApp."""
 
 import asyncio
 import json
+import time
 import traceback
 from contextlib import asynccontextmanager
-from starlette.applications import Starlette
-from starlette.routing import Mount, WebSocketRoute
+from importlib.resources import files as package_files
+from pathlib import Path
 
+from starlette.applications import Starlette
+from starlette.responses import FileResponse
+from starlette.routing import Mount, Route, WebSocketRoute
+from starlette.staticfiles import StaticFiles
+
+from winslow import settings
 from winslow.actions import Action
-from winslow.constants import ENDPOINTS
+from winslow.constants import DEFAULT_ENDPOINTS, ENDPOINTS
 from winslow.client import LocalAppClient
 from winslow.protocol.codec import CODEC, ValidationError, report
 from winslow.exceptions import MisconfigurationError, RequestError
@@ -98,10 +105,10 @@ class Bridges:
 
 
 class ServeApp:
-    """One serve process: the live sessions of the registry behind two
-    optional endpoints, the websocket and the MCP mount. Each endpoint works
-    alone, and both share the registry and the credential policy. The port
-    carries the orchestrator and the state store (see LocalAppClient)."""
+    """One serve process: the live sessions of the registry behind the
+    endpoints of ENDPOINTS: the websocket, the web UI at the root, and the
+    MCP mount. The endpoints share the registry and the credential policy.
+    The port carries the orchestrator and the state store (see LocalAppClient)."""
 
     def __init__(
         self,
@@ -112,8 +119,9 @@ class ServeApp:
         state_store,
         hello_timeout=5.0,
         qsize=10_000,
-        endpoints=("ws",),
+        endpoints=DEFAULT_ENDPOINTS,
         base_url="http://127.0.0.1:8866",
+        static_dir=None,
     ):
         self.registry = registry
         self.credentials = credentials
@@ -129,8 +137,41 @@ class ServeApp:
             raise MisconfigurationError(
                 f"{sorted(unknown)} name no serve endpoint. The endpoints are {list(ENDPOINTS)}."
             )
+        if "web" in self.endpoints and "ws" not in self.endpoints:
+            raise MisconfigurationError(
+                "The web endpoint needs the ws endpoint: the page talks to the "
+                "websocket - serve both, or leave web out."
+            )
         self.base_url = base_url
+        self.static_dir = (
+            self._resolve_static(static_dir) if "web" in self.endpoints else None
+        )
         self.mcp_endpoint = self._build_mcp() if "mcp" in self.endpoints else None
+
+    def drain(self, timeout):
+        """Stop every running batch and wait for the workers, up to timeout
+        seconds in total. Returns the batches still running after the bound.
+        The serve handler calls this after uvicorn returns: the batch workers
+        are plain threads, and the interpreter waits for them at exit."""
+        batches = [
+            batch
+            for session in self.registry.sessions()
+            for batch in session.active_batches
+        ]
+        for batch in batches:
+            batch.request_stop()
+        deadline = time.monotonic() + timeout
+        stuck = [
+            batch
+            for batch in batches
+            if not batch.join(max(0.0, deadline - time.monotonic()))
+        ]
+        for batch in stuck:
+            LOGGER.warning(
+                f"batch {batch.uuid} is still running {timeout}s after the stop "
+                f"request - the process waits for its current task."
+            )
+        return stuck
 
     async def read(self, spec, session_id, fields):
         """One port read on a worker thread, for both endpoints. A refusal raises
@@ -173,13 +214,37 @@ class ServeApp:
             ) from e
         return McpEndpoint(self, self.base_url)
 
+    @classmethod
+    def _resolve_static(cls, static_dir):
+        """The directory of the built web UI (see web/README.md), or None for
+        a checkout without a build."""
+        path = Path(
+            str(package_files("winslow.serve") / "static")
+            if static_dir is None
+            else static_dir
+        )
+        if not (path / "index.html").is_file():
+            LOGGER.info(f"no web UI build at {path} - serving the endpoints alone.")
+            return None
+        return path
+
     def starlette(self):
         routes = []
         if "ws" in self.endpoints:
             routes.append(WebSocketRoute("/ws", self.ws))
+        if self.static_dir is not None:
+            # The UI owns / and /assets alone. The MCP mount keeps every other
+            # path, including the /mcp redirect and the OAuth metadata.
+            routes.append(Route("/", self.index))
+            assets = self.static_dir / "assets"
+            if assets.is_dir():
+                routes.append(Mount("/assets", app=StaticFiles(directory=assets)))
         if self.mcp_endpoint is not None:
             routes.append(Mount("/", app=self.mcp_endpoint.streamable_http_app()))
         return Starlette(routes=routes, lifespan=self._lifespan)
+
+    async def index(self, request):
+        return FileResponse(self.static_dir / "index.html")
 
     @asynccontextmanager
     async def _lifespan(self, app):
@@ -258,7 +323,13 @@ class Connection:
         self.jobs = set()
 
     async def run(self):
-        await self.websocket.send_text(encode_frame(HelloOkFrame(user=self.user)))
+        await self.websocket.send_text(
+            encode_frame(
+                HelloOkFrame(
+                    user=self.user, env=settings.env, env_color=settings.ENV_COLOR
+                )
+            )
+        )
         send_task = asyncio.get_running_loop().create_task(self._sender())
         try:
             while True:

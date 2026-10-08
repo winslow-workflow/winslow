@@ -153,7 +153,7 @@ Run it headless with `winslow run --mode headless --workflow release`. Each vari
 
 | The variation | The result |
 | --- | --- |
-| The default, in the `dev` environment | Build, test and verify complete. Publish is skipped, because the environment is not production. |
+| The default, in the `local` environment | Build, test and verify complete. Publish is skipped, because the environment is not production. |
 | `WINSLOW_ENV=prod` | Every task completes. |
 | `WINSLOW_ENV=prod` and `--maintenance` | Publish is blocked, because a maintenance window is open. |
 | `WINSLOW_ENV=prod` and `--offline` | Verify is blocked, and publish waits on it. |

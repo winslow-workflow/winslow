@@ -8,6 +8,35 @@ versions may include breaking changes).
 
 ## [Unreleased]
 
+### Added
+
+- The web UI: `winslow serve` hands out a browser UI at `/`, with the
+  dashboard and the session screens of the terminal over the websocket
+  endpoint. `web` is an endpoint of `--endpoints`, on by default beside `ws`;
+  `--endpoints ws` serves the websocket alone. The Vue source lives in
+  `web/`, the build travels inside the wheel, and `window.WINSLOW` configures
+  a page a front application embeds (see `docs/serve.md`).
+- The `host_stats` read of the port: memory, cpu load, hostname and user of
+  the machine that runs the sessions, over the websocket and as an MCP tool.
+  The system resources pane of the terminal reads it, so `winslow connect`
+  shows the server, and the web UI gains the same pane on both screens.
+- The header of the TUI and the navbar of the web UI name the environment of
+  the server and take its color. `WINSLOW_ENV_COLORS` adds or replaces the
+  colors per environment name (see `docs/serve.md`).
+
+### Changed
+
+- `WINSLOW_ENV` defaults to `local` instead of `dev`.
+- The workflow start form shows `clear_cache` as its only orchestrator
+  option. The Tasks pane sets `dry_run`, `force_run`, `force_success` and
+  `disable_concurrency` per batch.
+
+### Fixed
+
+- `winslow serve` stops on Ctrl+C with a client connected and a batch running.
+  The connection wait has a five second bound, and the shutdown asks every
+  running batch to stop and waits for its worker with the same bound.
+
 ## [0.6.0] — 2026-09-09
 
 ### Added
