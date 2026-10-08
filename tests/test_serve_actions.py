@@ -3,11 +3,13 @@ acks under their request id, the read requests serve descriptors, history,
 log tails and task detail, and create_session builds a live session the
 whole protocol then drives end to end."""
 
+from contextlib import contextmanager
+
 from starlette.testclient import TestClient
 
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
-from winslow.serve import Credentials, create_app
+from winslow.serve import create_app
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 from winslow.protocol.frames import RequestFrame
@@ -23,9 +25,8 @@ from winslow.protocol.frames import (
 )
 from winslow.protocol.lanes import BatchCompletedLane
 
+from harness import TOKEN, serve_credentials
 from harness import bare_orchestrator, build_workflow, by_name, scratch_state_store
-
-TOKEN = "test-token"
 
 
 def serve_orchestrator(directory, *unknown_args):
@@ -40,18 +41,19 @@ def serve_orchestrator(directory, *unknown_args):
     return orchestrator
 
 
+@contextmanager
 def connect(registry, orchestrator=None, state_store=None):
     app = create_app(
         registry,
-        Credentials(token=TOKEN, require_credential=True),
+        serve_credentials(),
         hello_timeout=1.0,
         orchestrator=orchestrator or bare_orchestrator(),
         state_store=state_store or scratch_state_store(),
     )
-    ws = TestClient(app).websocket_connect("/ws").__enter__()
-    ws.send_json({"type": HelloFrame.type, "token": TOKEN})
-    assert ws.receive_json()["type"] == HelloOkFrame.type
-    return ws
+    with TestClient(app).websocket_connect("/ws") as ws:
+        ws.send_json({"type": HelloFrame.type, "token": TOKEN})
+        assert ws.receive_json()["type"] == HelloOkFrame.type
+        yield ws
 
 
 def frames_until(ws, kind, limit=500):
@@ -74,77 +76,73 @@ def registered(e2e_repo, mode=Mode.TUI):
 def test_a_run_action_answers_an_ack_and_streams_the_batch(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    ws.send_json(
-        {
-            "type": ActionFrame.type,
-            "request_id": "r-1",
-            "session_id": session.session_id,
-            "action": "run_tasks",
-            "fields": {"keys": [alpha.identity_key]},
-        }
-    )
-    ack = frames_until(ws, AckFrame)
-    assert ack["request_id"] == "r-1"
-    assert ack["ack"]["accepted"] is True
-    completed = frames_until(ws, BatchCompletedLane)
-    assert completed["info"]["uuid"] == ack["ack"]["batch_uuid"]
-    assert workflow.store[alpha] is S.COMPLETED
-    ws.close()
+        ws.send_json(
+            {
+                "type": ActionFrame.type,
+                "request_id": "r-1",
+                "session_id": session.session_id,
+                "action": "run_tasks",
+                "fields": {"keys": [alpha.identity_key]},
+            }
+        )
+        ack = frames_until(ws, AckFrame)
+        assert ack["request_id"] == "r-1"
+        assert ack["ack"]["accepted"] is True
+        completed = frames_until(ws, BatchCompletedLane)
+        assert completed["info"]["uuid"] == ack["ack"]["batch_uuid"]
+        assert workflow.store[alpha] is S.COMPLETED
 
 
 def test_a_refused_action_carries_the_reason(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": ActionFrame.type,
-            "request_id": "r-2",
-            "session_id": session.session_id,
-            "action": "stop_batch",
-            "fields": {"batch_uuid": "no-such-batch"},
-        }
-    )
-    ack = frames_until(ws, AckFrame)
-    assert ack["ack"]["accepted"] is False
-    assert "no-such-batch" in ack["ack"]["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": ActionFrame.type,
+                "request_id": "r-2",
+                "session_id": session.session_id,
+                "action": "stop_batch",
+                "fields": {"batch_uuid": "no-such-batch"},
+            }
+        )
+        ack = frames_until(ws, AckFrame)
+        assert ack["ack"]["accepted"] is False
+        assert "no-such-batch" in ack["ack"]["reason"]
 
 
 def test_an_unknown_action_name_answers_an_error(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": ActionFrame.type,
-            "request_id": "r-3",
-            "session_id": session.session_id,
-            "action": "explode",
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-3"
-    assert "names no action" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": ActionFrame.type,
+                "request_id": "r-3",
+                "session_id": session.session_id,
+                "action": "explode",
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-3"
+        assert "names no action" in error["reason"]
 
 
 def test_bad_action_fields_answer_an_error(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": ActionFrame.type,
-            "request_id": "r-4",
-            "session_id": session.session_id,
-            "action": "run_tasks",
-            "fields": {"nope": 1},
-        }
-    )
-    assert "bad fields for run_tasks" in frames_until(ws, ErrorFrame)["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": ActionFrame.type,
+                "request_id": "r-4",
+                "session_id": session.session_id,
+                "action": "run_tasks",
+                "fields": {"nope": 1},
+            }
+        )
+        assert "bad fields for run_tasks" in frames_until(ws, ErrorFrame)["reason"]
 
 
 def test_submit_guarded_turns_a_raise_into_a_refused_ack(e2e_repo, monkeypatch):
@@ -171,92 +169,91 @@ def test_a_request_that_raises_answers_an_error_frame(e2e_repo, monkeypatch):
         raise RuntimeError("capture exploded")
 
     monkeypatch.setattr(TaskInfo, "from_task", classmethod(explode))
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-10",
-            "kind": "task_detail",
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-10"
-    assert "server log" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-10",
+                "kind": "task_detail",
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-10"
+        assert "server log" in error["reason"]
 
 
 def test_descriptors_carry_the_overrides_and_form_fields(e2e_repo):
     orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator)
-    ws.send_json(
-        {"type": RequestFrame.type, "request_id": "r-17", "kind": "descriptors"}
-    )
-    result = frames_until(ws, ResultFrame)["result"]
+    with connect(SessionRegistry(), orchestrator=orchestrator) as ws:
+        ws.send_json(
+            {"type": RequestFrame.type, "request_id": "r-17", "kind": "descriptors"}
+        )
+        result = frames_until(ws, ResultFrame)["result"]
 
-    identified = next(
-        row for row in result["workflows"] if row["workflow"] == "my-identified"
-    )
-    (client,) = [o for o in identified["options"] if o["name"] == "client"]
-    assert client["required"] is True
-    assert client["identifier"] is True
-    assert client["depends_on"] == []
+        identified = next(
+            row for row in result["workflows"] if row["workflow"] == "my-identified"
+        )
+        (client,) = [o for o in identified["options"] if o["name"] == "client"]
+        assert client["required"] is True
+        assert client["identifier"] is True
+        assert client["depends_on"] == []
 
-    override_names = [o["name"] for o in result["overrides"]]
-    assert override_names == ["clear_cache"]
-    ws.close()
+        override_names = [o["name"] for o in result["overrides"]]
+        assert override_names == ["clear_cache"]
 
 
 def test_create_session_refuses_a_missing_required_value(e2e_repo, state_store):
     orchestrator = serve_orchestrator(e2e_repo)
     registry = SessionRegistry()
-    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-18",
-            "kind": "create_session",
-            "workflow": "my-identified",
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "requires client" in error["reason"]
-    assert "descriptors" in error["reason"]
-    # Refused before any initialization: nothing registered.
-    assert len(registry) == 0
-    ws.close()
+    with connect(registry, orchestrator=orchestrator, state_store=state_store) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-18",
+                "kind": "create_session",
+                "workflow": "my-identified",
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "requires client" in error["reason"]
+        assert "descriptors" in error["reason"]
+        # Refused before any initialization: nothing registered.
+        assert len(registry) == 0
 
 
 def test_create_session_refuses_an_unknown_value_name(e2e_repo, state_store):
     orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-19",
-            "kind": "create_session",
-            "workflow": "my-workflow",
-            "values": {"clientt": "acme"},
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "'clientt' names no option" in error["reason"]
-    ws.close()
+    with connect(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    ) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-19",
+                "kind": "create_session",
+                "workflow": "my-workflow",
+                "values": {"clientt": "acme"},
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "'clientt' names no option" in error["reason"]
 
 
 def test_create_session_refuses_a_value_outside_the_choices(e2e_repo, state_store):
     orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-20",
-            "kind": "create_session",
-            "workflow": "my-workflow",
-            "overrides": {"mode": "warp"},
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "'warp' is not a choice of mode" in error["reason"]
-    ws.close()
+    with connect(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    ) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-20",
+                "kind": "create_session",
+                "workflow": "my-workflow",
+                "overrides": {"mode": "warp"},
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "'warp' is not a choice of mode" in error["reason"]

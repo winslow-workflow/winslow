@@ -3,6 +3,7 @@
 import re
 from dataclasses import dataclass, field
 
+from winslow.permissions import CredentialKind
 from winslow.protocol.codec import CODEC
 
 
@@ -56,7 +57,6 @@ def decode_frame(raw):
 @dataclass(frozen=True, kw_only=True)
 class HelloFrame(Frame):
     token: str | None = None
-    ticket: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -106,12 +106,18 @@ class ActionFrame(Frame):
 
 @dataclass(frozen=True, kw_only=True)
 class HelloOkFrame(Frame):
-    """user is the resolved identity. env and env_color describe the process
-    behind the socket, for the header of a client (see winslow.settings)."""
+    """user, scopes, credential and expires_at mirror the PermissionContext of the
+    connection: the identity, the expanded permission set, the credential
+    kind and the expiry of the credential (see winslow.permissions). env and
+    env_color describe the process behind the socket, for the header of a
+    client (see winslow.settings)."""
 
     user: str
     env: str
     env_color: str
+    scopes: tuple[str, ...]
+    credential: CredentialKind
+    expires_at: float | None
 
 
 @dataclass(frozen=True, kw_only=True)

@@ -3,6 +3,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional
 
+from winslow.permissions import PermissionContext
+
 
 @dataclass(frozen=True)
 class BatchOptions:
@@ -120,3 +122,30 @@ def scoped_log_context(context: LogContext):
         yield context
     finally:
         _log_context.reset(token)
+
+
+# The permission context behind the current request (see winslow.permissions).
+# The edge sets it once per action or read (see Connection, McpEndpoint). A
+# thread started for that work copies the context, so every record and log line
+# carries the same user. A local client sets nothing, and its records carry None.
+_current_permissions: ContextVar[Optional[PermissionContext]] = ContextVar(
+    "current_permissions", default=None
+)
+
+
+def current_permissions() -> Optional[PermissionContext]:
+    return _current_permissions.get()
+
+
+def current_user() -> Optional[str]:
+    context = _current_permissions.get()
+    return context.user if context is not None else None
+
+
+@contextmanager
+def scoped_permissions(context: Optional[PermissionContext]):
+    token = _current_permissions.set(context)
+    try:
+        yield context
+    finally:
+        _current_permissions.reset(token)

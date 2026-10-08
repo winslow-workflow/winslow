@@ -44,6 +44,11 @@ class Workflow(_ConfigBase):
     # initializes each of them.
     auto_init = False
 
+    # The scope name of the permissions on this workflow (see winslow.permissions).
+    # None resolves to the workflow name. A base class sets it once for a family
+    # and the subclasses inherit it.
+    permission_scope = None
+
     store_classes = {
         Mode.HEADLESS: TaskStore,
         Mode.TUI: TaskStore,
@@ -248,6 +253,10 @@ class Workflow(_ConfigBase):
     def should_be_initialized(cls, orchestrator_config, parameters=None):
         return True
 
+    @classmethod
+    def get_permission_scope(cls):
+        return cls.permission_scope or cls.get_name()
+
     @property
     def global_cache(self):
         if self._global_cache is None:
@@ -410,6 +419,7 @@ class Workflow(_ConfigBase):
         origin=None,
         orchestrator_overrides=None,
         workflow_values=None,
+        user=None,
     ):
         """Start persistence for the attached session: the manifest, and the
         persistence listener on the store. Call this once the pipeline is
@@ -438,6 +448,7 @@ class Workflow(_ConfigBase):
                     workflow_values=workflow_values,
                     origin=origin,
                     started_at=session.start,
+                    user=user,
                 )
             )
         except Exception:
@@ -519,7 +530,7 @@ class Workflow(_ConfigBase):
                 if self.session.status is SessionStatus.ERROR:
                     listener.mark_errored()
                 else:
-                    listener.mark_ended()
+                    listener.mark_ended(self.session.ended_by)
             except Exception:
                 self.logger.error(
                     f"Could not archive the manifest of {self.session_id}",

@@ -3,8 +3,10 @@ import { computed, ref } from 'vue'
 
 import ForceEndModal from '@/components/dashboard/ForceEndModal.vue'
 import { formatElapsed } from '@/protocol/format'
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import type { SessionInfo } from '@/protocol/model'
 import { sessionVariant } from '@/protocol/status'
+import { useConnectionStore } from '@/stores/connection'
 import { useSessionsStore } from '@/stores/sessions'
 
 const MAX_TITLE_LENGTH = 20
@@ -12,7 +14,9 @@ const MAX_TITLE_LENGTH = 20
 const props = defineProps<{ row: SessionInfo }>()
 
 const sessions = useSessionsStore()
+const connection = useConnectionStore()
 const forceEnd = ref(false)
+const canEnd = computed(() => connection.allows(props.row.permission_scope, 'end_workflow'))
 
 const ended = computed(() => props.row.status === 'ENDED' || props.row.status === 'ERROR')
 const title = computed(() => {
@@ -48,11 +52,21 @@ async function end() {
         </span>
         / {{ row.task_status_summary.total }}
         <span class="text-secondary ms-2">{{ formatElapsed(row.elapsed) }}</span>
+        <span v-if="row.user" class="text-secondary ms-2">{{ row.user }}</span>
         <span v-if="waiting" class="text-warning ms-2">{{ waiting }}</span>
       </div>
       <div class="d-flex gap-1">
         <BButton size="sm" variant="primary" :to="{ name: 'session', params: { id: row.session_id } }">View</BButton>
-        <BButton v-if="!ended" size="sm" variant="danger" @click="end">End</BButton>
+        <BButton
+          v-if="!ended"
+          size="sm"
+          variant="danger"
+          :disabled="!canEnd"
+          :title="canEnd ? undefined : NO_PERMISSION_MESSAGE"
+          @click="end"
+        >
+          End
+        </BButton>
       </div>
     </div>
     <ForceEndModal v-if="forceEnd" :session-id="row.session_id" @hidden="forceEnd = false" />

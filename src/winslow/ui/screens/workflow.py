@@ -46,12 +46,16 @@ from winslow.ui.builtin_plugins.workflow.caches import CachesPane
 from winslow.ui.builtin_plugins.workflow.cache_overview import CacheOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_overview import TaskOverviewPlugin
 from winslow.ui.builtin_plugins.workflow.task_list import TaskRow, TaskButton
+from winslow.ui.widgets.common import GuardedButton
 from winslow.task.status import TaskStatus, PASSING_STATUSES
 from winslow.ui.builtin_plugins.workflow.tasks_pane import TasksPaneWidget
 
 from winslow.ui.modals import TaskDetail, FilterHelp, WorkflowParams
 
-from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
+from winslow.ui.actions import (
+    TaskActionEnum,
+    SESSION_ENDING_MESSAGE,
+)
 from winslow.ui.reads import port_read
 from winslow.ui.store_adapter import StoreEvent
 
@@ -88,6 +92,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self.client = client
         self.session_info = session_info
         self.session_id = session_info.session_id
+        self.permission_scope = session_info.permission_scope
         self._init_search()
         self._asyncio_tasks: set[asyncio.Task] = set()
         # {batch uuid: toast verb} of the bulk submits that wait for their
@@ -229,6 +234,18 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         for key, name in snapshot.tasks.items():
             self.propagate_task_status(key, TaskStatus[name])
 
+    def allows(self, permission):
+        """Whether the connection may act on this session (see Winslow.allows).
+        The scope name comes from the session row."""
+        return self.app.allows(self.permission_scope, permission)
+
+    def apply_permissions(self):
+        """Refresh every guarded control from the client's PermissionContext,
+        on each screen resume and on every connection change (see
+        Winslow.apply_permissions). A control asks by itself at its mount."""
+        for button in self.query(GuardedButton).results():
+            button.refresh_permission(self.app, self.permission_scope)
+
     async def on_mount(self):
         # An ended session has no live lanes to subscribe to: the screen is
         # a read-only history from the start.
@@ -237,6 +254,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         await self._refresh_from_snapshot()
 
     async def on_screen_resume(self):
+        self.apply_permissions()
         await self._refresh_from_snapshot()
         # A session that ended is read-only history. Remove the live Tasks and
         # Caches tabs, so only the execution History stays. This is idempotent:
@@ -249,12 +267,8 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
             self._disable_batch_controls()
 
     def _disable_batch_controls(self):
-        for button in self.query(TaskButton).results():
+        for button in self.query(GuardedButton).results():
             button.session_ending = True
-        for selector in ("#run-all", "#check-all"):
-            for button in self.query(selector).results(Button):
-                button.disabled = True
-                button.tooltip = SESSION_ENDING_MESSAGE
 
     async def _remove_live_tabs(self):
         for widget_type in (TasksPaneWidget, CachesPane):

@@ -18,6 +18,7 @@ from dataclasses import field, make_dataclass
 from functools import cached_property, partial
 
 from winslow._meta import _DeclarationMeta
+from winslow.authz import filter_rows, guard
 from winslow.model import (
     CacheInfo,
     CacheValueView,
@@ -106,9 +107,17 @@ class Read:
 
 
 class _PortMeta(_DeclarationMeta):
+    """Collects the Read declarations, and puts the permission guard and the
+    row filter behind every method a transport marks (see winslow.authz)."""
+
     def __new__(cls, name, bases, dct):
         result = super().__new__(cls, name, bases, dct)
         result.read_meta = cls._collect(bases, dct, Read, "read_meta")
+        for attr, member in dct.items():
+            if hasattr(member, "requires"):
+                setattr(result, attr, guard(member))
+            elif hasattr(member, "visible"):
+                setattr(result, attr, filter_rows(member))
         return result
 
 
@@ -176,6 +185,13 @@ class AppClient(Port):
         """Return the EnvInfo of the process that runs the sessions. The wire
         transport takes it from the hello_ok frame, so the call needs no
         request (see HelloOkFrame)."""
+        raise NotImplementedError
+
+    def permissions(self):
+        """Return the PermissionContext of this client. The in-process client
+        holds every permission. The wire transport reads the hello_ok frame,
+        and holds no scope before the hello and between a drop and the next
+        hello, so a UI renders its controls disabled (see winslow.permissions)."""
         raise NotImplementedError
 
     def session(self, session_id):

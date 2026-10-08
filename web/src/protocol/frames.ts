@@ -37,7 +37,6 @@ export type FrameType = (typeof FRAME_TYPES)[number]
 export interface HelloFrame {
   type: 'hello'
   token?: string | null
-  ticket?: string | null
 }
 
 export interface SubscribeFrame {
@@ -79,6 +78,12 @@ export interface HelloOkFrame {
   // The environment of the serving process and its header color, a CSS color.
   env: string
   env_color: string
+  // The PermissionContext of the connection: the expanded permission set,
+  // `<scope name>:<permission>` or `*:<permission>`, the credential kind, and
+  // the expiry of the credential.
+  scopes: string[]
+  credential: string
+  expires_at: number | null
 }
 
 export interface HelloErrorFrame {

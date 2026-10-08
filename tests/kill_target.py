@@ -9,7 +9,7 @@ import time
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.session import Session
-from winslow.state import create_state_store
+from winslow.state import STATE_BACKENDS
 from winslow.task.status import PASSING_STATUSES, TaskStatus
 
 
@@ -27,7 +27,7 @@ def main(directory):
     session = Session(workflow)
     workflow.check_pipeline_eligibility()
     workflow.init_state(
-        create_state_store(config),
+        STATE_BACKENDS.create(config),
         origin="tui",
         orchestrator_overrides={},
         workflow_values={},

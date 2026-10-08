@@ -12,10 +12,19 @@ from winslow.ui import screens
 from winslow.ui.store_adapter import SessionLifecycleEvent
 from winslow.actions import EndSession
 from winslow.events import SessionEndedEvent
+from winslow.protocol.closes import CREDENTIAL_EXPIRED
 
 
 def session_screen_name(session_id):
     return f"session-{session_id}"
+
+
+# The notice of a drop, by the close code the server sent. A planned close is
+# information; a socket that died is a warning.
+DROP_NOTICE = ("Connection to the serve process lost - reconnecting.", "warning")
+DROP_NOTICES = {
+    CREDENTIAL_EXPIRED: ("Credential renewed - reconnecting.", "information"),
+}
 
 
 class Winslow(App):
@@ -63,6 +72,21 @@ class Winslow(App):
     def logger(self):
         return self.w_logger
 
+    def allows(self, scope_name, permission):
+        """Whether the connection may act. The PermissionContext of the client
+        holds no scope before the hello and after a drop, so a control that
+        asks here is disabled by default (see AppClient.permissions)."""
+        return self.client.permissions().allows(scope_name, permission)
+
+    def apply_permissions(self):
+        """Re-evaluate the guarded controls of every screen, after the hello
+        of a reconnect or a drop (see _notify_connection)."""
+        for screen in (*self.screen_stack, self.dashboard):
+            # A modal on the stack has no guarded control.
+            apply = getattr(screen, "apply_permissions", None)
+            if apply is not None:
+                apply()
+
     def compose(self):
         """Create the child widgets of the app."""
         yield Header()
@@ -95,13 +119,12 @@ class Winslow(App):
         )
 
     def _notify_connection(self, event):
+        self.apply_permissions()
         if event.connected:
             self.notify("Reconnected to the serve process.")
         else:
-            self.notify(
-                "Connection to the serve process lost - reconnecting.",
-                severity="warning",
-            )
+            message, severity = DROP_NOTICES.get(event.code, DROP_NOTICE)
+            self.notify(message, severity=severity)
 
     @property
     def dashboard(self):

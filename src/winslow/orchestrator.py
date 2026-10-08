@@ -44,6 +44,7 @@ class Command(Enum):
     SHOW = "show"
     SERVE = "serve"
     CONNECT = "connect"
+    AUTH = "auth"
 
 
 def _parse_mode(value):
@@ -361,8 +362,13 @@ class Orchestrator(_ConfigBase):
         connect_parser.add_argument(
             "url",
             help="The websocket URL of the serve process, e.g. ws://host:8866. "
-            "A non-loopback server reads the bearer token from WINSLOW_TOKEN.",
+            "A non-loopback server needs a credential: WINSLOW_TOKEN holds this "
+            "client's per-user token or ticket, or `winslow auth login` stores one.",
         )
+
+        from winslow.access import cli
+
+        cli.add_parser(subparsers).set_defaults(action=Command.AUTH)
 
         return parser
 
@@ -645,50 +651,51 @@ class Orchestrator(_ConfigBase):
 
     def _handle_serve(self):
         try:
-            import uvicorn
             from winslow.serve.app import ServeApp
+            from winslow.serve.server import HttpServer
         except ImportError as e:
             raise MisconfigurationError(
                 "Serve mode requires the serve extra - install with: "
                 "pip install 'winslow[serve]'"
             ) from e
-        from winslow.serve.auth import Credentials, page_origins
+        from winslow.serve.app import serve_origins
+        from winslow.serve.auth import Credentials
         from winslow.session import SessionRegistry
-        from winslow.state import create_state_store
+        from winslow.state import STATE_BACKENDS
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
-        # The served page passes the Origin rule without configuration.
-        origins = (
-            page_origins(config.host, config.port) if "web" in config.endpoints else ()
-        )
+        credentials = Credentials.from_env(config.host)
+        for level, line in credentials.describe(f"{config.host}:{config.port}"):
+            self.logger.log(level, line)
         # The boundary must exist before the first session logs (see
         # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
         # for the log store of a pod; the default keeps the session files.
         setup_run_logging(sinks=[stdout_json_sink()] if settings.LOG_JSON else None)
         registry = SessionRegistry()
-        state_store = create_state_store(config)
+        state_store = STATE_BACKENDS.create(config)
         self._restore_sessions(registry, state_store)
         self._auto_init_sessions(registry, state_store)
         serve = ServeApp(
             registry,
-            Credentials.from_env(config.host, extra_origins=origins),
+            credentials,
             orchestrator=self,
             state_store=state_store,
             endpoints=config.endpoints,
             base_url=f"http://{config.host}:{config.port}",
+            allowed_origins=serve_origins(config.host, config.port, config.endpoints),
         )
         try:
             # log_config=None: uvicorn's loggers propagate to the root
             # handler, so its lines share the winslow format - JSON under
             # WINSLOW_LOG_JSON (see _console_handler).
-            uvicorn.run(
-                serve.starlette(),
+            HttpServer(
+                serve,
                 host=config.host,
                 port=config.port,
                 log_config=None,
                 timeout_graceful_shutdown=SHUTDOWN_GRACE,
-            )
+            ).run()
         finally:
             # A forced exit skips the lifespan, so the drain runs here for both paths.
             serve.drain(SHUTDOWN_GRACE)
@@ -734,6 +741,19 @@ class Orchestrator(_ConfigBase):
                     exc_info=True,
                 )
 
+    def _handle_auth(self):
+        from winslow.access import POLICY_BACKENDS, TOKEN_BACKENDS, cli
+        from winslow.access.credentials import CredentialFile
+
+        stores = cli.Stores(
+            policy=POLICY_BACKENDS.create(),
+            tokens=TOKEN_BACKENDS.create(),
+            credentials=CredentialFile(),
+        )
+        # False exits with 1 and no further message, the way a failed run does
+        # (see cli.main): the command already printed its answer.
+        return cli.run(self.orchestrator_config, stores, print) == 0
+
     def _handle_connect(self):
         """The remote TUI: the same app over the wire transport of the
         session port. The serve process owns the workflows and the state."""
@@ -746,10 +766,20 @@ class Orchestrator(_ConfigBase):
                 "pip install 'winslow[connect]'"
             ) from e
 
+        from winslow.access.credentials import (
+            CredentialFile,
+            credential_for,
+            remember_user,
+        )
+
         config = self.orchestrator_config
-        client = RemoteAppClient(config.url, token=settings.SERVE_TOKEN)
+        store = CredentialFile()
+        token = credential_for(config.url, store, settings.CONNECT_TOKEN)
+        client = RemoteAppClient(config.url, token=token)
         client.connect()
         self.logger.info(f"Connected to {config.url}")
+        if not settings.CONNECT_TOKEN:
+            remember_user(store, config.url, client.wire.hello)
 
         # The tasks run on the serve process, so no run record reaches this
         # one: run-log wiring here would only create an empty log directory.
@@ -781,14 +811,14 @@ class Orchestrator(_ConfigBase):
 
         from winslow.client import LocalAppClient
         from winslow.session import SessionRegistry
-        from winslow.state import create_state_store
+        from winslow.state import STATE_BACKENDS
 
         # The composition root of the local TUI: this process owns the registry
         # and the durable store (see winslow.state); the app consumes the port.
         local_client = LocalAppClient(
             SessionRegistry(),
             orchestrator=self,
-            state_store=create_state_store(self.orchestrator_config),
+            state_store=STATE_BACKENDS.create(self.orchestrator_config),
         )
         app = Winslow(client=local_client, logger=self.logger, owns_sessions=True)
 
@@ -852,6 +882,10 @@ class Orchestrator(_ConfigBase):
         - Start a simple run.
         - Show a summary of the workflows and the tasks.
         """
+        if self.orchestrator_config.action is Command.AUTH:
+            # The stores alone: no workflow, no server.
+            return self._handle_auth()
+
         self.validate_option_dependencies(
             self.orchestrator_config, subcommand=self.orchestrator_config.action.value
         )

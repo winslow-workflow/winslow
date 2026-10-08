@@ -12,7 +12,7 @@ from winslow.exceptions import MisconfigurationError
 from winslow.protocol.frames import Frame
 from winslow.protocol import lanes  # noqa: F401  - registers the lane frames
 from winslow.serve import Credentials, create_app
-from winslow.serve.auth import page_origins
+from winslow.serve.app import page_origins
 from winslow.session import SessionRegistry
 
 from harness import bare_orchestrator, scratch_state_store

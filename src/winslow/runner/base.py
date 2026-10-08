@@ -241,6 +241,7 @@ class BaseRunner(_Base):
                 created_at=created_at,
                 task_count=record.task_count,
                 status=ExecutionStatus.INTERRUPTED,
+                user=record.user,
                 # The stored snapshot restores the flag pills of the history
                 # card, which reads the context fields.
                 execution_context=(

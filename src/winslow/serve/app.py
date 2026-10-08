@@ -15,15 +15,29 @@ from starlette.applications import Starlette
 from starlette.responses import FileResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
+from starlette.websockets import WebSocketState
 
 from winslow import settings
 from winslow.actions import Action
-from winslow.constants import DEFAULT_ENDPOINTS, ENDPOINTS
+from winslow.constants import DEFAULT_ENDPOINTS, ENDPOINTS, LOOPBACK_HOSTS
 from winslow.client import LocalAppClient
 from winslow.protocol.codec import CODEC, ValidationError, report
-from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.protocol.closes import (
+    CLIENT_TOO_SLOW,
+    CREDENTIAL_EXPIRED,
+    CREDENTIAL_REFUSED,
+    EXPIRED_REASON,
+    HELLO_TIMEOUT,
+    MALFORMED_HELLO,
+    ORIGIN_REFUSED,
+    TOO_SLOW_REASON,
+)
+from winslow.exceptions import CredentialRefused, MisconfigurationError, RequestError
 from winslow.logger import LOGGER
 from winslow.serve.bridge import EventBridge, FrameQueue
+from winslow.authz import check
+from winslow.permissions import Permission, wire_scopes
+from winslow.task.context import scoped_permissions
 from winslow._meta import _tagged, handles
 from winslow.client.base import PORT_READS
 from winslow.protocol.frames import (
@@ -47,13 +61,20 @@ from winslow.protocol.frames import (
 # (see ServeApp.read).
 READ_REFUSALS = (KeyError, RequestError)
 
-# The refusal codes of the handshake. The reason also travels as a hello_error
-# frame before the close, so a browser client can read it.
-MALFORMED_HELLO = 4400
-CREDENTIAL_REFUSED = 4401
-HELLO_TIMEOUT = 4408
-# The close code of a client that stays behind a full frame window.
-CLIENT_TOO_SLOW = 1013
+
+@asynccontextmanager
+async def until_expiry(permissions):
+    """Run the block until the credential expires. The yielded bound answers
+    expired() afterwards, so the caller closes the socket once the sender task
+    is gone: one task writes the socket (see Connection). A credential without
+    an expiry bounds nothing. A stale permission thus lives at most one
+    credential lifetime (see PermissionContext.remaining)."""
+    try:
+        async with asyncio.timeout(permissions.remaining()) as bound:
+            yield bound
+    except TimeoutError:
+        if not bound.expired():
+            raise
 
 
 def parse_frame(message):
@@ -71,6 +92,24 @@ def parse_frame(message):
     if not isinstance(frame, dict):
         raise ValueError(f"a frame must be a JSON object, not {type(frame).__name__}.")
     return frame
+
+
+def page_origins(host, port):
+    """The origins a browser sends for the web UI the serve process hands
+    out itself. A loopback bind answers under every loopback name."""
+    hosts = LOOPBACK_HOSTS if host in LOOPBACK_HOSTS else (host,)
+    return tuple(
+        f"http://[{name}]:{port}" if ":" in name else f"http://{name}:{port}"
+        for name in hosts
+    )
+
+
+def serve_origins(host, port, endpoints):
+    """The browser origins the websocket accepts: WINSLOW_ORIGINS, plus the
+    origins of the served page when the web endpoint is on."""
+    listed = tuple(o for o in settings.SERVE_ORIGINS.split(",") if o)
+    served = page_origins(host, port) if "web" in endpoints else ()
+    return listed + served
 
 
 class Bridges:
@@ -122,9 +161,11 @@ class ServeApp:
         endpoints=DEFAULT_ENDPOINTS,
         base_url="http://127.0.0.1:8866",
         static_dir=None,
+        allowed_origins=None,
     ):
         self.registry = registry
         self.credentials = credentials
+        self.allowed_origins = allowed_origins
         self.hello_timeout = hello_timeout
         self.qsize = qsize
         # The in-process port every endpoint serves (see PORT_READS in winslow.client.base).
@@ -147,6 +188,13 @@ class ServeApp:
             self._resolve_static(static_dir) if "web" in self.endpoints else None
         )
         self.mcp_endpoint = self._build_mcp() if "mcp" in self.endpoints else None
+
+    def close_streams(self):
+        """End the streams a client holds open across requests. The shutdown
+        calls this before the connection wait, so the wait ends when the
+        clients read the final frame (see HttpServer)."""
+        if self.mcp_endpoint is not None:
+            self.mcp_endpoint.close_listen_streams()
 
     def drain(self, timeout):
         """Stop every running batch and wait for the workers, up to timeout
@@ -260,10 +308,16 @@ class ServeApp:
 
     async def ws(self, websocket):
         await websocket.accept()
-        user = await self._handshake(websocket)
-        if user is None:
+        permissions = await self._handshake(websocket)
+        if permissions is None:
             return
-        await Connection(self, websocket, user).run()
+        await Connection(self, websocket, permissions).run()
+
+    def origin_allowed(self, origin):
+        """The Origin rule of a browser page. It holds on every bind: a page
+        in a local browser reaches a loopback server too. A client without a
+        browser sends no Origin and passes."""
+        return origin is None or origin in (self.allowed_origins or ())
 
     async def _refuse(self, websocket, code, reason, detail=None):
         await websocket.send_text(
@@ -272,9 +326,9 @@ class ServeApp:
         await websocket.close(code=code, reason=reason)
 
     async def _handshake(self, websocket):
-        """Returns the user, or None after a refusal or a disconnect. The hello
-        decodes through HelloFrame like every later frame (see Connection.decode),
-        so verify_hello reads typed fields."""
+        """Returns the PermissionContext, or None after a refusal or a
+        disconnect. The hello decodes through HelloFrame like every later frame
+        (see Connection.decode), so verify_hello reads typed fields."""
         try:
             message = await asyncio.wait_for(websocket.receive(), self.hello_timeout)
         except asyncio.TimeoutError:
@@ -297,13 +351,20 @@ class ServeApp:
         except ValueError as exc:
             await self._refuse(websocket, MALFORMED_HELLO, str(exc))
             return None
-        user, error = self.credentials.verify_hello(
-            hello, websocket.headers.get("origin")
-        )
-        if error:
-            await self._refuse(websocket, CREDENTIAL_REFUSED, error)
+        origin = websocket.headers.get("origin")
+        if not self.origin_allowed(origin):
+            await self._refuse(
+                websocket,
+                ORIGIN_REFUSED,
+                f"origin {origin!r} is not allowed on this server",
+            )
             return None
-        return user
+        try:
+            # Off the loop: a store behind a database blocks no other socket.
+            return await asyncio.to_thread(self.credentials.verify_hello, hello)
+        except CredentialRefused as exc:
+            await self._refuse(websocket, CREDENTIAL_REFUSED, str(exc))
+            return None
 
 
 class Connection:
@@ -311,10 +372,11 @@ class Connection:
     sender task sends everything (the control queue and every session queue),
     so no two tasks write the socket."""
 
-    def __init__(self, app, websocket, user):
+    def __init__(self, app, websocket, permissions):
         self.app = app
         self.websocket = websocket
-        self.user = user
+        # The PermissionContext of the hello (see winslow.permissions).
+        self.permissions = permissions
         self.wake = asyncio.Event()
         self.control = FrameQueue(wake=self.wake, maxlen=app.qsize)
         # session_id -> FrameQueue. The task log keys of a session live on its
@@ -326,22 +388,24 @@ class Connection:
         await self.websocket.send_text(
             encode_frame(
                 HelloOkFrame(
-                    user=self.user, env=settings.env, env_color=settings.ENV_COLOR
+                    user=self.permissions.user,
+                    env=settings.env,
+                    env_color=settings.ENV_COLOR,
+                    scopes=wire_scopes(self.permissions.scopes),
+                    credential=self.permissions.credential,
+                    expires_at=self.permissions.expires_at,
                 )
             )
         )
         send_task = asyncio.get_running_loop().create_task(self._sender())
+        expired = False
         try:
-            while True:
-                message = await self.websocket.receive()
-                if message["type"] == "websocket.disconnect":
-                    return
-                try:
-                    frame = parse_frame(message)
-                except ValueError as exc:
-                    self.reply(ErrorFrame(reason=str(exc)))
-                    continue
-                self.handle_frame(frame)
+            # One scope for the socket: a job task copies the context when it
+            # is spawned, a worker thread when it is called.
+            async with until_expiry(self.permissions) as bound:
+                with scoped_permissions(self.permissions):
+                    await self._receive_loop()
+            expired = bound.expired()
         finally:
             send_task.cancel()
             for job in self.jobs:
@@ -350,6 +414,31 @@ class Connection:
                 bridge = self.app.bridges.get(session_id)
                 if bridge is not None:
                     bridge.remove_queue(queue)
+        if expired:
+            await self.close(CREDENTIAL_EXPIRED, EXPIRED_REASON)
+
+    async def close(self, code, reason):
+        """Close the socket once, after the sender is gone. A client that left
+        in the same tick has closed already, and a second close would raise."""
+        socket = self.websocket
+        if (
+            socket.application_state is WebSocketState.CONNECTED
+            and socket.client_state is WebSocketState.CONNECTED
+        ):
+            await socket.close(code=code, reason=reason)
+
+    async def _receive_loop(self):
+        """Dispatch every inbound frame until the client disconnects."""
+        while True:
+            message = await self.websocket.receive()
+            if message["type"] == "websocket.disconnect":
+                return
+            try:
+                frame = parse_frame(message)
+            except ValueError as exc:
+                self.reply(ErrorFrame(reason=str(exc)))
+                continue
+            self.handle_frame(frame)
 
     # --- the outgoing side ---------------------------------------------------
 
@@ -366,11 +455,7 @@ class Connection:
                 while queue.deque:
                     await self.websocket.send_text(queue.deque.popleft())
                 if queue.behind_a_full_window:
-                    await self.websocket.close(
-                        code=CLIENT_TOO_SLOW,
-                        reason="the client stays behind a full frame window - "
-                        "reconnect and subscribe for a fresh snapshot",
-                    )
+                    await self.close(CLIENT_TOO_SLOW, TOO_SLOW_REASON)
                     return
             await self.wake.wait()
 
@@ -454,6 +539,16 @@ class Connection:
     def resolve_for(self, envelope):
         return self.resolve(envelope.session_id, envelope.request_id)
 
+    def may_view(self, session, request_id):
+        """A subscription is a transport concept, so the port decorators do
+        not see it: the connection checks view_task on the session's scope
+        name before a bridge attaches. False after an error reply."""
+        reason = check((Permission.VIEW_TASK,), session.permission_scope)
+        if reason is None:
+            return True
+        self.request_error(request_id, reason)
+        return False
+
     @handles(SubscribeFrame)
     def handle_subscribe(self, envelope):
         """Attach, snapshot, and queue, synchronous on the loop, so no drain
@@ -462,6 +557,8 @@ class Connection:
         client recovers from a sequence gap."""
         session = self.resolve_for(envelope)
         if session is None:
+            return
+        if not self.may_view(session, envelope.request_id):
             return
         if session.has_ended:
             # The bus of an ended session is closed, so a new bridge has nothing
@@ -500,6 +597,8 @@ class Connection:
         session first."""
         session = self.resolve_for(envelope)
         if session is None:
+            return
+        if not self.may_view(session, envelope.request_id):
             return
         if session.session_id not in self.queues:
             self.request_error(
@@ -550,7 +649,8 @@ class Connection:
         self.spawn(envelope, self.run_read(envelope, PORT_READS[envelope.kind]))
 
     async def run_action(self, envelope):
-        """One action as an ack frame, or an error frame (see ServeApp.submit)."""
+        """One action as an ack frame, or an error frame (see ServeApp.submit).
+        The handler runs as the user of this socket (see Connection.run)."""
         try:
             action = Action.build(envelope.action, envelope.fields)
             ack = await self.app.submit(envelope.session_id, action)
@@ -560,7 +660,9 @@ class Connection:
         self.reply(AckFrame(request_id=envelope.request_id, ack=ack))
 
     async def run_read(self, envelope, spec):
-        """One port read as a result frame, or an error frame (see ServeApp.read)."""
+        """One port read as a result frame, or an error frame (see ServeApp.read).
+        create_session and restore_session are reads, so the session start
+        runs as the user of this socket too."""
         fields = {name: getattr(envelope, name) for name in spec.fields}
         try:
             result = await self.app.read(

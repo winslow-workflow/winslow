@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
+import { useConnectionStore } from '@/stores/connection'
 import { computed, ref, watch } from 'vue'
 
 import OptionField from '@/components/dashboard/OptionField.vue'
@@ -8,6 +10,9 @@ import type { OptionInfo, WorkflowDescriptor } from '@/protocol/model'
 
 const props = defineProps<{ descriptor: WorkflowDescriptor; overrides: readonly OptionInfo[] }>()
 const emit = defineEmits<{ start: [values: FormValues] }>()
+
+const connection = useConnectionStore()
+const canStart = computed(() => connection.allows(props.descriptor.permission_scope, 'start_workflow'))
 
 function initialRaws(options: readonly OptionInfo[]): Record<string, RawValue> {
   return Object.fromEntries(options.map((option) => [option.name, initialRaw(option)]))
@@ -68,7 +73,14 @@ function proceed(values: FormValues) {
         />
       </template>
       <div class="text-center py-3">
-        <BButton variant="success" @click="submit">Start Workflow</BButton>
+        <BButton
+          variant="success"
+          :disabled="!canStart"
+          :title="canStart ? undefined : NO_PERMISSION_MESSAGE"
+          @click="submit"
+        >
+          Start Workflow
+        </BButton>
         <div v-if="errorSummary" class="text-danger small mt-2">invalid fields: {{ errorSummary }}</div>
       </div>
     </div>

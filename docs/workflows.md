@@ -201,6 +201,33 @@ class Etl(BaseWorkflow):   # Winslow registers this workflow.
 The `examples/ci` workflow uses this pattern. The abstract `MarkerTask` holds the `run` method and the `check`
 method, and the six concrete tasks declare only their group and their dependencies.
 
+## The scope name of a workflow
+
+Permissions on a session name the workflow through its scope name. `permission_scope` sets it, and
+its default is the workflow name. A base class sets it once for a family, so one grant covers every
+workflow that inherits it:
+
+```python
+class FuturesBase(Workflow):
+    permission_scope = "Futures"
+
+    class Meta:
+        abstract = True
+
+
+class FuturesRollout(FuturesBase):
+    pass          # permissions read Futures:run_task, Futures:start_workflow, ...
+
+
+class FuturesRollback(FuturesBase):
+    pass          # the same scope name
+```
+
+The five permissions are `start_workflow`, `end_workflow`, `run_task`, `check_task` and `view_task`.
+`run_task` includes `check_task`, and every permission includes `view_task`. The session rows,
+the workflow descriptors and the manifests carry the scope name, so a client resolves it without the class (see
+[Serve and connect](serve.md#the-websocket-handshake)).
+
 ## Nested workflows
 
 A workflow directory can hold another workflow directory. Each `workflow.py` file still gives one workflow, so

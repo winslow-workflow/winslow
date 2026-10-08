@@ -40,7 +40,7 @@ const edges = computed(() =>
 </script>
 
 <template>
-  <div v-if="!card" class="d-flex align-items-center justify-content-center h-100 text-secondary">
+  <div v-if="!card" class="d-flex align-items-center justify-content-center flex-grow-1 text-secondary">
     Select a cache to see the details.
   </div>
   <div v-else class="pane-body">

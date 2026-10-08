@@ -3,11 +3,16 @@ user input into one action dataclass and submits it to the ActionHandler of
 the session. Action fields are values only: identity keys, scalars (the
 payload rule, see winslow.events)."""
 
+import contextvars
 import threading
 from dataclasses import asdict, dataclass, fields
 
 from winslow._meta import _tagged, handles
 from winslow.cache import declared_entries
+from winslow import authz
+from winslow.authz import requires
+from winslow.permissions import Permission
+from winslow.runner.execution import ExecutionAction
 from winslow.exceptions import SessionEndingError
 from winslow.task.context import BatchOptions
 from winslow.util import execute_in_threads
@@ -32,10 +37,16 @@ class BatchAck(Ack):
 
 class Action:
     """The base of every action. name is the wire name (see ActionFrame). The
-    actions register by name at class creation (see build)."""
+    actions register by name at class creation (see build). ack_class is the
+    answer the action gets, and audit_keys the size the audit line carries."""
 
     name = None
     by_name = {}
+    ack_class = Ack
+
+    @property
+    def audit_keys(self):
+        return None
 
     def __init_subclass__(cls, **kwargs):
         super().__init_subclass__(**kwargs)
@@ -64,8 +75,18 @@ class Action:
             ) from None
 
 
+class BatchAction(Action):
+    """An action that submits a batch over keys and answers with a BatchAck."""
+
+    ack_class = BatchAck
+
+    @property
+    def audit_keys(self):
+        return len(self.keys)
+
+
 @dataclass(frozen=True)
-class RunTasks(Action):
+class RunTasks(BatchAction):
     """options carries the batch options of this submit: {name: bool},
     over the session baseline. They are client view state, so each client
     sends its own with every batch (see BatchOptions)."""
@@ -76,7 +97,7 @@ class RunTasks(Action):
 
 
 @dataclass(frozen=True)
-class CheckTasks(Action):
+class CheckTasks(BatchAction):
     """The check form of RunTasks; options works the same."""
 
     name = "check_tasks"
@@ -132,20 +153,37 @@ class ActionHandler:
     def _runner(self):
         return self.session.workflow.runner
 
+    @property
+    def permission_scope(self):
+        return self.session.permission_scope
+
     def submit(self, action):
         """The one entry point: dispatch on the action class."""
         method = self._methods.get(type(action))
         if method is None:
-            return self._refuse(
-                action,
-                f"{type(action).__name__} names no action of this session. "
+            return Ack(
+                accepted=False,
+                reason=f"{type(action).__name__} names no action of this session. "
                 f"The actions are {sorted(k.__name__ for k in self._methods)}.",
             )
         if self.session.has_ended:
             return self._refuse(
                 action, f"{self.session.session_id} has ended and accepts no action."
             )
-        return method(self, action)
+        # The permission check of the handler, from the marker its decorator
+        # leaves (see authz.requires). The refusal is an ack like every other.
+        scope_name = self.session.permission_scope
+        reason = authz.check(method.requires, scope_name)
+        ack = self._refuse(action, reason) if reason else method(self, action)
+        authz.audit(
+            action.name,
+            scope_name,
+            self.session.session_id,
+            ack.accepted,
+            ack.reason,
+            action.audit_keys,
+        )
+        return ack
 
     def submit_guarded(self, action):
         """submit for a wire transport: an unexpected raise becomes a refused
@@ -165,16 +203,17 @@ class ActionHandler:
 
     @classmethod
     def _refuse(cls, action, reason):
-        ack_class = BatchAck if isinstance(action, (RunTasks, CheckTasks)) else Ack
-        return ack_class(accepted=False, reason=reason)
+        return action.ack_class(accepted=False, reason=reason)
 
     @handles(RunTasks)
+    @requires(Permission.RUN_TASK)
     def run_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_run_single, self._runner.submit_run
         )
 
     @handles(CheckTasks)
+    @requires(Permission.CHECK_TASK)
     def check_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_check_single, self._runner.submit_check
@@ -229,11 +268,19 @@ class ActionHandler:
         return BatchAck(accepted=True, batch_uuid=batch.uuid)
 
     @handles(StopBatch)
+    @requires(Permission.CHECK_TASK, Permission.RUN_TASK)
     def stop_batch(self, action):
         batch = self._runner.get_batch(action.batch_uuid)
         if batch is None:
             return self._refuse(
                 action, f"{action.batch_uuid} names no batch of this session."
+            )
+        # A stop needs the permission that could have submitted the batch.
+        if batch.action is ExecutionAction.RUN and not authz.permitted(
+            Permission.RUN_TASK, self.permission_scope
+        ):
+            return self._refuse(
+                action, f"a run batch stops on {self.permission_scope}:run_task alone."
             )
         # The acceptance means "stop requested". The batch drains on its own
         # worker threads (see ExecutionBatch.request_stop).
@@ -241,7 +288,19 @@ class ActionHandler:
         return Ack(accepted=True)
 
     @handles(EndSession)
+    @requires(Permission.END_WORKFLOW, Permission.CHECK_TASK)
     def end_session(self, action):
+        # A settled session, every task passing or skipped, ends on check_task
+        # too: the work is done and nothing is lost.
+        unsettled = self.session.unsettled_count
+        if unsettled and not authz.permitted(
+            Permission.END_WORKFLOW, self.permission_scope
+        ):
+            return self._refuse(
+                action,
+                f"{unsettled} task{'s' if unsettled != 1 else ''} not settled - "
+                f"ending needs {self.permission_scope}:end_workflow.",
+            )
         if action.force:
             self.session.force_end()
         else:
@@ -293,15 +352,19 @@ class ActionHandler:
         # until every entry finishes, so a background thread runs it and
         # the caller does not wait. cache_updated events report progress.
         threading.Thread(
-            target=self._run_cache_entries, args=(work, resolved), daemon=True
+            target=contextvars.copy_context().run,
+            args=(self._run_cache_entries, work, resolved),
+            daemon=True,
         ).start()
         return Ack(accepted=True)
 
     @handles(LoadCacheEntries)
+    @requires(Permission.RUN_TASK)
     def load_cache_entries(self, action):
         return self._cache_entries_action(action, self._load_cache_entry)
 
     @handles(ClearCacheEntries)
+    @requires(Permission.RUN_TASK)
     def clear_cache_entries(self, action):
         return self._cache_entries_action(action, self._clear_cache_entry)
 

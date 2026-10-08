@@ -5,12 +5,11 @@ import FilterInput from '@/components/common/FilterInput.vue'
 import StatusBadge from '@/components/common/StatusBadge.vue'
 import TaskDetailModal from '@/components/session/TaskDetailModal.vue'
 import { useStaleGuard } from '@/composables/useStaleGuard'
+import { ENDING_MESSAGE, NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import type { TaskInfo, TaskStatusName } from '@/protocol/model'
 import { CHECKABLE_STATUSES, NO_ACTION_STATUSES, PASSING_STATUSES, RUNNABLE_STATUSES } from '@/protocol/status'
 import { useSessionScope } from '@/stores/inject'
 import { useNoticesStore } from '@/stores/notices'
-
-const ENDING_MESSAGE = 'Session is ending - new batches cannot be started'
 
 // The batch option toggles, (option name, label), in the two columns of the task bar.
 const BATCH_OPTION_COLUMNS: [string, string][][] = [
@@ -69,12 +68,12 @@ function showsActions(task: TaskInfo): boolean {
 
 function canRun(task: TaskInfo): boolean {
   const status = statusOf(task.key)
-  return !props.locked && status !== undefined && RUNNABLE_STATUSES.has(status)
+  return !props.locked && store.allows('run_task') && status !== undefined && RUNNABLE_STATUSES.has(status)
 }
 
 function canCheck(task: TaskInfo): boolean {
   const status = statusOf(task.key)
-  return !props.locked && status !== undefined && CHECKABLE_STATUSES.has(status)
+  return !props.locked && store.allows('check_task') && status !== undefined && CHECKABLE_STATUSES.has(status)
 }
 
 async function match(query: string): Promise<Set<string> | null> {
@@ -122,7 +121,7 @@ function visibleKeys(): string[] {
 </script>
 
 <template>
-  <div class="d-flex flex-column h-100">
+  <div class="d-flex flex-column flex-grow-1 min-h-0">
     <div class="pane-header">
       <FilterInput
         placeholder="filter tasks..."
@@ -152,8 +151,8 @@ function visibleKeys(): string[] {
         <BButton
           size="sm"
           variant="danger"
-          :disabled="locked || !rows.length"
-          :title="locked ? ENDING_MESSAGE : undefined"
+          :disabled="locked || !rows.length || !store.allows('run_task')"
+          :title="locked ? ENDING_MESSAGE : store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
           @click="store.runBulk('Running', visibleKeys())"
         >
           run all
@@ -161,8 +160,8 @@ function visibleKeys(): string[] {
         <BButton
           size="sm"
           variant="success"
-          :disabled="locked || !rows.length"
-          :title="locked ? ENDING_MESSAGE : undefined"
+          :disabled="locked || !rows.length || !store.allows('check_task')"
+          :title="locked ? ENDING_MESSAGE : store.allows('check_task') ? undefined : NO_PERMISSION_MESSAGE"
           @click="store.runBulk('Checking', visibleKeys(), true)"
         >
           check all
@@ -195,7 +194,7 @@ function visibleKeys(): string[] {
                 size="sm"
                 variant="outline-danger"
                 :disabled="!canRun(task)"
-                :title="locked ? ENDING_MESSAGE : undefined"
+                :title="locked ? ENDING_MESSAGE : store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
                 @click="run(task)"
               >
                 run
@@ -206,7 +205,7 @@ function visibleKeys(): string[] {
                 variant="outline-success"
                 class="ms-1"
                 :disabled="!canCheck(task)"
-                :title="locked ? ENDING_MESSAGE : undefined"
+                :title="locked ? ENDING_MESSAGE : store.allows('check_task') ? undefined : NO_PERMISSION_MESSAGE"
                 @click="check(task)"
               >
                 check

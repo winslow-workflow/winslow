@@ -51,6 +51,8 @@ export interface SessionInfo {
   elapsed: number
   task_status_summary: TaskStatusSummary
   root_dir: string | null
+  user: string | null
+  permission_scope: string
 }
 
 export interface BatchInfo {
@@ -64,6 +66,7 @@ export interface BatchInfo {
   started_at: number | null
   completed_at: number | null
   error: string | null
+  user: string | null
 }
 
 export interface SessionSnapshot {
@@ -135,6 +138,7 @@ export interface BatchOutcome {
   completed_at: number | null
   options: Record<string, unknown> | null
   tasks: Record<string, TaskOutcome>
+  user: string | null
 }
 
 export interface PhaseInfo {
@@ -180,6 +184,7 @@ export interface CacheEntryInfo {
   depends_on: string[]
   storage: string
   error: CacheEntryError | null
+  written_by: string | null
 }
 
 export interface CacheInfo {
@@ -214,6 +219,8 @@ export interface ManifestInfo {
   workflow_class: string
   orchestrator_overrides: Record<string, unknown> | null
   workflow_values: Record<string, unknown> | null
+  // The scope name of the workflow, or null for a class the server does not collect.
+  permission_scope: string | null
 }
 
 // The resources of the host that runs the sessions: memory in bytes, the cpu
@@ -247,6 +254,7 @@ export interface WorkflowDescriptor {
   workflow: string
   options: OptionInfo[]
   auto_init: boolean
+  permission_scope: string
 }
 
 export interface Descriptors {

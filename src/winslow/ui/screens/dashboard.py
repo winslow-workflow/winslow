@@ -8,11 +8,13 @@ import winslow.ui.builtin_plugins.dashboard as dashboard_plugins
 
 from winslow.ui.plugin import DashboardRenderContext, Slots
 from winslow.ui.screens.base import SlottedScreen
+from winslow.ui.widgets.common import GuardedButton
 from winslow.ui.builtin_plugins.dashboard.session import RestorableRow, SessionRow
 from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
 from winslow.ui.reads import READ_FAILURES, port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
+from winslow.permissions import Permission
 
 SESSION_ADOPTION_INTERVAL = 2
 
@@ -45,6 +47,17 @@ class DashboardScreen(SlottedScreen):
         return next(
             d for d in self.descriptors.workflows if d.workflow == workflow_name
         )
+
+    def apply_permissions(self):
+        """Refresh the start, restore and end controls from the client's
+        PermissionContext, after an adoption poll and on every connection
+        change (see Winslow.apply_permissions). Each control carries its own
+        scope name; "Restore all" follows the rows it restores."""
+        for button in self.query(GuardedButton).results():
+            button.refresh_permission(self.app)
+        restores = self.query(".session-restore").results(GuardedButton)
+        for button in self.query("#restore-all").results(GuardedButton):
+            button.permitted = any(row.permitted for row in restores)
 
     async def on_mount(self):
         self.logger.info(f"{len(self.descriptors.workflows)} workflow classes loaded.")
@@ -104,6 +117,7 @@ class DashboardScreen(SlottedScreen):
         )
         if manifests is not None:
             await self._refresh_restorable(manifests)
+        self.apply_permissions()
 
     @on(OptionList.OptionSelected, "#workflow-selector")
     def on_workflow_selected(self, event):
@@ -235,7 +249,12 @@ class DashboardScreen(SlottedScreen):
         restore_list.remove_class("hidden")
         if len(manifests) > 1:
             await restore_list.mount(
-                Button("Restore all", id="restore-all", classes="compact small")
+                GuardedButton(
+                    "Restore all",
+                    id="restore-all",
+                    classes="compact small",
+                    permission=Permission.START_WORKFLOW,
+                )
             )
         for manifest in manifests:
             await restore_list.mount(RestorableRow(manifest))

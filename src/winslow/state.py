@@ -1,7 +1,7 @@
 """Durable session state: one directory per session, plus its task snapshots.
 
 A StateStore backend owns every durable write. FileStateStore is the default
-backend. A package registers another backend with register_state_backend and
+backend. A package registers another backend on STATE_BACKENDS and
 a deployment selects one with WINSLOW_STATE_BACKEND.
 """
 
@@ -18,6 +18,7 @@ from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
+from winslow.backends import BackendRegistry
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
@@ -65,6 +66,10 @@ class SessionManifest:
     started_at: float
     ended_at: float | None = None
     outcome: str | None = None
+    # The user that started the session and the user that ended it. None for
+    # a local start, and for an end the session reached by itself.
+    user: str | None = None
+    ended_by: str | None = None
 
 
 @dataclass(frozen=True)
@@ -84,6 +89,8 @@ class BatchRecord:
     tasks: dict | None = None
     closed_status: str | None = None
     completed_at: float | None = None
+    # The user that submitted the batch, or None for a local run.
+    user: str | None = None
 
     @property
     def task_count(self):
@@ -108,9 +115,9 @@ class StateStore:
         """Return the stored SessionManifest of the session, or None."""
         raise NotImplementedError
 
-    def mark_ended(self, session_id):
-        """Stamp ended_at on the manifest and archive the session. A session
-        with no stored state is not an error."""
+    def mark_ended(self, session_id, ended_by=None):
+        """Stamp ended_at and ended_by on the manifest and archive the session.
+        A session with no stored state is not an error."""
         raise NotImplementedError
 
     def mark_errored(self, session_id):
@@ -237,13 +244,13 @@ class FileStateStore(StateStore):
     def load_manifest(self, session_id):
         return self._read_record(self._manifest_path(session_id), SessionManifest)
 
-    def mark_ended(self, session_id):
-        self._mark(session_id, "ended", self.ended_directory)
+    def mark_ended(self, session_id, ended_by=None):
+        self._mark(session_id, "ended", self.ended_directory, ended_by)
 
     def mark_errored(self, session_id):
         self._mark(session_id, "error", self.error_directory)
 
-    def _mark(self, session_id, outcome, target_directory):
+    def _mark(self, session_id, outcome, target_directory, ended_by=None):
         """Stamp first, archive second. A kill between the two steps leaves a
         stamped manifest in open/, which list_open_manifests relocates. The
         outcome stamp names the directory that the relocation targets."""
@@ -254,7 +261,11 @@ class FileStateStore(StateStore):
             return
         self._write_text(
             path,
-            self._encode(replace(manifest, ended_at=time.time(), outcome=outcome)),
+            self._encode(
+                replace(
+                    manifest, ended_at=time.time(), outcome=outcome, ended_by=ended_by
+                )
+            ),
         )
         self._archive(session_dir, target_directory)
 
@@ -415,8 +426,8 @@ class SessionPersistenceAdapter:
     def mark_errored(self):
         self._state_store.mark_errored(self.session_id)
 
-    def mark_ended(self):
-        self._state_store.mark_ended(self.session_id)
+    def mark_ended(self, ended_by=None):
+        self._state_store.mark_ended(self.session_id, ended_by)
 
     def _subscriptions(self):
         return (
@@ -460,6 +471,7 @@ class SessionPersistenceAdapter:
             created_at=info.created_at,
             execution_options=info.options,
             tasks=info.tasks,
+            user=info.user,
         )
 
     def on_batch_created(self, event):
@@ -603,23 +615,6 @@ class StaleSweeper:
         self._wake.set()
 
 
-_BACKENDS = {"file": FileStateStore}
-
-
-def register_state_backend(name, store_class):
-    """Register a StateStore backend under a WINSLOW_STATE_BACKEND name.
-    Register at import time, before create_state_store runs."""
-    _BACKENDS[name] = store_class
-
-
-def create_state_store(orchestrator_config):
-    """Build the backend that WINSLOW_STATE_BACKEND selects (default file).
-    The backend receives the orchestrator config of the run."""
-    name = settings.STATE_BACKEND
-    if name not in _BACKENDS:
-        raise MisconfigurationError(
-            f"WINSLOW_STATE_BACKEND={name!r} names no registered state "
-            f"backend. The registered backends are {sorted(_BACKENDS)}. "
-            f"A package adds one with register_state_backend()."
-        )
-    return _BACKENDS[name](orchestrator_config)
+STATE_BACKENDS = BackendRegistry(
+    "STATE_BACKENDS", "WINSLOW_STATE_BACKEND", file=FileStateStore
+)

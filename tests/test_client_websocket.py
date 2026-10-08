@@ -31,23 +31,24 @@ from winslow.events import (
     TaskStatusEvent,
 )
 from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.permissions import Permission
 from winslow.model import (
     EnvInfo,
     BatchInfo,
     CacheInfo,
     CacheUpdatedEvent,
-    ConnectionEvent,
     SessionLogEvent,
     SourceNode,
     TaskLogEvent,
     TaskOutcome,
 )
 from winslow.orchestrator import Command, Orchestrator, OrchestratorConfig
-from winslow.serve import Credentials, create_app
+from winslow.serve import create_app
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus
 from winslow.protocol.lanes import TaskStatusLane
 
+from harness import TOKEN, serve_credentials
 from harness import (
     bare_orchestrator,
     build_workflow,
@@ -58,17 +59,15 @@ from harness import (
 
 from test_serve_actions import serve_orchestrator
 
-TOKEN = "test-token"
-
 
 class ServedProcess:
     """One uvicorn process in a thread, the way `winslow serve` runs it,
     with a stop and a same-port restart for the reconnect tests."""
 
-    def __init__(self, registry, orchestrator=None, state_store=None):
+    def __init__(self, registry, orchestrator=None, state_store=None, credentials=None):
         self.app = create_app(
             registry,
-            Credentials(token=TOKEN, require_credential=True),
+            credentials or serve_credentials(),
             hello_timeout=2.0,
             orchestrator=orchestrator or bare_orchestrator(),
             state_store=state_store or scratch_state_store(),
@@ -430,8 +429,14 @@ def test_the_connect_subcommand_parses_the_url():
 def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     process = ServedProcess(registry).start()
-    client = RemoteAppClient(process.url, token=TOKEN).connect()
+    client = RemoteAppClient(process.url, token=TOKEN)
+    # Deny by default: no scope before the hello (see AppClient.permissions).
+    assert client.permissions().scopes == frozenset()
+    assert client.permissions().credential is None
+    client.connect()
     try:
+        assert client.permissions().allows("my-workflow", Permission.RUN_TASK)
+        assert client.permissions().credential == "ticket"
         remote = client.session(session.session_id)
         statuses = []
         connection_events = []
@@ -447,9 +452,11 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
             "a read during the outage never refused",
         )
         wait_for(
-            lambda: ConnectionEvent(connected=False) in connection_events,
+            lambda: any(not event.connected for event in connection_events),
             "the drop never emitted a ConnectionEvent",
         )
+        # The outage drops every scope until the next hello.
+        assert client.permissions().scopes == frozenset()
 
         # The same port again: the client reconnects on its own and the
         # recovery snapshot replays the task statuses.
@@ -457,9 +464,10 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
         wait_for(lambda: statuses, "no healing events after the reconnect")
         assert {e.key for e in statuses} == set(remote.snapshot().tasks)
         wait_for(
-            lambda: connection_events[-1] == ConnectionEvent(connected=True),
+            lambda: connection_events and connection_events[-1].connected,
             "the recovery never emitted a ConnectionEvent",
         )
+        assert client.permissions().allows("my-workflow", Permission.RUN_TASK)
 
         # The lane is live again: a run streams to completion.
         alpha = by_name(workflow)["Alpha"]
@@ -697,3 +705,40 @@ def test_a_reconnect_onto_a_lost_session_emits_the_end(e2e_repo):
         client.close()
         if fresh is not None:
             fresh.stop()
+
+
+# --- the credential file -----------------------------------------------------------
+
+
+def test_a_stored_credential_connects_and_remembers_the_user(e2e_repo, tmp_path):
+    from winslow.access.credentials import (
+        CredentialEntry,
+        CredentialFile,
+        credential_for,
+        remember_user,
+    )
+
+    workflow, session, registry = registered(e2e_repo)
+    process = ServedProcess(registry).start()
+    store = CredentialFile(tmp_path / "credentials.toml")
+    store.set(process.url, CredentialEntry(token=TOKEN))
+    try:
+        token = credential_for(process.url, store, None)
+        client = RemoteAppClient(process.url, token=token).connect()
+        try:
+            remember_user(store, process.url, client.wire.hello)
+        finally:
+            client.close()
+    finally:
+        process.stop()
+    assert store.get(process.url).user == "can"
+
+
+def test_no_credential_at_all_names_the_login_command(e2e_repo):
+    workflow, session, registry = registered(e2e_repo)
+    process = ServedProcess(registry).start()
+    try:
+        with pytest.raises(MisconfigurationError, match="winslow auth login"):
+            RemoteAppClient(process.url).connect()
+    finally:
+        process.stop()

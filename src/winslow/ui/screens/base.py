@@ -19,6 +19,12 @@ class SlottedScreen(Screen):
 
     BINDINGS = [("ctrl+g", "toggle_slot_inspector", "Slots")]
 
+    # The scope name a guarded control of this screen asks about, when the
+    # control names none of its own (see GuardedButton.refresh_permission).
+    # The workflow screen sets it from its session; the dashboard has none,
+    # its controls each carry theirs.
+    permission_scope = None
+
     def __init__(self, *args, **kwargs):
         self.plugin_registry = UIPluginRegistry()
         self.plugin_registry.discover(self.PLUGINS_MODULE)

@@ -135,7 +135,7 @@ A package registers a backend the way telemetry backends register. The backend i
 per process with the orchestrator config, and the workflow identity arrives in the records:
 
 ```python
-from winslow.state import StateStore, register_state_backend
+from winslow.state import STATE_BACKENDS, StateStore
 
 
 class DatabaseStateStore(StateStore):
@@ -146,7 +146,7 @@ class DatabaseStateStore(StateStore):
     ...
 
 
-register_state_backend("database", DatabaseStateStore)
+STATE_BACKENDS.register("database", DatabaseStateStore)
 ```
 
 ```bash

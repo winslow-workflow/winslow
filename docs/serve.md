@@ -19,22 +19,25 @@ and [an agent over MCP](#connect-an-agent). The rest is the reference: the
 ## A team shares one host
 
 The engine is the place where the tasks run. Everything else is a client of it. The host runs the
-server on the network with a token in its environment:
+server on the network and mints one token per engineer:
 
 ```bash
-export WINSLOW_TOKEN=a-long-random-string
 winslow serve --host 0.0.0.0
+winslow auth token create can          # prints wsl_... once
 ```
 
-Each engineer connects with the same token in their own environment:
+Each engineer connects with their own token in their environment:
 
 ```bash
-export WINSLOW_TOKEN=a-long-random-string
+export WINSLOW_TOKEN=wsl_...
 uvx --from "winslow[connect]" winslow connect ws://etl-host:8866
 ```
 
 Both see the same sessions. A batch one engineer starts shows its task states and its log lines on the
-other screen as they happen, and the History tab of both lists it when it completes.
+other screen as they happen, and the History tab of both lists it when it completes. Each history row
+names the user that submitted the batch, each session row the user that started the session, and a
+cache entry the user whose load wrote it. The name is the one the server accepted in the hello: the
+user of a token or a ticket, `local` on a loopback bind.
 
 ## Connect an agent
 
@@ -49,7 +52,8 @@ An agent gets the same reads and actions as a terminal, over MCP. On the host:
     ```
 
     The MCP endpoint is at `http://127.0.0.1:8866/mcp`. On a shared host the server binds the network
-    and the agent sends `WINSLOW_TOKEN` as a bearer header (see [Credentials](#credentials)).
+    and the agent sends its per-user token, `WINSLOW_TOKEN`, as a bearer header (see
+    [Credentials](#credentials)).
 
 3. Register the server in the agent and check the connection:
 
@@ -197,9 +201,9 @@ A workflow with `auto_init = True` starts one session in the engine at the same 
 
 ### Stop a server
 
-Ctrl+C stops the server. It closes the open connections, then asks every running batch to stop and
-waits for the workers. Each wait has a bound of five seconds. A batch stops at its next task boundary,
-so a task that is mid run completes first.
+Ctrl+C stops the server. It ends the MCP listen streams with their final frame, closes the open
+connections, then asks every running batch to stop and waits for the workers. Each wait has a bound
+of five seconds. A batch stops at its next task boundary, so a task that is mid run completes first.
 
 ## Connect a terminal
 
@@ -211,7 +215,8 @@ WINSLOW_TOKEN=... uvx --from "winslow[connect]" winslow connect ws://build-host:
 ```
 
 A machine that connects often adds `winslow[connect]` to a project and runs `winslow connect` from
-there. The URL is the one positional argument. The dashboard and the workflow screens are the ones of
+there. The URL is the one positional argument. `connect` sends `WINSLOW_TOKEN` when it is set, else the
+credential `winslow auth login` stored for the URL (see [Log in once](#log-in-once)). The dashboard and the workflow screens are the ones of
 `winslow run`, drawn from the snapshots the server sends. Every action goes to the engine, and
 the task logs stream back over the socket.
 
@@ -235,50 +240,129 @@ A front application that embeds the page sets `window.WINSLOW` before the app sc
 <script>
   window.WINSLOW = {
     wsUrl: "wss://etl-host:8866/ws",
-    ticket: "can:1757400000.0:3f2a...",
-    ticketUrl: "/winslow/ticket/",
+    credential: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjYW4iLC...",
+    credentialUrl: "/winslow/ticket/",
   };
 </script>
 ```
 
-`wsUrl` names the websocket, `ticket` is the credential of the page (see
-[Tickets for browsers](#tickets-for-browsers)), and `ticketUrl` answers a fresh ticket as text: the
-page fetches it when a ticket expires and reconnects. The origin of such a page goes in
+`wsUrl` names the websocket, `credential` is the ticket of the page (see
+[Tickets for browsers](#tickets-for-browsers)), and `credentialUrl` answers a fresh one as text: the
+page fetches it when the ticket expires and reconnects. The origin of such a page goes in
 `WINSLOW_ORIGINS`. The source of the page is `web/` in the repository (see `web/README.md`).
 
 ## Credentials
 
-The server reads three settings from the environment of its process:
+A shared host names each person and each service account with a credential of its own, and a policy
+file says what each one may do. The server reads these settings from the environment of its process:
 
 | setting | holds |
 |---|---|
-| `WINSLOW_TOKEN` | the bearer token of machine clients: `winslow connect`, scripts, MCP agents |
-| `WINSLOW_TICKET_SECRET` | the secret that signs the tickets of browser clients |
+| `WINSLOW_POLICY_FILE` | the policy: groups, users, scopes. Default `.winslow/policy.toml` |
+| `WINSLOW_TOKENS_FILE` | the per-user tokens, as hashes. Default `.winslow/tokens` |
+| `WINSLOW_POLICY_BACKEND`, `WINSLOW_TOKEN_BACKEND` | the store behind each, `file` by default or a registered one |
+| `WINSLOW_TICKET_SECRET` | the secret that signs the tickets, 32 bytes or more (`openssl rand -base64 32`) |
+| `WINSLOW_PUBLIC_URL` | the URL clients reach the server on, the audience of every ticket. Required with the secret |
 | `WINSLOW_ORIGINS` | the browser origins the websocket endpoint accepts, comma separated |
+| `WINSLOW_AUTH_OPEN` | `true` passes every hello with every permission, for development |
+| `WINSLOW_CREDENTIALS_FILE` | on the client: the credential file of the person. Default `~/.config/winslow/credentials.toml` |
 
-```bash
-export WINSLOW_TOKEN=a-long-random-string
-export WINSLOW_TICKET_SECRET=another-long-random-string
-export WINSLOW_ORIGINS=https://ops.acme.internal,http://localhost:5173
-```
+Both file paths are relative to the working directory. Run `winslow auth` in the directory where
+`winslow serve` runs, so both read one file.
 
 During development a `.env` file in the working directory sets the same variables, like every
 other `WINSLOW_*` setting. An exported variable wins over the file.
+
+### The policy file
+
+```toml
+[groups.etl-operators]
+scopes = ["etl:*"]
+
+[groups.etl-checkers]
+scopes = ["etl:check_task", "etl:start_workflow"]
+
+[groups.viewers]
+scopes = ["*:view_task"]
+
+[users.can]
+groups = ["etl-operators", "viewers"]
+
+[users.ci-bot]
+scopes = ["etl:run_task"]
+```
+
+A scope is `<scope name>:<permission>`: the scope name of a workflow (see
+[workflows](workflows.md#the-scope-name-of-a-workflow)) or `*` for every workflow, and one of
+`start_workflow`, `end_workflow`, `run_task`, `check_task`, `view_task`, or `*` for all five.
+`run_task` includes `check_task`, and every permission includes `view_task`. A user holds the scopes of
+their groups plus their direct scopes. A group table holds `scopes` and `idp_groups`, a user table
+`groups` and `scopes`. A group or user name is one word of letters, digits and `. _ @ -`. The server
+reads the file again when it changes, so an edit applies to the next connection. An edit the schema
+refuses keeps the previous policy and logs the field and the reason. At startup the server logs a
+WARNING for every group or user that grants every permission on every workflow, and for every group
+without scopes.
+
+### Per-user tokens
+
+```bash
+winslow auth token create can                   # prints the token once, stores its hash
+winslow auth token create nobody                # notes on stderr that the user has no policy entry
+winslow auth token create ci-bot --expires 90d
+winslow auth token list can
+winslow auth token revoke --token-id 9f86d081   # one token by id
+winslow auth token revoke --user can            # every token of the user
+winslow auth show can                           # groups, scopes, token count
+winslow auth check can etl run_task
+```
+
+A token starts with `wsl_`, so a secret scanner catches one that lands in a commit. The token file
+holds SHA-256 hashes alone. A token travels in the hello of `winslow connect` (`WINSLOW_TOKEN=<token>`),
+in the `Authorization: Bearer` header of an MCP client, and in the token field the web page shows when
+the server refuses a hello without one. It grants what its user holds in the policy at the time of the
+hello.
+
+`winslow serve` logs at startup which stores it uses and which credentials it accepts.
+
+### Log in once
+
+```bash
+winslow auth login wss://etl-host                   # prompts for the token, no echo
+echo "$TOKEN" | winslow auth login wss://etl-host --with-token   # a script reads it from stdin
+winslow connect wss://etl-host                      # sends the stored token
+winslow auth status                                 # wss://etl-host  can  per-user token
+winslow auth logout wss://etl-host
+```
+
+The credential lives in `~/.config/winslow/credentials.toml` (`WINSLOW_CREDENTIALS_FILE`), mode 0600,
+one table per server. `connect` writes the user the server named after the first hello, so `status`
+names the person. A `ws://` URL to a host other than loopback sends the token in clear text, so `login`
+stores one for it with `--insecure` alone. `WINSLOW_TOKEN` wins over the file when both are set: the file
+is the person's, the variable is the job's.
 
 The rules:
 
 - A loopback bind needs no credential. `127.0.0.1`, `::1` and `localhost` accept every hello.
   Every process on the machine reaches a loopback server.
-- Every other bind needs a credential on every hello. A token or a ticket. The MCP endpoint
-  on such a bind needs `WINSLOW_TOKEN` set before the server starts.
+- Every other bind needs a credential on every hello: a per-user token or a ticket, in the `token`
+  field. The MCP endpoint on such a bind accepts the same credentials as bearer headers.
+- `WINSLOW_AUTH_OPEN=true` is for a shared development box: every hello passes on any bind with every
+  permission, a known token on the websocket hello still names its user in the history, and the server
+  logs one WARNING at startup. The Origin rule stays on.
 - A browser origin must be listed. A hello that carries an `Origin` header passes when the
   header value is in `WINSLOW_ORIGINS`. This holds on every bind, the loopback one included, so a
   web page in the operator's browser reaches a local server only when its origin is listed. A
   client without a browser sends no `Origin` header and is unaffected.
-- A credential grants every action on the host. There is one role. A client with a token
-  starts sessions, which imports and runs the project code, runs and stops tasks, ends sessions
-  and clears caches. Task details carry tracebacks and absolute paths of the host. Hand a token
-  to the people you would give a shell on that host.
+- A credential lives one lifetime on a socket. The server closes a connection when its credential
+  expires, with close code 4402, and the client reconnects at once with a fresh one: the page fetches a
+  new ticket, `winslow connect` replays its hello. Both show a "credential renewed" notice. A
+  credential holds a socket for `WINSLOW_AUTH_MAX_CONNECTION`, one hour by default. A ticket, or a token
+  created with `--expires`, holds it for the shorter of its own expiry and that bound. A change of what a
+  credential may do thus reaches a live connection within one lifetime.
+- A credential with `*:*` grants every action on the host. A client with one starts sessions, which
+  imports and runs the project code, runs and stops tasks, ends sessions and clears caches. Task
+  details carry tracebacks and absolute paths of the host. Grant it to the people you would give a
+  shell on that host.
 
 An origin is scheme, host and port, with no path and no trailing slash. `http://localhost:5173`
 and `http://127.0.0.1:5173` are two origins.
@@ -288,17 +372,30 @@ for the clients you expect.
 
 ### Tickets for browsers
 
-A browser client authenticates against your front application, which mints a ticket and hands it
-to the page. `winslow.serve.mint_ticket` and the server share one rule:
+A browser client authenticates against your front application, which decides what the user may do
+and mints a ticket that says so. `winslow.serve.mint_ticket` and the server share one rule:
 
 ```python
 from winslow.serve import mint_ticket
 
-ticket = mint_ticket(secret, user="can", ttl=60.0)   # user:expiry:signature
+ticket = mint_ticket(
+    secret,
+    user="can",
+    scopes=["etl:run_task", "reports:view_task"],
+    audience="https://etl-host",   # the WINSLOW_PUBLIC_URL of the server
+    ttl=900,                       # the default, one hour at most
+)
 ```
 
-The page opens the socket and sends the ticket in its hello. The server verifies the signature
-under `WINSLOW_TICKET_SECRET` and the expiry, and answers `hello_ok` with the user of the ticket.
+A ticket is a JWT signed with HS256 under `WINSLOW_TICKET_SECRET`. Its claims are `sub`, the user,
+`scope`, the scopes it grants, `aud`, the server it is for, `exp` and `iat`, and `jti`, the id of
+this ticket, plus `iss` and `nbf` when the issuer sets them. `mint_ticket` applies the same rules as
+the server, so a wrong claim fails at the line that mints it. The page and a script send it as the
+token of their hello, an MCP client in the bearer header. The server checks the signature, the
+audience and the expiry, tolerates a minting clock up to a minute ahead, and builds the permissions
+of the connection from the `scope` claim. The ticket alone decides the permissions of the
+connection. A ticket lives an hour at most: the page fetches a fresh one at the expiry, so `ttl` is
+how long a logout in the front application takes to reach an open page.
 
 ## The environment color
 
@@ -325,18 +422,32 @@ A name outside the table shows in gray.
 
 ## The websocket handshake
 
-The first message on the socket is a hello. A machine client sends the token and a browser sends
-the ticket:
+The first message on the socket is a hello with the credential of the client, a per-user token or a
+ticket:
 
 ```json
-{"type": "hello", "token": "a-long-random-string"}
+{"type": "hello", "token": "wsl_..."}
 ```
 
-The server answers `hello_ok` with the user it resolved:
+The server answers `hello_ok` with the user it resolved, the permissions of the connection, the kind
+of credential and its expiry:
 
 ```json
-{"type": "hello_ok", "user": "token-client"}
+{
+  "type": "hello_ok",
+  "user": "can",
+  "scopes": ["etl:check_task", "etl:run_task", "etl:view_task"],
+  "credential": "token",
+  "expires_at": 1757400000.0
+}
 ```
+
+`scopes` lists `<scope name>:<permission>` strings, already expanded: `run_task` brings `check_task`
+and `view_task` with it, and `*` as the scope name covers every workflow. A client enables a control
+when the list holds its permission on the session's scope name, and renders it disabled before the
+hello and after a drop. `credential` names its kind: `local`, `token` for a per-user token, `ticket`
+for a ticket. `expires_at` is the expiry of the credential the server resolved, and the second the
+server closes the socket with code 4402 (see [Credentials](#credentials)).
 
 A refused hello receives a `hello_error` frame with the reason, then the socket closes with a
 code that names the refusal class:
@@ -344,7 +455,8 @@ code that names the refusal class:
 | code | refusal |
 |---|---|
 | 4400 | the first message is not a hello |
-| 4401 | the credential or the origin is refused |
+| 4401 | the credential is refused |
+| 4403 | the origin of the page is refused |
 | 4408 | no hello within the timeout |
 
 After `hello_ok` the client subscribes to sessions and submits actions over the same socket.
@@ -396,8 +508,25 @@ WINSLOW_LOG_JSON=1 winslow serve --host 0.0.0.0
 ```json
 {"ts": "2026-09-08 10:15:02 UTC", "level": "INFO", "session_id": "etl-20260908-101459",
  "workflow_name": "etl", "workflow_instance": "etl", "task_name": "DownloadData",
- "task_instance": "DownloadData", "batch_uuid": "5f1c...", "message": "downloaded 3 files",
- "traceback": null}
+ "task_instance": "DownloadData", "batch_uuid": "5f1c...", "user": "can", "credential": "ticket",
+ "message": "downloaded 3 files", "traceback": null}
 ```
 
+`user` and `credential` name the connection whose request caused the line: the user the server
+resolved and the kind of credential it presented. A batch a client submits carries them on every
+line of its run. A line of the local TUI or a headless run carries `null`.
+
 The uvicorn lines share the same handler, so the whole process writes one format.
+
+### The audit lines
+
+The `winslow.audit` logger writes one INFO line per action a client submits and per session a client
+starts or restores, accepted or refused:
+
+```
+audit user=can credential=ticket action=run_tasks scope=etl session=etl-20260908-101459 keys=3 result=accepted
+```
+
+Under `WINSLOW_LOG_JSON` the same fields travel as an `audit` object beside `message`, so a log store
+queries them: `action`, `scope` (the scope name of the workflow), `session`, `keys` (the task count of a
+run or check), `result`, and `reason` on a refusal. A read that changes nothing writes no audit line.

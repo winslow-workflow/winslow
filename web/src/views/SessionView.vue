@@ -4,6 +4,7 @@ import { computed, onMounted, provide, ref, watch } from 'vue'
 import HostStatsPane from '@/components/common/HostStatsPane.vue'
 import LogView from '@/components/common/LogView.vue'
 import ForceEndModal from '@/components/dashboard/ForceEndModal.vue'
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import CacheOverviewPane from '@/components/session/CacheOverviewPane.vue'
 import CachesPane from '@/components/session/CachesPane.vue'
 import HistoryPane from '@/components/session/HistoryPane.vue'
@@ -104,7 +105,16 @@ async function end() {
           <span v-if="failure" class="text-danger small">{{ failure }}</span>
           <span class="ms-auto d-flex gap-1">
             <BButton size="sm" variant="outline-secondary" title="Parameters" @click="showParams = true">⚙</BButton>
-            <BButton v-if="!store.ended" size="sm" variant="danger" @click="end">End</BButton>
+            <BButton
+              v-if="!store.ended"
+              size="sm"
+              variant="danger"
+              :disabled="!store.allows('end_workflow')"
+              :title="store.allows('end_workflow') ? undefined : NO_PERMISSION_MESSAGE"
+              @click="end"
+            >
+              End
+            </BButton>
           </span>
         </div>
         <BTabs v-model="leftTab" small lazy>

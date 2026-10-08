@@ -95,6 +95,8 @@ class CacheEntryInfo:
     depends_on: tuple[str, ...]
     storage: str
     error: Optional[CacheEntryError]
+    # The user whose load wrote the value, or None (see StorageRecord.written_by).
+    written_by: Optional[str] = None
 
 
 # --- the task view model -----------------------------------------------------
@@ -297,6 +299,8 @@ class BatchInfo:
     completed_at: float | None
     # The message of the framework error that aborted the batch, or None.
     error: str | None = None
+    # The user that submitted the batch, or None for a local run.
+    user: str | None = None
 
     @classmethod
     def from_batch(cls, batch, tasks):
@@ -329,6 +333,7 @@ class BatchInfo:
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
             error=batch.error,
+            user=batch.user,
         )
 
 
@@ -367,6 +372,8 @@ class BatchOutcome:
     # The batch option snapshot, without the uuid (see BatchInfo.options).
     options: dict | None
     tasks: dict[str, TaskOutcome]  # keyed by identity key
+    # The user that submitted the batch, or None for a local run.
+    user: str | None = None
 
     @classmethod
     def from_batch(cls, batch, store):
@@ -380,6 +387,7 @@ class BatchOutcome:
                 batch.completed_at.timestamp() if batch.completed_at else None
             ),
             options=_batch_options(batch),
+            user=batch.user,
             tasks=(
                 {
                     key: TaskOutcome.from_record(status, store.get_record(key))
@@ -428,9 +436,13 @@ class SessionInfo:
     started_at: float
     elapsed: float
     task_status_summary: TaskStatusSummary
+    # The scope name of the permissions on this session (see Workflow.permission_scope).
+    permission_scope: str
     # The project root of the serving process. A client shortens the server
     # source paths with it (see TaskDetailRenderContext.root_dir).
     root_dir: str | None = None
+    # The user that started the session, or None for a local start.
+    user: str | None = None
 
     @classmethod
     def from_session(cls, session):
@@ -449,6 +461,8 @@ class SessionInfo:
                 completed=completed, problematic=problematic, total=total
             ),
             root_dir=workflow.root_dir,
+            user=session.user,
+            permission_scope=type(workflow).get_permission_scope(),
         )
 
 
@@ -767,14 +781,18 @@ class ManifestInfo:
     workflow_class: str
     orchestrator_overrides: dict | None
     workflow_values: dict | None
+    # The scope name of the permissions on the workflow, or None for a class
+    # this process does not collect (see Workflow.permission_scope).
+    permission_scope: str | None
 
     @classmethod
-    def from_manifest(cls, manifest):
+    def from_manifest(cls, manifest, permission_scope):
         return cls(
             session_id=manifest.session_id,
             workflow_class=manifest.workflow_class,
             orchestrator_overrides=manifest.orchestrator_overrides,
             workflow_values=manifest.workflow_values,
+            permission_scope=permission_scope,
         )
 
 
@@ -885,6 +903,8 @@ class WorkflowDescriptor:
 
     workflow: str
     options: tuple[OptionInfo, ...]
+    # The scope name of the permissions on this workflow (see Workflow.permission_scope).
+    permission_scope: str
     auto_init: bool = False
 
 
@@ -913,6 +933,7 @@ class Descriptors:
                 WorkflowDescriptor(
                     workflow=name,
                     auto_init=workflow_kls.auto_init,
+                    permission_scope=workflow_kls.get_permission_scope(),
                     options=tuple(
                         OptionInfo.from_option(
                             option_name,
@@ -968,7 +989,10 @@ class TaskLogEvent:
 @dataclass(frozen=True)
 class ConnectionEvent:
     """The connection state of the wire transport: connected is False on a
-    drop and True once the reconnect lands. Only the wire transport emits
-    it (see AppClient.subscribe_connection)."""
+    drop and True once the reconnect lands. code is the close code the server
+    sent with a drop, or None when the socket died without one (see
+    winslow.protocol.closes). Only the wire transport emits it (see
+    AppClient.subscribe_connection)."""
 
     connected: bool
+    code: int | None = None

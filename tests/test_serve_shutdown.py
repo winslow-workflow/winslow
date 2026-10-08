@@ -1,16 +1,21 @@
 """The shutdown drain of a serve process: the running batches stop at the next
 task boundary, and the wait has a bound (see ServeApp.drain)."""
 
+import asyncio
 import threading
 import time
+
+import anyio
+import pytest
 
 from winslow.actions import RunTasks
 from winslow.constants import Mode
 from winslow.runner.execution import ExecutionStatus
-from winslow.serve import Credentials
 from winslow.serve.app import ServeApp
+from winslow.serve.server import HttpServer
 from winslow.session import Session, SessionRegistry
 
+from harness import serve_credentials
 from harness import bare_orchestrator, build_workflow, by_name, scratch_state_store
 
 
@@ -22,7 +27,7 @@ def served_session(e2e_repo):
     registry.register(session)
     app = ServeApp(
         registry,
-        Credentials(token="test-token", require_credential=True),
+        serve_credentials(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
     )
@@ -88,3 +93,63 @@ def test_drain_returns_a_batch_stuck_inside_a_task_after_the_bound(
     assert 0.2 <= elapsed < 1.0
     release.set()
     assert batch.join(5.0)
+
+
+def mcp_session(e2e_repo):
+    workflow = build_workflow(e2e_repo, "my-workflow", Mode.TUI)
+    session = Session(workflow)
+    registry = SessionRegistry()
+    registry.register(session)
+    return ServeApp(
+        registry,
+        serve_credentials(),
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        endpoints=("ws", "mcp"),
+    )
+
+
+def open_listen_stream(app):
+    """A listen stream the way ListenHandler holds one: the send half of a
+    buffered memory stream, registered on the handler."""
+    entry = app.mcp_endpoint.server._lowlevel_server.get_request_handler(
+        "subscriptions/listen"
+    )
+    send, recv = anyio.create_memory_object_stream(8)
+    entry.handler._streams.add(send)
+    return send, recv
+
+
+def test_close_streams_ends_every_listen_stream(e2e_repo):
+    app = mcp_session(e2e_repo)
+    first, first_recv = open_listen_stream(app)
+    second, second_recv = open_listen_stream(app)
+
+    app.close_streams()
+
+    for send in (first, second):
+        with pytest.raises(anyio.ClosedResourceError):
+            send.send_nowait("event")
+    for recv in (first_recv, second_recv):
+        with pytest.raises(anyio.EndOfStream):
+            recv.receive_nowait()
+
+
+def test_close_streams_without_the_mcp_endpoint(e2e_repo):
+    _, _, app = served_session(e2e_repo)
+    assert app.mcp_endpoint is None
+    app.close_streams()
+
+
+def test_http_server_shutdown_ends_the_streams_before_the_connection_wait(e2e_repo):
+    app = mcp_session(e2e_repo)
+    send, _ = open_listen_stream(app)
+    server = HttpServer(app, host="127.0.0.1", port=0, log_config=None)
+    # A server that never started has no listeners and no lifespan to stop.
+    server.servers = []
+    server.force_exit = True
+
+    asyncio.run(server.shutdown())
+
+    with pytest.raises(anyio.ClosedResourceError):
+        send.send_nowait("event")

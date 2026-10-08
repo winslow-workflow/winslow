@@ -4,10 +4,11 @@
 export interface WinslowConfig {
   // The websocket URL. Defaults to /ws on the page origin.
   wsUrl?: string
-  // The ticket of a browser client on a remote bind (see winslow.serve.mint_ticket).
-  ticket?: string | null
-  // A URL that answers a fresh ticket as text, for the reconnect after an expiry.
-  ticketUrl?: string | null
+  // The credential of a browser client on a remote bind: a ticket the front
+  // application minted (see winslow.serve.mint_ticket).
+  credential?: string | null
+  // A URL that answers a fresh credential as text, for the reconnect after an expiry.
+  credentialUrl?: string | null
 }
 
 declare global {
@@ -18,8 +19,11 @@ declare global {
 
 export interface ResolvedConfig {
   wsUrl: string
-  ticket: string | null
-  ticketUrl: string | null
+  credential: string | null
+  credentialUrl: string | null
+  // True when a front application injected window.WINSLOW. The application
+  // owns the credential then, so the page shows no token field.
+  embedded: boolean
 }
 
 export function defaultWsUrl(location: Location = window.location): string {
@@ -31,7 +35,8 @@ export function readConfig(): ResolvedConfig {
   const injected = window.WINSLOW ?? {}
   return {
     wsUrl: injected.wsUrl || defaultWsUrl(),
-    ticket: injected.ticket ?? null,
-    ticketUrl: injected.ticketUrl ?? null,
+    credential: injected.credential ?? null,
+    credentialUrl: injected.credentialUrl ?? null,
+    embedded: window.WINSLOW !== undefined,
   }
 }

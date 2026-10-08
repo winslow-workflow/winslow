@@ -157,6 +157,14 @@ def _trigger_label(trigger):
 _read_chain: ContextVar = ContextVar("cache_read_chain", default=())
 
 
+def _current_user():
+    """The ambient user of the request (see winslow.task.context). A lazy
+    import: winslow.task imports the cache package."""
+    from winslow.task.context import current_user
+
+    return current_user()
+
+
 class BaseCache:
     """The base of the declarative caches: the registries discover the
     concrete subclasses and validate them at collection (see docs/caching.md)."""
@@ -288,6 +296,7 @@ class BaseCache:
             # An ERRORED entry keeps its raw record observable: the UI shows
             # the quarantined value next to the error context.
             written_at=record.written_at if isinstance(record, StorageRecord) else None,
+            written_by=record.written_by if isinstance(record, StorageRecord) else None,
             ttl=entry.ttl,
             eager=entry.eager,
             depends_on=entry.depends_on,
@@ -372,7 +381,10 @@ class BaseCache:
             # Serve what the storage stored: a serializing backend returns the
             # normalized round trip, so the shape never changes after a restart.
             stored = self._storage.write(
-                name, StorageRecord(value=value, written_at=time.time())
+                name,
+                StorageRecord(
+                    value=value, written_at=time.time(), written_by=_current_user()
+                ),
             )
             # The write proves every writable tier holds the fresh value, so
             # any error context of the entry is obsolete.

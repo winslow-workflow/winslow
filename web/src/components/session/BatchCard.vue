@@ -11,6 +11,7 @@ import {
   batchVariant,
   statusLabel,
 } from '@/protocol/status'
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import { useSessionScope } from '@/stores/inject'
 import { recordKey } from '@/stores/session'
 
@@ -101,7 +102,12 @@ const pills = computed(() =>
   FLAG_PILLS.filter(([name]) => props.batch.options?.[name]).map(([, label, css]) => ({ label, css })),
 )
 
-const stoppable = computed(() => ACTIVE_BATCH_STATUSES.has(props.batch.status))
+// A stop needs the permission that could have submitted the batch.
+const stoppable = computed(
+  () =>
+    ACTIVE_BATCH_STATUSES.has(props.batch.status) &&
+    store.allows(props.batch.action === 'CHECK' ? 'check_task' : 'run_task'),
+)
 
 function rowClass(row: RecordRowView) {
   return {
@@ -119,6 +125,7 @@ function rowClass(row: RecordRowView) {
       <span class="fw-semibold">{{ batch.action }}</span>
       <span class="text-secondary">{{ formatClock(batch.created_at) }}</span>
       <span class="mono text-secondary">{{ shortUuid(batch.uuid) }}</span>
+      <span v-if="batch.user" class="text-secondary">{{ batch.user }}</span>
       <span class="summary">
         <span :class="{ completed: summary.completed }">{{ summary.completed }}</span> /
         <span :class="{ problematic: summary.problematic }">{{ summary.problematic }}</span> / {{ summary.total }}
@@ -133,6 +140,7 @@ function rowClass(row: RecordRowView) {
           size="sm"
           variant="outline-warning"
           :disabled="!stoppable"
+          :title="stoppable || !ACTIVE_BATCH_STATUSES.has(batch.status) ? undefined : NO_PERMISSION_MESSAGE"
           @click="emit('stop')"
         >
           stop

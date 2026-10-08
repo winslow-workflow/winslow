@@ -19,6 +19,7 @@ vi.mock('@/protocol/wire', async (importOriginal) => {
     url = 'ws://fake/ws'
     state = 'idle'
     user: string | null = null
+    scopes: string[] = []
     refusal = null
     listeners = new Set<(wire: FakeWire) => void>()
     lanes = new Map<string, LaneListener>()
@@ -117,6 +118,7 @@ function batch(uuid: string, completed = false) {
     started_at: 1,
     completed_at: completed ? 2 : null,
     error: null,
+    user: null,
   } as const
 }
 

@@ -24,8 +24,18 @@ export const RECONNECT_DELAY_MAX = 5000
 // The close codes of a refused hello (see src/winslow/serve/app.py).
 export const MALFORMED_HELLO = 4400
 export const CREDENTIAL_REFUSED = 4401
+export const ORIGIN_REFUSED = 4403
+// The server closed the socket because the credential expired (see winslow.serve.app.until_expiry).
+export const CREDENTIAL_EXPIRED = 4402
+// The closes the server plans: the client reopens at once and shows no warning.
+export const PLANNED_CLOSES: ReadonlySet<number> = new Set([CREDENTIAL_EXPIRED])
 export const HELLO_TIMEOUT = 4408
-export const REFUSAL_CODES: ReadonlySet<number> = new Set([MALFORMED_HELLO, CREDENTIAL_REFUSED, HELLO_TIMEOUT])
+export const REFUSAL_CODES: ReadonlySet<number> = new Set([
+  MALFORMED_HELLO,
+  CREDENTIAL_REFUSED,
+  ORIGIN_REFUSED,
+  HELLO_TIMEOUT,
+])
 
 export const CONNECTION_DOWN =
   'the connection to the serve process is down - the client reconnects in the background; retry once it is back.'
@@ -78,11 +88,10 @@ export type SocketFactory = (url: string) => SocketLike
 
 export interface WireOptions {
   url: string
-  token?: string | null
-  ticket?: string | null
-  ticketUrl?: string | null
+  credential?: string | null
+  credentialUrl?: string | null
   socketFactory?: SocketFactory
-  fetchTicket?: (url: string) => Promise<string>
+  fetchCredential?: (url: string) => Promise<string>
 }
 
 type LaneState = 'idle' | 'subscribing' | 'healing' | 'streaming'
@@ -109,7 +118,7 @@ class Lane {
 
 const OPEN = 1
 
-async function fetchTicketText(url: string): Promise<string> {
+async function fetchCredentialText(url: string): Promise<string> {
   const response = await fetch(url, { credentials: 'include' })
   if (!response.ok) {
     throw new Error(`${url} answered ${response.status}`)
@@ -119,17 +128,24 @@ async function fetchTicketText(url: string): Promise<string> {
 
 export class Wire {
   readonly url: string
-  token: string | null
-  ticket: string | null
-  ticketUrl: string | null
+  credential: string | null
+  credentialUrl: string | null
   state: WireState = 'idle'
   user: string | null = null
   env: string | null = null
   envColor: string | null = null
+  // The expanded permission set of the live connection. Empty before the
+  // hello and after a drop, so a page disables its controls by default (see allows).
+  scopes: string[] = []
+  // The kind of credential behind the connection (see HelloOkFrame.credential).
+  credentialKind: string | null = null
+  expiresAt: number | null = null
   refusal: Refusal | null = null
+  // The close code of the last drop, for the notice a page shows (see PLANNED_CLOSES).
+  closeCode: number | null = null
 
   private readonly socketFactory: SocketFactory
-  private readonly fetchTicket: (url: string) => Promise<string>
+  private readonly fetchCredential: (url: string) => Promise<string>
   private socket: SocketLike | null = null
   private generation = 0
   private ids = 0
@@ -146,11 +162,10 @@ export class Wire {
 
   constructor(options: WireOptions) {
     this.url = options.url
-    this.token = options.token ?? null
-    this.ticket = options.ticket ?? null
-    this.ticketUrl = options.ticketUrl ?? null
+    this.credential = options.credential ?? null
+    this.credentialUrl = options.credentialUrl ?? null
     this.socketFactory = options.socketFactory ?? ((url) => new WebSocket(url) as unknown as SocketLike)
-    this.fetchTicket = options.fetchTicket ?? fetchTicketText
+    this.fetchCredential = options.fetchCredential ?? fetchCredentialText
   }
 
   // --- lifecycle ---------------------------------------------------------------
@@ -179,6 +194,12 @@ export class Wire {
     this.open()
   }
 
+  // Membership alone: the server expands the implications (see winslow.permissions).
+  allows(scopeName: string | null, permission: string): boolean {
+    if (scopeName === null) return false
+    return this.scopes.includes(`${scopeName}:${permission}`) || this.scopes.includes(`*:${permission}`)
+  }
+
   onState(listener: (wire: Wire) => void): () => void {
     this.stateListeners.add(listener)
     return () => this.stateListeners.delete(listener)
@@ -202,7 +223,7 @@ export class Wire {
       }
     }, OPEN_TIMEOUT)
     socket.onopen = () => {
-      const hello: HelloFrame = { type: 'hello', token: this.token, ticket: this.ticket }
+      const hello: HelloFrame = { type: 'hello', token: this.credential }
       socket.send(JSON.stringify(hello))
     }
     socket.onmessage = (event) => {
@@ -228,15 +249,26 @@ export class Wire {
 
   private onClose(code: number, reason: string): void {
     this.socket = null
+    this.closeCode = code
+    if (PLANNED_CLOSES.has(code)) this.delay = 0
+    this.scopes = []
+    this.credentialKind = null
+    this.expiresAt = null
     this.failPending(new ConnectionDown())
     if (this.closing) {
       this.setState('closed')
       return
     }
+    if (code === CREDENTIAL_EXPIRED && this.credentialUrl) {
+      // The credential is spent: fetch a fresh one before the reconnect, instead
+      // of one refused hello first.
+      void this.refreshCredentialAndReconnect()
+      return
+    }
     if (REFUSAL_CODES.has(code)) {
       this.refusal = this.helloRefusal ?? { code, reason, detail: null }
-      if (code === CREDENTIAL_REFUSED && this.ticketUrl) {
-        void this.refreshTicketAndReconnect()
+      if (code === CREDENTIAL_REFUSED && this.credentialUrl) {
+        void this.refreshCredentialAndReconnect()
         return
       }
       this.setState('refused')
@@ -245,13 +277,13 @@ export class Wire {
     this.scheduleReconnect()
   }
 
-  private async refreshTicketAndReconnect(): Promise<void> {
+  private async refreshCredentialAndReconnect(): Promise<void> {
     try {
-      this.ticket = await this.fetchTicket(this.ticketUrl as string)
+      this.credential = await this.fetchCredential(this.credentialUrl as string)
     } catch (error) {
       this.refusal = {
         code: CREDENTIAL_REFUSED,
-        reason: `the ticket refresh failed - ${(error as Error).message}`,
+        reason: `the credential refresh failed - ${(error as Error).message}`,
         detail: null,
       }
       this.setState('refused')
@@ -266,7 +298,9 @@ export class Wire {
       this.reconnectTimer = null
       if (!this.closing) this.open()
     }, this.delay)
-    this.delay = Math.min(this.delay * 2, RECONNECT_DELAY_MAX)
+    // The floor keeps a planned close's zero from doubling into a zero: the
+    // first reopen is immediate, a failed one backs off as usual.
+    this.delay = Math.min(Math.max(this.delay * 2, RECONNECT_DELAY), RECONNECT_DELAY_MAX)
   }
 
   private failPending(error: Error): void {
@@ -501,6 +535,9 @@ export class Wire {
       this.user = frame.user
       this.env = frame.env
       this.envColor = frame.env_color
+      this.scopes = frame.scopes
+      this.credentialKind = frame.credential
+      this.expiresAt = frame.expires_at
       this.refusal = null
       this.delay = RECONNECT_DELAY
       this.setState('connected')

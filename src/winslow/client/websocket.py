@@ -16,7 +16,7 @@ from urllib.parse import urlsplit, urlunsplit
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect as websocket_connect
 
-from winslow.actions import Ack, Action, BatchAck, CheckTasks, RunTasks
+from winslow.actions import Ack, Action
 from winslow.client.base import AppClient, SessionClient
 from winslow.protocol.codec import CODEC
 from winslow.events import (
@@ -24,6 +24,7 @@ from winslow.events import (
 )
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.logger import LOGGER
+from winslow.permissions import PermissionContext, parse_scopes
 from winslow.model import (
     EnvInfo,
     ConnectionEvent,
@@ -71,6 +72,13 @@ def normalize_url(url):
     return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
 
 
+def _close_code(exc):
+    """The close code the server sent, or None for a socket that died
+    without a close frame."""
+    received = getattr(exc, "rcvd", None)
+    return received.code if received is not None else None
+
+
 @dataclass(frozen=True)
 class Link:
     """One socket lifetime. A reconnect binds a new Link with empty tables,
@@ -98,10 +106,9 @@ class Wire:
     to a pending exchange or a session lane. On a dropped connection it
     reconnects with backoff, replays the hello, and resubscribes every lane."""
 
-    def __init__(self, url, token=None, ticket=None, open_timeout=OPEN_TIMEOUT):
+    def __init__(self, url, token=None, open_timeout=OPEN_TIMEOUT):
         self.url = normalize_url(url)
         self.token = token
-        self.ticket = ticket
         self.open_timeout = open_timeout
         # Before connect, a Link with no socket refuses every send (see _send).
         self._link = Link(websocket=None)
@@ -176,11 +183,18 @@ class Wire:
             if handler not in self._connection_handlers:
                 self._connection_handlers.append(handler)
 
-    def _emit_connection(self, connected):
+    @property
+    def connected(self):
+        """True while the current socket lives: after its hello_ok and before
+        its drop (see Link.outage)."""
+        link = self._link
+        return link.websocket is not None and not link.outage.done()
+
+    def _emit_connection(self, connected, code=None):
         with self._lock:
             handlers = tuple(self._connection_handlers)
         for handler in handlers:
-            handler(ConnectionEvent(connected=connected))
+            handler(ConnectionEvent(connected=connected, code=code))
 
     # --- the outgoing side -----------------------------------------------------
 
@@ -239,9 +253,9 @@ class Wire:
         answers a refused ack, the same contract as the handler
         (see ActionHandler)."""
         if not isinstance(action, Action):
-            return self._refused(
-                action,
-                f"{type(action).__name__} names no action of the wire - "
+            return Ack(
+                accepted=False,
+                reason=f"{type(action).__name__} names no action of the wire - "
                 f"the actions are {sorted(Action.by_name)}.",
             )
         try:
@@ -253,13 +267,11 @@ class Wire:
             )
         except (ConnectionError, TimeoutError, RequestError) as exc:
             return self._refused(action, str(exc))
-        ack_class = BatchAck if "batch_uuid" in frame.ack else Ack
-        return ack_class(**frame.ack)
+        return action.ack_class(**frame.ack)
 
     @classmethod
     def _refused(cls, action, reason):
-        ack_class = BatchAck if isinstance(action, (RunTasks, CheckTasks)) else Ack
-        return ack_class(accepted=False, reason=reason)
+        return action.ack_class(accepted=False, reason=reason)
 
     # --- the receiver thread -----------------------------------------------------
 
@@ -268,14 +280,20 @@ class Wire:
         hello_ok."""
         websocket = websocket_connect(self.url, open_timeout=self.open_timeout)
         try:
-            websocket.send(
-                encode_frame(HelloFrame(token=self.token, ticket=self.ticket))
-            )
+            websocket.send(encode_frame(HelloFrame(token=self.token)))
             reply = decode_frame(json.loads(websocket.recv(timeout=self.open_timeout)))
             if not isinstance(reply, HelloOkFrame):
+                # The server does not know the URL the person typed, so the
+                # direction to the credential store lives here.
+                login = (
+                    f". Run `winslow auth login {self.url}` to store a credential "
+                    f"for this server"
+                    if self.token is None
+                    else ""
+                )
                 raise MisconfigurationError(
                     f"{self.url} refused the connection - "
-                    f"{getattr(reply, 'reason', 'no hello_ok answer')}"
+                    f"{getattr(reply, 'reason', 'no hello_ok answer')}{login}"
                 )
             self.hello = reply
         except BaseException:
@@ -288,9 +306,9 @@ class Wire:
             link = self._link
             try:
                 raw = link.websocket.recv()
-            except (OSError, WebSocketException):
+            except (OSError, WebSocketException) as exc:
                 link.fail(CONNECTION_DOWN)
-                if self._closing.is_set() or not self._reconnect():
+                if self._closing.is_set() or not self._reconnect(_close_code(exc)):
                     return
                 continue
             # A bad frame or a raising handler must not kill the receiver: a
@@ -300,12 +318,13 @@ class Wire:
             except Exception:
                 LOGGER.error(f"A frame is dropped - {raw[:200]!r}", exc_info=True)
 
-    def _reconnect(self):
+    def _reconnect(self, code=None):
         """Reopen the socket with backoff, then resubscribe every lane. A
         read during the outage raises ConnectionError. Each lane replays its
         fresh snapshot to its subscribers (see RemoteSessionClient.resubscribe).
-        The ConnectionEvent lane reports the drop and the recovery."""
-        self._emit_connection(False)
+        The ConnectionEvent lane reports the drop, with the close code the
+        server sent, and the recovery."""
+        self._emit_connection(False, code)
         delay = RECONNECT_DELAY
         while not self._closing.is_set():
             try:
@@ -365,8 +384,8 @@ class RemoteAppClient(AppClient):
     socket and must run before the first read. A read the server refuses
     raises RequestError (see winslow.client.base)."""
 
-    def __init__(self, url, token=None, ticket=None, open_timeout=OPEN_TIMEOUT):
-        self.wire = Wire(url, token=token, ticket=ticket, open_timeout=open_timeout)
+    def __init__(self, url, token=None, open_timeout=OPEN_TIMEOUT):
+        self.wire = Wire(url, token=token, open_timeout=open_timeout)
 
     def connect(self):
         self.wire.connect()
@@ -382,6 +401,19 @@ class RemoteAppClient(AppClient):
     def environment(self):
         hello = self.wire.hello
         return EnvInfo(name=hello.env, color=hello.env_color)
+
+    def permissions(self):
+        hello = self.wire.hello
+        if hello is None or not self.wire.connected:
+            return PermissionContext(user=None, scopes=frozenset(), credential=None)
+        return PermissionContext(
+            user=hello.user,
+            scopes=frozenset(
+                scope for spelled in hello.scopes for scope in parse_scopes(spelled)
+            ),
+            credential=hello.credential,
+            expires_at=hello.expires_at,
+        )
 
     def session(self, session_id):
         return self.wire.session_lane(session_id)

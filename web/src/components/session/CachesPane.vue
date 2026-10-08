@@ -8,6 +8,7 @@ import FilterInput from '@/components/common/FilterInput.vue'
 import CacheValueModal from '@/components/session/CacheValueModal.vue'
 import { useInterval } from '@/composables/useInterval'
 import { plural } from '@/protocol/format'
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import type { CacheEntryInfo, CacheInfo } from '@/protocol/model'
 import { entryVariant } from '@/protocol/status'
 import { useSessionScope } from '@/stores/inject'
@@ -143,7 +144,7 @@ function errorTitle(info: CacheEntryInfo | undefined): string | undefined {
 </script>
 
 <template>
-  <div class="d-flex flex-column h-100">
+  <div class="d-flex flex-column flex-grow-1 min-h-0">
     <div class="pane-header">
       <FilterInput
         placeholder="search entries..."
@@ -153,8 +154,22 @@ function errorTitle(info: CacheEntryInfo | undefined): string | undefined {
       />
       <BFormSelect v-model="scope" :options="SCOPE_OPTIONS" size="sm" class="w-auto" />
       <div class="ms-auto d-flex gap-1">
-        <BButton size="sm" variant="danger" :disabled="store.ended" @click="clearAll">clear all</BButton>
-        <BButton size="sm" variant="success" :disabled="store.ended" @click="loadAll">load all</BButton>
+        <BButton
+          size="sm"
+          variant="danger"
+          :disabled="store.ended || !store.allows('run_task')"
+          :title="store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
+          @click="clearAll"
+          >clear all</BButton
+        >
+        <BButton
+          size="sm"
+          variant="success"
+          :disabled="store.ended || !store.allows('run_task')"
+          :title="store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
+          @click="loadAll"
+          >load all</BButton
+        >
       </div>
     </div>
     <div class="pane-body">
@@ -200,7 +215,8 @@ function errorTitle(info: CacheEntryInfo | undefined): string | undefined {
                 <BButton
                   size="sm"
                   variant="outline-danger"
-                  :disabled="store.ended"
+                  :disabled="store.ended || !store.allows('run_task')"
+                  :title="store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
                   @click="store.clearCacheEntries([[card.name, row.name]])"
                 >
                   clear
@@ -209,7 +225,8 @@ function errorTitle(info: CacheEntryInfo | undefined): string | undefined {
                   size="sm"
                   variant="outline-success"
                   class="ms-1"
-                  :disabled="store.ended"
+                  :disabled="store.ended || !store.allows('run_task')"
+                  :title="store.allows('run_task') ? undefined : NO_PERMISSION_MESSAGE"
                   @click="store.loadCacheEntries([[card.name, row.name]])"
                 >
                   load

@@ -3,6 +3,8 @@ from textual.widget import Widget
 from textual.widgets import Button, Checkbox
 
 from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
+from winslow.ui.widgets.common import GuardedButton
+from winslow.permissions import Permission
 
 
 class TaskBar(Widget):
@@ -42,5 +44,17 @@ class TaskBar(Widget):
                         id="disable-concurrency",
                     )
             with Horizontal(classes="actions"):
-                yield Button("run all", id="run-all", variant="error")
-                yield Button("check all", id="check-all", variant="success")
+                yield GuardedButton(
+                    "run all",
+                    id="run-all",
+                    variant="error",
+                    permission=Permission.RUN_TASK,
+                    blocks_on_ending=True,
+                )
+                yield GuardedButton(
+                    "check all",
+                    id="check-all",
+                    variant="success",
+                    permission=Permission.CHECK_TASK,
+                    blocks_on_ending=True,
+                )

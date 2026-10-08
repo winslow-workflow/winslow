@@ -47,6 +47,11 @@ class RequestError(WinslowError):
         self.detail = detail
 
 
+class CredentialRefused(WinslowError):
+    """A credential the chain refuses (see winslow.serve.auth). The message
+    is the reason, and it reaches the client in the refusal."""
+
+
 class ParameterizationError(WinslowError):
     def __init__(self, msg, task_kls=None):
         if task_kls:

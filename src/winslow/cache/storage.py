@@ -46,6 +46,9 @@ class StorageRecord:
 
     value: Any
     written_at: float
+    # The user whose load wrote the value, or None. The default keeps every
+    # backend that builds StorageRecord(value, written_at) valid.
+    written_by: str | None = None
 
 
 class BaseStorage:
@@ -144,8 +147,11 @@ class JsonFileStorage(BaseStorage):
         owns the policy: read() serves a cold miss instead."""
         try:
             payload = json.loads(text)
+            # A file written before written_by existed reads as None.
             return StorageRecord(
-                value=payload["value"], written_at=payload["written_at"]
+                value=payload["value"],
+                written_at=payload["written_at"],
+                written_by=payload.get("written_by"),
             )
         except (ValueError, KeyError, TypeError) as exc:
             raise DeserializationError(
@@ -156,7 +162,13 @@ class JsonFileStorage(BaseStorage):
         """Store the record and return its JSON round trip: the caller serves
         the normalized value, so a value never changes shape after a restart."""
         try:
-            text = json.dumps({"written_at": record.written_at, "value": record.value})
+            text = json.dumps(
+                {
+                    "written_at": record.written_at,
+                    "written_by": record.written_by,
+                    "value": record.value,
+                }
+            )
         except TypeError as exc:
             # Strict on purpose: a default=str fallback would coerce silently,
             # and a lossy cache file is not debuggable.
@@ -173,7 +185,9 @@ class JsonFileStorage(BaseStorage):
             temp.write(text)
         os.replace(temp.name, self._path(key))
         return StorageRecord(
-            value=json.loads(text)["value"], written_at=record.written_at
+            value=json.loads(text)["value"],
+            written_at=record.written_at,
+            written_by=record.written_by,
         )
 
     def delete(self, key):

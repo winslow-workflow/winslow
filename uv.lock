@@ -1371,6 +1371,15 @@ wheels = [
 ]
 
 [[package]]
+name = "tomli-w"
+version = "1.2.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/19/75/241269d1da26b624c0d5e110e8149093c759b7a286138f4efd61a60e75fe/tomli_w-1.2.0.tar.gz", hash = "sha256:2dd14fac5a47c27be9cd4c976af5a12d87fb1f0b4512f81d69cce3b35ae25021", size = 7184, upload-time = "2025-01-15T12:07:24.262Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c7/18/c86eb8e0202e32dd3df50d43d7ff9854f8e0603945ff398974c1d91ac1ef/tomli_w-1.2.0-py3-none-any.whl", hash = "sha256:188306098d013b691fcadc011abd66727d3c414c571bb01b1a174ba8c983cf90", size = 6675, upload-time = "2025-01-15T12:07:22.074Z" },
+]
+
+[[package]]
 name = "truststore"
 version = "0.10.4"
 source = { registry = "https://pypi.org/simple" }
@@ -1552,6 +1561,7 @@ dependencies = [
     { name = "blinker" },
     { name = "networkx" },
     { name = "python-decouple" },
+    { name = "tomli-w" },
 ]
 
 [package.optional-dependencies]
@@ -1566,6 +1576,7 @@ mcp = [
     { name = "mcp" },
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "starlette" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1580,6 +1591,7 @@ sentry = [
 serve = [
     { name = "psutil" },
     { name = "pydantic" },
+    { name = "pyjwt" },
     { name = "starlette" },
     { name = "uvicorn" },
     { name = "websockets" },
@@ -1621,6 +1633,8 @@ requires-dist = [
     { name = "pydantic", marker = "extra == 'connect'", specifier = ">=2.0" },
     { name = "pydantic", marker = "extra == 'mcp'", specifier = ">=2.0" },
     { name = "pydantic", marker = "extra == 'serve'", specifier = ">=2.0" },
+    { name = "pyjwt", marker = "extra == 'mcp'", specifier = ">=2.8" },
+    { name = "pyjwt", marker = "extra == 'serve'", specifier = ">=2.8" },
     { name = "python-decouple", specifier = ">=3.8" },
     { name = "rich", marker = "extra == 'connect'", specifier = ">=13.0.0" },
     { name = "rich", marker = "extra == 'tui'", specifier = ">=13.0.0" },
@@ -1629,6 +1643,7 @@ requires-dist = [
     { name = "starlette", marker = "extra == 'serve'", specifier = ">=0.40" },
     { name = "textual", marker = "extra == 'connect'", specifier = ">=8.2.7" },
     { name = "textual", marker = "extra == 'tui'", specifier = ">=8.2.7" },
+    { name = "tomli-w", specifier = ">=1.0" },
     { name = "uvicorn", marker = "extra == 'mcp'", specifier = ">=0.30" },
     { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.30" },
     { name = "websockets", marker = "extra == 'connect'", specifier = ">=13.0" },

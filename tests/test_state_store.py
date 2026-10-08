@@ -6,14 +6,12 @@ from winslow import settings
 from winslow.exceptions import MisconfigurationError, SerializationError
 from winslow.orchestrator import OrchestratorConfig
 from winslow.state import (
-    _BACKENDS,
+    STATE_BACKENDS,
     BatchRecord,
     FileStateStore,
     StatusSnapshot,
     SessionManifest,
-    create_state_store,
     is_trusted,
-    register_state_backend,
 )
 
 SID = "alpha-20260819T100000-aaaa0001"
@@ -304,22 +302,22 @@ def test_no_ttl_trusts_only_this_session():
 
 def test_the_default_backend_is_the_file_store(monkeypatch):
     monkeypatch.setattr(settings, "STATE_BACKEND", "file")
-    assert isinstance(create_state_store(OrchestratorConfig()), FileStateStore)
+    assert isinstance(STATE_BACKENDS.create(OrchestratorConfig()), FileStateStore)
 
 
 def test_a_registered_backend_is_selectable(monkeypatch):
     class RecordingStore(FileStateStore):
         pass
 
-    register_state_backend("recording", RecordingStore)
+    STATE_BACKENDS.register("recording", RecordingStore)
     try:
         monkeypatch.setattr(settings, "STATE_BACKEND", "recording")
-        assert isinstance(create_state_store(OrchestratorConfig()), RecordingStore)
+        assert isinstance(STATE_BACKENDS.create(OrchestratorConfig()), RecordingStore)
     finally:
-        _BACKENDS.pop("recording", None)
+        STATE_BACKENDS.backends.pop("recording", None)
 
 
 def test_an_unknown_backend_raises(monkeypatch):
     monkeypatch.setattr(settings, "STATE_BACKEND", "nope")
-    with pytest.raises(MisconfigurationError, match="'nope'"):
-        create_state_store(OrchestratorConfig())
+    with pytest.raises(MisconfigurationError, match="'nope'.*STATE_BACKENDS.register"):
+        STATE_BACKENDS.create(OrchestratorConfig())

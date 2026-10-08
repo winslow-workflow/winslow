@@ -10,10 +10,53 @@ from pathlib import Path
 
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
+from winslow.permissions import CredentialKind
+from winslow.serve.auth import Credentials, TicketCredential, mint_ticket
 from winslow.session import Session
 from winslow.state import FileStateStore
 from winslow.task.status import TaskStatus as S
 from winslow.util import _SCOPE_NS
+
+# The credential of the serve tests: a ticket for can with every permission,
+# on a Credentials that accepts tickets alone.
+TICKET_SECRET = "test-secret-of-thirty-two-bytes-or-more"
+AUDIENCE = "https://etl-host"
+
+
+def mint(user="can", scopes=("*:*",), ttl=900):
+    return mint_ticket(TICKET_SECRET, user, scopes, AUDIENCE, ttl=ttl)
+
+
+def serve_credentials(**overrides):
+    chain = (TicketCredential(TICKET_SECRET, AUDIENCE),)
+    return Credentials(**{"chain": chain, **overrides})
+
+
+class FixedCredential:
+    """A credential kind that hands every token one fixed context, on both
+    doors."""
+
+    kind = CredentialKind.TICKET
+    name = "fixed"
+
+    def __init__(self, context):
+        self.context = context
+
+    def accepts(self, token):
+        return True
+
+    def verify(self, token):
+        return self.context
+
+    def startup_lines(self):
+        return ()
+
+
+def fixed_credentials(context):
+    return Credentials(chain=(FixedCredential(context),))
+
+
+TOKEN = mint()
 
 E2E_REPO = Path(__file__).parent / "e2e_repo"
 

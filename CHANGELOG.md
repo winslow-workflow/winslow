@@ -8,8 +8,87 @@ versions may include breaking changes).
 
 ## [Unreleased]
 
+### Removed
+
+- The shared token. `winslow serve` no longer reads `WINSLOW_TOKEN`: a client
+  holds a per-user token or a ticket, and `WINSLOW_TOKEN` is where `winslow
+  connect` and an MCP client read theirs from. The hello has one credential
+  field, `token`, and the page config sets `credential` and `credentialUrl`
+  in place of `ticket` and `ticketUrl`.
+
 ### Added
 
+- `winslow auth login <url>` stores the credential of a server in
+  `~/.config/winslow/credentials.toml`, prompted without echo or from stdin
+  with `--with-token`. `winslow connect` sends `WINSLOW_TOKEN` when set, else
+  the stored one, and records the user the server named. `logout` removes an
+  entry, `status` lists them. A `ws://` URL to a non-loopback host needs
+  `--insecure`.
+- Tickets carry scopes. A ticket is a JWT signed with HS256 under
+  `WINSLOW_TICKET_SECRET`: `mint_ticket(secret, user, scopes, audience, ttl)`
+  spells what the user may do, `aud` names the server (`WINSLOW_PUBLIC_URL`,
+  required beside the secret), and the server checks the signature, the
+  audience and the expiry, tolerating a minting clock up to a minute ahead. A
+  ticket lives an hour at most and carries a `jti`. It travels as the token
+  of a hello and in the MCP bearer header. The `user:expiry:signature` format
+  is gone.
+- Per-user tokens and a policy of winslow's own. `.winslow/policy.toml`
+  (`WINSLOW_POLICY_FILE`) holds groups, users and scopes, reloaded when it
+  changes; `winslow auth token create <user>` mints a `wsl_` token whose
+  SHA-256 hash lands in `.winslow/tokens` (`WINSLOW_TOKENS_FILE`), with
+  `list`, `revoke`, `show` and `check` beside it. A token opens the websocket
+  hello, the MCP bearer header and `winslow connect` with the scopes of its
+  user. `WINSLOW_AUTH_OPEN=true`
+  passes every hello for development. `winslow.access` holds the
+  `PolicyStore` and `TokenStore` ports, the file stores, and the
+  `POLICY_BACKENDS` / `TOKEN_BACKENDS` registries for another store
+  (`WINSLOW_POLICY_BACKEND`, `WINSLOW_TOKEN_BACKEND`). `register_state_backend`
+  is `STATE_BACKENDS.register`. `winslow serve` logs
+  the stores and the accepted credentials at startup.
+- The credential lifetime on a live socket. The server closes a websocket
+  when the credential behind it expires, with close code 4402 and the reason
+  `credential expired - reconnect with a fresh one`, and both clients
+  reconnect at once: the web page fetches a fresh ticket first when it has a
+  `credentialUrl`, `winslow connect` replays its hello, and both show a
+  "credential renewed" notice. `ConnectionEvent` carries the close code of a
+  drop. The close codes live in `winslow.protocol.closes`. `WINSLOW_AUTH_MAX_CONNECTION`
+  caps every socket at one hour by default; a credential with an earlier
+  expiry keeps its own.
+- The permission check of the port. Every action handler and every read the
+  server runs carries a `@requires` decorator naming the permissions the
+  caller needs on the session's scope name, the three list reads a
+  `@visible` filter, and `create_session` and `restore_session` check the
+  scope name of their workflow argument. A refusal is a refused ack or a
+  `RequestError` with the reason, on both doors. A subscribe needs `view_task`
+  on the session. A stop needs the permission of the batch kind, and a
+  settled session ends on `check_task` too. Every credential still holds
+  every permission, so nothing is refused yet; a `winslow.audit` logger
+  records one line per action and per session start, and every log record
+  carries `credential` beside `user`.
+- The permission context of a connection. `hello_ok` carries `scopes`, the
+  expanded `<scope name>:<permission>` set of the five permissions
+  (`start_workflow`, `end_workflow`, `run_task`, `check_task`, `view_task`),
+  `credential`, the kind of credential, and `expires_at`, its expiry. A workflow
+  class names its scope with `permission_scope`, default the workflow name,
+  inherited by subclasses; `SessionInfo`, `WorkflowDescriptor` and
+  `ManifestInfo` carry it. Every credential holds every permission on every
+  workflow in this release. The TUI and the web UI render the guarded
+  controls disabled until the hello grants them, and again after a drop. The
+  standalone web page asks for a token when the server refuses the
+  credential, and keeps it for the tab. An Origin refusal closes with 4403,
+  apart from the credential code 4401. `winslow.permissions` holds
+  `PermissionContext` and `expand`; `AppClient.permissions()` serves the
+  context of a client.
+- The user on the records of a side effect. The serve process runs every
+  action and read under the user of the hello, and every thread it starts for
+  that work copies the scope. A batch record and its history row carry
+  `user`, the session manifest carries `user` and `ended_by`, a cache record
+  and its entry info carry `written_by`, and every log record of the work is
+  stamped with `user`. The history cards and the session rows of the TUI and
+  the web UI show the name. A local client sets no user, so its records carry
+  `None`, and a cache file from an earlier version reads with `written_by`
+  as `None`. `winslow.task.context.current_user` and `scoped_permissions` are
+  the scope; `StateStore.mark_ended` takes `ended_by`.
 - The web UI: `winslow serve` hands out a browser UI at `/`, with the
   dashboard and the session screens of the terminal over the websocket
   endpoint. `web` is an endpoint of `--endpoints`, on by default beside `ws`;
@@ -26,6 +105,10 @@ versions may include breaking changes).
 
 ### Changed
 
+- `hello_ok` names a credential kind on every door: `open` for a hello
+  without a credential in open mode, where it was null. A `wsl_` token the
+  store does not know refuses as an unknown token, and a token of no known
+  shape names the credential kinds the server accepts.
 - `WINSLOW_ENV` defaults to `local` instead of `dev`.
 - The workflow start form shows `clear_cache` as its only orchestrator
   option. The Tasks pane sets `dry_run`, `force_run`, `force_success` and
@@ -34,8 +117,9 @@ versions may include breaking changes).
 ### Fixed
 
 - `winslow serve` stops on Ctrl+C with a client connected and a batch running.
-  The connection wait has a five second bound, and the shutdown asks every
-  running batch to stop and waits for its worker with the same bound.
+  The shutdown ends the MCP listen streams with their final frame, gives the
+  remaining connections five seconds, then asks every running batch to stop
+  and waits for its worker with the same bound.
 
 ## [0.6.0] — 2026-09-09
 

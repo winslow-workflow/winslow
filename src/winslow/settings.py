@@ -62,8 +62,35 @@ LOG_UTC = config("WINSLOW_LOG_UTC", default=True, cast=bool)
 # fields (see StructuredFormatter). The default stays human-readable.
 LOG_JSON = config("WINSLOW_LOG_JSON", default=False, cast=bool)
 
+# The credential `winslow connect` sends: a per-user token or a ticket. When
+# unset, the credential file of the person holds one per server (see
+# winslow.access.credentials); that file lives in the home directory.
+CONNECT_TOKEN = config("WINSLOW_TOKEN", default=None)
+CREDENTIALS_FILE = config(
+    "WINSLOW_CREDENTIALS_FILE",
+    default=os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"),
+        "winslow",
+        "credentials.toml",
+    ),
+)
 # The serve credentials (see winslow.serve.auth). SERVE_ORIGINS is a comma
 # separated list of the browser origins the websocket endpoint accepts.
-SERVE_TOKEN = config("WINSLOW_TOKEN", default=None)
 SERVE_TICKET_SECRET = config("WINSLOW_TICKET_SECRET", default=None)
+# The URL clients reach the server on, behind the proxy that ends TLS. It is
+# the audience of a ticket: another host with the same secret refuses it.
+PUBLIC_URL = config("WINSLOW_PUBLIC_URL", default=None)
 SERVE_ORIGINS = config("WINSLOW_ORIGINS", default="")
+# The socket bound: the websocket door caps every context at now plus this
+# many seconds (see Credentials.verify_hello).
+AUTH_MAX_CONNECTION = config("WINSLOW_AUTH_MAX_CONNECTION", default=3600.0, cast=float)
+# The development switch: every hello passes on any bind with every permission
+# (see Credentials.verify_hello).
+AUTH_OPEN = config("WINSLOW_AUTH_OPEN", default=False, cast=bool)
+
+# The stores of access control (see winslow.access). The backends are
+# registered names, file by default; the paths are relative to the CWD.
+POLICY_BACKEND = config("WINSLOW_POLICY_BACKEND", default="file")
+TOKEN_BACKEND = config("WINSLOW_TOKEN_BACKEND", default="file")
+POLICY_FILE = config("WINSLOW_POLICY_FILE", default=".winslow/policy.toml")
+TOKENS_FILE = config("WINSLOW_TOKENS_FILE", default=".winslow/tokens")

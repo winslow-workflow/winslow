@@ -292,7 +292,9 @@ $ winslow run --workflow etl --region us   # .winslow/cache/workflows/etl-us-9d0
 
 Subclass `BaseStorage` to build a backend, and override the three methods. Return the `MISSING`
 sentinel for a cold key, and return the stored record from `write`: the cache serves what the
-write returns.
+write returns. A `StorageRecord` carries the value, `written_at`, and `written_by`, the user whose
+load wrote it. A backend that stores the writer returns it on read, and a backend that stores the
+value and the time alone stays valid: `written_by` defaults to `None`.
 
 ```python
 from winslow.cache import MISSING, BaseStorage, StorageRecord

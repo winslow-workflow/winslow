@@ -6,8 +6,10 @@ from textual.widget import Widget
 from textual.widgets import Label, Button, LoadingIndicator
 
 from winslow.ui.actions import ACTIVE_BATCH_STATUSES
+from winslow.ui.widgets.common import GuardedButton
 from winslow.ui.formatting import format_status_summary, format_elapsed
 from winslow.ui.reads import port_read
+from winslow.permissions import Permission
 
 SUMMARY_REFRESH_INTERVAL = 2
 
@@ -28,10 +30,12 @@ class RestorableRow(Widget):
         with Horizontal(classes="row-content"):
             yield Label(self.manifest.session_id, classes="session-id")
             with Horizontal(classes="actions"):
-                yield Button(
+                yield GuardedButton(
                     "Restore",
                     variant="primary",
                     classes="compact small session-restore",
+                    permission=Permission.START_WORKFLOW,
+                    scope_name=self.manifest.permission_scope,
                 )
 
 
@@ -65,6 +69,11 @@ class SessionRow(Widget):
             format_status_summary(summary.completed, summary.problematic, summary.total)
         )
         self.query_one(".elapsed", Label).update(format_elapsed(self.row.elapsed))
+        self.query_one(".started-by", Label).update(self.row.user or "")
+        # The End button asks about the scope name of the row, once known.
+        for button in self.query(".workflow-end").results(GuardedButton):
+            button.scope_name = self.row.permission_scope
+            button.refresh_permission(self.app)
 
     def _truncate(self, title):
         if len(title) < self.MAX_TITLE_LENGTH:
@@ -161,12 +170,18 @@ class SessionRow(Widget):
             with Horizontal(classes="totals"):
                 yield Label("", classes="summary", markup=True)
                 yield Label("", classes="elapsed")
+                yield Label("", classes="started-by")
                 yield Label("", classes="waiting")
             with Horizontal(classes="actions"):
                 yield Button(
                     "View", variant="primary", classes="compact small workflow-view"
                 )
-                yield Button.error("End", classes="compact small workflow-end")
+                yield GuardedButton(
+                    "End",
+                    variant="error",
+                    classes="compact small workflow-end",
+                    permission=Permission.END_WORKFLOW,
+                )
         with Horizontal(classes="failed-state"):
             yield Label("Failed to initialize", classes="failed-label")
             with Horizontal(classes="actions"):

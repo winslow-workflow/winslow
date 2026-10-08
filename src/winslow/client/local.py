@@ -10,6 +10,7 @@ import psutil
 
 from winslow import settings
 from winslow.cache import declared_entries
+from winslow.authz import audit, require, requires, visible
 from winslow.client.base import AppClient, SessionClient
 from winslow.exceptions import RequestError
 from winslow.logger import (
@@ -17,6 +18,7 @@ from winslow.logger import (
     InteractiveLogHandler,
     get_task_dispatcher,
 )
+from winslow.permissions import LOCAL, Permission
 from winslow.model import (
     CachesPayload,
     CacheUpdatedEvent,
@@ -106,20 +108,31 @@ class LocalAppClient(AppClient):
         self.state_store = state_store
         self.host_sampler = HostStatsSampler()
 
+    @visible(Permission.VIEW_TASK)
     def sessions(self):
         return tuple(
             SessionInfo.from_session(session) for session in self.registry.sessions()
         )
 
+    @visible(Permission.START_WORKFLOW, attr="workflows")
     def descriptors(self):
         return Descriptors.from_orchestrator(self.orchestrator)
 
+    @visible(Permission.START_WORKFLOW)
     def manifests(self):
         return tuple(
-            ManifestInfo.from_manifest(manifest)
+            ManifestInfo.from_manifest(
+                manifest, self._permission_scope(manifest.workflow_class)
+            )
             for manifest in self.state_store.list_open_manifests()
             if manifest.session_id not in self.registry
         )
+
+    def _permission_scope(self, workflow_name):
+        registry = self.orchestrator.workflow_registry
+        if workflow_name not in registry.names:
+            return None
+        return registry[workflow_name].get_permission_scope()
 
     def host_stats(self):
         return self.host_sampler.read()
@@ -127,7 +140,17 @@ class LocalAppClient(AppClient):
     def environment(self):
         return EnvInfo(name=settings.env, color=settings.ENV_COLOR)
 
+    def permissions(self):
+        return LOCAL
+
     def create_session(self, workflow, overrides=None, values=None):
+        # The scope name comes from the workflow argument, so the guard sits
+        # here (see authz.BODY_GUARDED). An unknown name is checked as given, so
+        # a caller without a scope learns no workflow name from the refusal.
+        scope_name = self._permission_scope(workflow)
+        require(
+            Permission.START_WORKFLOW, scope_name or workflow, action="create_session"
+        )
         try:
             session = create_session(
                 self.orchestrator,
@@ -142,6 +165,7 @@ class LocalAppClient(AppClient):
             # A refusal: an unknown workflow, a bad option value. An init
             # bug propagates unchanged, so an in-process caller keeps its traceback.
             raise RequestError(exc.args[0] if exc.args else str(exc)) from None
+        audit("create_session", scope_name, session.session_id, True)
         return SessionInfo.from_session(session)
 
     def restore_session(self, session_id):
@@ -162,6 +186,13 @@ class LocalAppClient(AppClient):
                 f"the manifest names workflow {manifest.workflow_class!r}, "
                 f"which this process does not collect."
             )
+        scope_name = self._permission_scope(manifest.workflow_class)
+        require(
+            Permission.START_WORKFLOW,
+            scope_name,
+            action="restore_session",
+            session_id=session_id,
+        )
         session = create_session(
             self.orchestrator,
             self.state_store,
@@ -170,9 +201,11 @@ class LocalAppClient(AppClient):
             manifest.orchestrator_overrides or {},
             manifest.workflow_values or {},
             session_id=manifest.session_id,
+            user=manifest.user,
             seed=True,
             origin="local",
         )
+        audit("restore_session", scope_name, session.session_id, True)
         return SessionInfo.from_session(session)
 
     def session(self, session_id):
@@ -201,8 +234,13 @@ class LocalSessionClient(SessionClient):
     def _workflow(self):
         return self.session.workflow
 
+    @property
+    def permission_scope(self):
+        return self.session.permission_scope
+
     # --- reads ---------------------------------------------------------------
 
+    @requires(Permission.VIEW_TASK)
     def snapshot(self):
         return SessionSnapshot.from_session(self.session)
 
@@ -215,11 +253,13 @@ class LocalSessionClient(SessionClient):
                 f"state is released."
             )
 
+    @requires(Permission.VIEW_TASK)
     def roster(self):
         self._require_live()
         workflow = self._workflow
         return tuple(workflow.task_info(task) for task in workflow.roster_tasks())
 
+    @requires(Permission.VIEW_TASK)
     def task_detail(self, task_key):
         self._require_live()
         task = self._resolve_task(task_key)
@@ -233,9 +273,11 @@ class LocalSessionClient(SessionClient):
         except KeyError as exc:
             raise RequestError(exc.args[0]) from None
 
+    @requires(Permission.VIEW_TASK)
     def record_detail(self, batch_uuid, task_key):
         return RecordDetail.from_record(self._record(batch_uuid, task_key))
 
+    @requires(Permission.VIEW_TASK)
     def history(self):
         runner = self._workflow.runner
         return tuple(
@@ -243,6 +285,7 @@ class LocalSessionClient(SessionClient):
             for batch in runner.batches
         )
 
+    @requires(Permission.VIEW_TASK)
     def log_tail(self, batch_uuid, task_key, limit=None):
         # None arrives from an omitted wire field. The default lives here.
         return self._record(batch_uuid, task_key).log_tail(
@@ -262,6 +305,7 @@ class LocalSessionClient(SessionClient):
                 f"task {task_key!r} is not in the roster of batch {batch_uuid!r}."
             ) from None
 
+    @requires(Permission.VIEW_TASK)
     def caches(self):
         # Workflow.caches raises for an ended session. Its message becomes
         # the refusal reason.
@@ -270,6 +314,7 @@ class LocalSessionClient(SessionClient):
         except ValueError as exc:
             raise RequestError(str(exc)) from None
 
+    @requires(Permission.VIEW_TASK)
     def cache_value(self, cache_name, entry_name):
         try:
             cache = self._workflow.get_cache(cache_name)
@@ -281,15 +326,18 @@ class LocalSessionClient(SessionClient):
             raise RequestError(f"{cache} has no entry {entry_name!r}.")
         return CacheValueView.from_entry(cache, entry_name)
 
+    @requires(Permission.VIEW_TASK)
     def apply_filter(self, query, scope="tasks"):
         try:
             return self._workflow.filter_keys(query, scope=scope)
         except ValueError as exc:
             raise RequestError(str(exc)) from None
 
+    @requires(Permission.VIEW_TASK)
     def batch_options(self):
         return asdict(self._workflow.batch_options)
 
+    @requires(Permission.VIEW_TASK)
     def session_params(self):
         return SessionParams.from_workflow(self._workflow)
 

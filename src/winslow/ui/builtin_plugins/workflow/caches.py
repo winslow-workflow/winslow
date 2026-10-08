@@ -17,9 +17,10 @@ from winslow.ui.filtering import SearchFlowMixin
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
 from winslow.ui.builtin_plugins.workflow.history import HistoryPlugin
 from winslow.ui.modals.cache_value import CacheEntryValue
-from winslow.ui.widgets.common import TaskRowBase
+from winslow.ui.widgets.common import GuardedButton, TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.workflow_events import CacheUpdated, SessionEnded
+from winslow.permissions import Permission
 
 _CSS = package_css(__package__, "_pane_header.tcss", "caches.tcss")
 
@@ -47,6 +48,13 @@ _ENTRY_ACTIONS = (
     (CacheAction.LOAD, "success"),
     (CacheAction.VIEW, "default"),
 )
+
+# A load and a clear change what a run reads, so they need run_task.
+_ENTRY_PERMISSIONS = {
+    CacheAction.CLEAR: Permission.RUN_TASK,
+    CacheAction.LOAD: Permission.RUN_TASK,
+    CacheAction.VIEW: Permission.VIEW_TASK,
+}
 
 
 class CacheEntryRow(TaskRowBase):
@@ -84,8 +92,12 @@ class CacheEntryRow(TaskRowBase):
             yield InlineLog(classes="log")
         with Horizontal(classes="actions"):
             for action, variant in _ENTRY_ACTIONS:
-                yield Button(
-                    action, name=action, classes=f"{action}-btn", variant=variant
+                yield GuardedButton(
+                    action,
+                    name=action,
+                    classes=f"{action}-btn",
+                    variant=variant,
+                    permission=_ENTRY_PERMISSIONS[action],
                 )
 
     def on_mount(self):
@@ -196,8 +208,18 @@ class CachesPane(SearchFlowMixin, Widget):
                 _SCOPE_OPTIONS, value=_SCOPE_ALL, allow_blank=False, id="cache-scope"
             )
             with Horizontal(classes="actions"):
-                yield Button("clear all", id="cache-clear-all", variant="error")
-                yield Button("load all", id="cache-load-all", variant="success")
+                yield GuardedButton(
+                    "clear all",
+                    id="cache-clear-all",
+                    variant="error",
+                    permission=Permission.RUN_TASK,
+                )
+                yield GuardedButton(
+                    "load all",
+                    id="cache-load-all",
+                    variant="success",
+                    permission=Permission.RUN_TASK,
+                )
         yield VerticalScroll(id="cache-cards")
 
     def on_mount(self):

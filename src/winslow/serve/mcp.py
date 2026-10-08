@@ -3,8 +3,9 @@ LocalAppClient the local TUI consumes (see winslow.client). The acks and
 the refusals travel as tool results, so an agent reads every reason as
 data. Blocking work runs on worker threads. Requires the [mcp] extra."""
 
-import hmac
+import asyncio
 
+from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
@@ -22,21 +23,41 @@ from winslow.actions import (
     StopBatch,
 )
 from winslow.client.base import AppClient, SessionClient
-from winslow.exceptions import MisconfigurationError, RequestError
+from winslow.exceptions import CredentialRefused, RequestError
+from winslow.permissions import PermissionContext
 from winslow.protocol.codec import CODEC
+from winslow.task.context import scoped_permissions
+
+
+class WinslowAccessToken(AccessToken):
+    """The AccessToken of the SDK with the PermissionContext of the request
+    on it. The SDK reads expires_at for its own expiry check, as an int
+    second; the context keeps the float one."""
+
+    context: PermissionContext
 
 
 class BearerTokenVerifier(TokenVerifier):
-    """The plain bearer token of the serve credentials: the same
-    WINSLOW_TOKEN the websocket hello accepts."""
+    """The bearer token of one MCP request, through the same chain the
+    websocket hello runs (see Credentials.verify_bearer). The token carries
+    the whole context, so the tool call reads the stores once (see
+    Credentials.mcp_context)."""
 
-    def __init__(self, token):
-        self._token = token
+    def __init__(self, credentials):
+        self._credentials = credentials
 
     async def verify_token(self, token):
-        if hmac.compare_digest(token.encode(), self._token.encode()):
-            return AccessToken(token=token, client_id="winslow-token", scopes=[])
-        return None
+        try:
+            context = await asyncio.to_thread(self._credentials.verify_bearer, token)
+        except CredentialRefused:
+            return None
+        return WinslowAccessToken(
+            token=token,
+            client_id=context.user,
+            scopes=[],
+            expires_at=None if context.expires_at is None else int(context.expires_at),
+            context=context,
+        )
 
 
 def tool(method):
@@ -68,17 +89,13 @@ class McpEndpoint:
 
     def _auth_settings(self, base_url):
         credentials = self.serve_app.credentials
-        if not credentials.require_credential:
+        if not credentials.mode.checks_bearer:
             return {}
-        if not credentials.token:
-            raise MisconfigurationError(
-                "The MCP endpoint needs WINSLOW_TOKEN on a non-loopback bind - "
-                "set it, or bind to loopback."
-            )
         # AuthSettings requires both URLs. The serve base URL fills both, and the
         # resource metadata the SDK serves stays unused until OAuth exists.
+        # TODO: step 8 puts WINSLOW_PUBLIC_URL here, the resource identifier.
         return {
-            "token_verifier": BearerTokenVerifier(credentials.token),
+            "token_verifier": BearerTokenVerifier(credentials),
             "auth": AuthSettings(
                 issuer_url=AnyHttpUrl(base_url),
                 resource_server_url=AnyHttpUrl(f"{base_url}/mcp"),
@@ -99,11 +116,24 @@ class McpEndpoint:
     def session_manager(self):
         return self.server.session_manager
 
+    def close_listen_streams(self):
+        """End every open subscriptions/listen stream with its final frame. A
+        stream lives as long as its client, so the shutdown ends the streams
+        before it waits for the connections (see ServeApp.close_streams)."""
+        entry = self.server._lowlevel_server.get_request_handler("subscriptions/listen")
+        if entry is not None:
+            entry.handler.close()
+
+    def _permissions(self):
+        """The PermissionContext of the request (see Credentials.mcp_context)."""
+        return self.serve_app.credentials.mcp_context(get_access_token())
+
     async def _submit(self, session_id, action):
         """The ack of the action as a dict (see ServeApp.submit). An unknown
         session id answers the refused ack shape, so an agent reads it as data."""
         try:
-            ack = await self.serve_app.submit(session_id, action)
+            with scoped_permissions(self._permissions()):
+                ack = await self.serve_app.submit(session_id, action)
         except RequestError as exc:
             return {"accepted": False, "reason": str(exc)}
         return CODEC.dump(ack)
@@ -112,9 +142,10 @@ class McpEndpoint:
         """One port read as a tool result (see ServeApp.read). A refusal
         answers {'error': reason}, so an agent reads it as data."""
         try:
-            result = await self.serve_app.read(
-                spec, session_id, spec.bind(args, kwargs)
-            )
+            with scoped_permissions(self._permissions()):
+                result = await self.serve_app.read(
+                    spec, session_id, spec.bind(args, kwargs)
+                )
         except RequestError as exc:
             return {"error": str(exc)}
         return CODEC.dump(result)

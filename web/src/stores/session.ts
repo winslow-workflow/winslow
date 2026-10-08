@@ -80,6 +80,12 @@ export function useSessionStore(sessionId: string) {
 
     const info = computed(() => sessions.byId.get(sessionId) ?? null)
     const ended = computed(() => status.value === 'ENDED' || status.value === 'ERROR')
+    // The scope name of the permissions on this session (see SessionInfo).
+    const permissionScope = computed(() => info.value?.permission_scope ?? null)
+    // False until the session row and the hello are both known, so a control is disabled by default.
+    function allows(permission: string): boolean {
+      return connection.allows(permissionScope.value, permission)
+    }
     const ending = computed(() => status.value === 'ENDING')
     const rosterByKey = computed(() => new Map(roster.value.map((task) => [task.key, task])))
     const historyByUuid = computed(() => new Map(history.value.map((row) => [row.uuid, row])))
@@ -326,6 +332,8 @@ export function useSessionStore(sessionId: string) {
       info,
       ended,
       ending,
+      permissionScope,
+      allows,
       open,
       park,
       refreshSnapshot,

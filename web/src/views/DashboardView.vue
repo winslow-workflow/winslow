@@ -11,11 +11,15 @@ import WorkflowForm from '@/components/dashboard/WorkflowForm.vue'
 import WorkflowList from '@/components/dashboard/WorkflowList.vue'
 import { formatClock } from '@/protocol/format'
 import type { FormValues } from '@/protocol/forms'
+import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
+import type { ManifestInfo } from '@/protocol/model'
+import { useConnectionStore } from '@/stores/connection'
 import { useNoticesStore } from '@/stores/notices'
 import { useSessionsStore } from '@/stores/sessions'
 
 const sessions = useSessionsStore()
 const notices = useNoticesStore()
+const connection = useConnectionStore()
 const router = useRouter()
 
 const selected = ref<string | null>(null)
@@ -24,6 +28,12 @@ const descriptor = computed(
   () => sessions.descriptors?.workflows.find((row) => row.workflow === selected.value) ?? null,
 )
 const overrides = computed(() => sessions.descriptors?.overrides ?? [])
+
+// A restore is a start of the manifest's workflow.
+function canRestore(manifest: ManifestInfo): boolean {
+  return connection.allows(manifest.permission_scope, 'start_workflow')
+}
+const canRestoreAll = computed(() => sessions.manifests.some(canRestore))
 const tab = ref('sessions')
 
 async function start(values: FormValues) {
@@ -74,12 +84,21 @@ async function start(values: FormValues) {
           <BTab id="restore" title="Restore">
             <div class="pane-body">
               <div v-if="sessions.manifests.length > 1" class="px-3 pt-2">
-                <BButton size="sm" variant="outline-primary" @click="sessions.restoreAll()">Restore all</BButton>
+                <BButton
+                  size="sm"
+                  variant="outline-primary"
+                  :disabled="!canRestoreAll"
+                  :title="canRestoreAll ? undefined : NO_PERMISSION_MESSAGE"
+                  @click="sessions.restoreAll()"
+                >
+                  Restore all
+                </BButton>
               </div>
               <RestorableRow
                 v-for="manifest in sessions.manifests"
                 :key="manifest.session_id"
                 :manifest="manifest"
+                :disabled="!canRestore(manifest)"
                 @restore="sessions.restoreSession(manifest)"
               />
               <div v-if="!sessions.manifests.length" class="text-secondary text-center py-4">

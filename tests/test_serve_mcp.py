@@ -17,6 +17,7 @@ from winslow.serve.app import ServeApp
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 
+from harness import TOKEN, serve_credentials
 from harness import (
     bare_orchestrator,
     build_workflow,
@@ -24,8 +25,6 @@ from harness import (
     scratch_state_store,
     wait_for_status,
 )
-
-TOKEN = "test-token"
 
 
 def registered(e2e_repo):
@@ -38,7 +37,7 @@ def registered(e2e_repo):
 
 
 def mcp_app(registry, credentials=None):
-    credentials = credentials or Credentials(token=TOKEN, require_credential=True)
+    credentials = credentials or serve_credentials()
     return create_app(
         registry,
         credentials,
@@ -141,15 +140,17 @@ def test_a_loopback_bind_serves_mcp_without_auth(e2e_repo):
     assert row["session_id"] == session.session_id
 
 
-def test_the_mcp_door_without_the_token_refuses_at_build():
-    with pytest.raises(MisconfigurationError, match="needs WINSLOW_TOKEN"):
-        create_app(
-            SessionRegistry(),
-            Credentials(token=None, require_credential=True),
-            orchestrator=bare_orchestrator(),
-            state_store=scratch_state_store(),
-            endpoints=("mcp",),
-        )
+def test_the_mcp_door_builds_without_a_ticket_secret():
+    """A non-loopback bind accepts per-user tokens, so the mount needs no
+    secret (see Credentials.verify_bearer)."""
+    app = create_app(
+        SessionRegistry(),
+        Credentials(require_credential=True),
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        endpoints=("mcp",),
+    )
+    assert app is not None
 
 
 def test_an_unknown_door_refuses_at_build():
@@ -181,7 +182,7 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
     orchestrator = serve_orchestrator(e2e_repo)
     app = create_app(
         SessionRegistry(),
-        Credentials(token=TOKEN, require_credential=True),
+        serve_credentials(),
         endpoints=("ws", "mcp"),
         base_url="http://testserver",
         orchestrator=orchestrator,

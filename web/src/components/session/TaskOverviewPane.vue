@@ -52,7 +52,7 @@ const groups = computed<[string, TaskRef[]][]>(() => {
 </script>
 
 <template>
-  <div v-if="!info" class="d-flex align-items-center justify-content-center h-100 text-secondary">
+  <div v-if="!info" class="d-flex align-items-center justify-content-center flex-grow-1 text-secondary">
     Select a task to see the details.
   </div>
   <div v-else class="pane-body">

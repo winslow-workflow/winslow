@@ -1,3 +1,4 @@
+import contextvars
 import threading
 from itertools import groupby
 
@@ -77,9 +78,11 @@ class HeadlessRunner(BaseRunner):
         batch, tasks = self._open_batch(action, tasks, options)
         if batch is None:
             return None
+        # The worker runs under a copy of the submitter's context, so the whole
+        # batch carries the user of the request (see winslow.task.context).
         worker = threading.Thread(
-            target=self._execute_batch,
-            args=(batch, tasks, body),
+            target=contextvars.copy_context().run,
+            args=(self._execute_batch, batch, tasks, body),
             name=f"winslow-batch-{batch.uuid[:8]}",
         )
         batch.attach_worker(worker)

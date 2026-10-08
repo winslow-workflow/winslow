@@ -39,8 +39,6 @@ from harness import (
 
 from test_serve_actions import connect, frames_until, registered, serve_orchestrator
 
-TOKEN = "test-token"
-
 
 def registered_workflow(e2e_repo, name, mode=Mode.TUI):
     workflow = build_workflow(e2e_repo, name, mode)
@@ -99,14 +97,13 @@ def wait_for_cache_value(ws, session_id, cache_name, entry_name, state, timeout=
 
 def test_snapshot_request_answers_after_the_session_end(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    session.end()
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline and session.status.name != "ENDED":
-        time.sleep(0.01)
-    result = request(ws, "s-3", "snapshot", session_id=session.session_id)
-    assert result["result"]["status"] == "ENDED"
-    ws.close()
+    with connect(registry) as ws:
+        session.end()
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and session.status.name != "ENDED":
+            time.sleep(0.01)
+        result = request(ws, "s-3", "snapshot", session_id=session.session_id)
+        assert result["result"]["status"] == "ENDED"
 
 
 # --- roster ------------------------------------------------------------------
@@ -114,92 +111,86 @@ def test_snapshot_request_answers_after_the_session_end(e2e_repo):
 
 def test_cache_value_refuses_an_unknown_entry(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-5",
-            "kind": "cache_value",
-            "session_id": session.session_id,
-            "cache_name": "weather",
-            "entry_name": "nope",
-        }
-    )
-    assert "has no entry 'nope'" in frames_until(ws, ErrorFrame)["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-5",
+                "kind": "cache_value",
+                "session_id": session.session_id,
+                "cache_name": "weather",
+                "entry_name": "nope",
+            }
+        )
+        assert "has no entry 'nope'" in frames_until(ws, ErrorFrame)["reason"]
 
 
 def test_cache_entries_action_refuses_an_unknown_cache(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(
-        ws,
-        "r-10",
-        session.session_id,
-        "load_cache_entries",
-        entries=[["nope", "cities"]],
-    )
-    assert ack["accepted"] is False
-    assert "'nope' names no cache" in ack["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ack = action(
+            ws,
+            "r-10",
+            session.session_id,
+            "load_cache_entries",
+            entries=[["nope", "cities"]],
+        )
+        assert ack["accepted"] is False
+        assert "'nope' names no cache" in ack["reason"]
 
 
 def test_cache_entries_action_refuses_an_unknown_entry(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(
-        ws,
-        "r-42",
-        session.session_id,
-        "load_cache_entries",
-        entries=[["weather", "nope"]],
-    )
-    assert ack["accepted"] is False
-    assert "has no entry 'nope'" in ack["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ack = action(
+            ws,
+            "r-42",
+            session.session_id,
+            "load_cache_entries",
+            entries=[["weather", "nope"]],
+        )
+        assert ack["accepted"] is False
+        assert "has no entry 'nope'" in ack["reason"]
 
 
 def test_cache_entries_action_refuses_an_empty_entries_list(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(ws, "r-43", session.session_id, "load_cache_entries", entries=[])
-    assert ack["accepted"] is False
-    assert "entries list is empty" in ack["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ack = action(ws, "r-43", session.session_id, "load_cache_entries", entries=[])
+        assert ack["accepted"] is False
+        assert "entries list is empty" in ack["reason"]
 
 
 def test_clear_cache_entries_action_takes_a_multi_pair_list(e2e_repo):
     """The "clear all" case the spec singles out: one action, every visible
     pair, not one action per entry."""
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ack = action(
-        ws,
-        "r-44",
-        session.session_id,
-        "clear_cache_entries",
-        entries=[["weather", "cities"], ["weather", "city_index"]],
-    )
-    assert ack["accepted"] is True
-    wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
-    result = request(ws, "r-45", "caches", session_id=session.session_id)
-    (weather,) = [c for c in result["result"] if c["name"] == "weather"]
-    assert "cities" not in weather["values"]
-    assert "city_index" not in weather["values"]
-    ws.close()
+    with connect(registry) as ws:
+        ack = action(
+            ws,
+            "r-44",
+            session.session_id,
+            "clear_cache_entries",
+            entries=[["weather", "cities"], ["weather", "city_index"]],
+        )
+        assert ack["accepted"] is True
+        wait_for_cache_value(ws, session.session_id, "weather", "cities", "cold")
+        result = request(ws, "r-45", "caches", session_id=session.session_id)
+        (weather,) = [c for c in result["result"] if c["name"] == "weather"]
+        assert "cities" not in weather["values"]
+        assert "city_index" not in weather["values"]
 
 
 def test_cache_updated_fires_on_a_live_invalidation(e2e_repo):
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
     refresh = by_name(workflow)["RefreshForecast"]
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    action(ws, "r-11", session.session_id, "run_tasks", keys=[refresh.identity_key])
-    frame = frames_until(ws, CacheUpdatedLane)
-    assert frame["cache_name"] == "weather"
-    ws.close()
+        action(ws, "r-11", session.session_id, "run_tasks", keys=[refresh.identity_key])
+        frame = frames_until(ws, CacheUpdatedLane)
+        assert frame["cache_name"] == "weather"
 
 
 def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
@@ -207,20 +198,19 @@ def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
     effect of a task run (see test_cache_updated_fires_on_a_live_invalidation,
     which drives invalidation through RUN_TASKS instead)."""
     workflow, session, registry = registered_workflow(e2e_repo, "my-cache")
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    action(
-        ws,
-        "r-49",
-        session.session_id,
-        "clear_cache_entries",
-        entries=[["weather", "cities"]],
-    )
-    frame = frames_until(ws, CacheUpdatedLane)
-    assert frame["cache_name"] == "weather"
-    ws.close()
+        action(
+            ws,
+            "r-49",
+            session.session_id,
+            "clear_cache_entries",
+            entries=[["weather", "cities"]],
+        )
+        frame = frames_until(ws, CacheUpdatedLane)
+        assert frame["cache_name"] == "weather"
 
 
 # --- record_detail, history tasks -----------------------------------------
@@ -228,14 +218,13 @@ def test_clear_cache_entries_action_itself_fires_cache_updated(e2e_repo):
 
 def test_session_rows_carry_display_and_progress_fields(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    (row,) = request(ws, "r-1", "sessions")["result"]
-    assert row["display_name"] == workflow.get_display_name()
-    assert row["instance_name"] == workflow.instance_name
-    assert row["started_at"] == session.start
-    assert row["task_status_summary"]["total"] > 0
-    assert row["root_dir"] == workflow.root_dir
-    ws.close()
+    with connect(registry) as ws:
+        (row,) = request(ws, "r-1", "sessions")["result"]
+        assert row["display_name"] == workflow.get_display_name()
+        assert row["instance_name"] == workflow.instance_name
+        assert row["started_at"] == session.start
+        assert row["task_status_summary"]["total"] > 0
+        assert row["root_dir"] == workflow.root_dir
 
 
 # --- batch options ---------------------------------------------------------------
@@ -243,16 +232,15 @@ def test_session_rows_carry_display_and_progress_fields(e2e_repo):
 
 def test_session_log_subscription_streams_the_workflow_logger(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    # A non-debug orchestrator config keeps the console-facing logger at
-    # WARNING; warning() is the level a session actually surfaces here.
-    workflow.logger.warning("hello from the session logger")
-    frame = frames_until(ws, SessionLogBatchLane)
-    assert any("hello from the session logger" in line for line in frame["lines"])
-    ws.close()
+        # A non-debug orchestrator config keeps the console-facing logger at
+        # WARNING; warning() is the level a session actually surfaces here.
+        workflow.logger.warning("hello from the session logger")
+        frame = frames_until(ws, SessionLogBatchLane)
+        assert any("hello from the session logger" in line for line in frame["lines"])
 
 
 def test_session_log_backlog_serves_lines_logged_before_any_subscribe(
@@ -263,42 +251,39 @@ def test_session_log_backlog_serves_lines_logged_before_any_subscribe(
     later (see SessionLogBuffer)."""
     orchestrator = serve_orchestrator(e2e_repo)
     registry = SessionRegistry()
-    ws = connect(registry, orchestrator=orchestrator, state_store=state_store)
+    with connect(registry, orchestrator=orchestrator, state_store=state_store) as ws:
+        created = request(ws, "r-51", "create_session", workflow="my-workflow")
+        session = registry.get(created["result"]["session_id"])
+        session.workflow.logger.warning("logged before anyone subscribed")
 
-    created = request(ws, "r-51", "create_session", workflow="my-workflow")
-    session = registry.get(created["result"]["session_id"])
-    session.workflow.logger.warning("logged before anyone subscribed")
-
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    snapshot = ws.receive_json()
-    assert snapshot["type"] == SnapshotFrame.type
-    assert any(
-        "logged before anyone subscribed" in line
-        for line in snapshot["snapshot"]["session_log_backlog"]
-    )
-    ws.close()
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        snapshot = ws.receive_json()
+        assert snapshot["type"] == SnapshotFrame.type
+        assert any(
+            "logged before anyone subscribed" in line
+            for line in snapshot["snapshot"]["session_log_backlog"]
+        )
 
 
 def test_subscribe_task_log_refuses_without_a_prior_session_subscribe(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": TaskLogSubscribeFrame.type,
-            "request_id": "r-52",
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-52"
-    assert "subscribe" in error["reason"]
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": TaskLogSubscribeFrame.type,
+                "request_id": "r-52",
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-52"
+        assert "subscribe" in error["reason"]
 
-    # The connection is still healthy: subscribing properly now works.
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
-    ws.close()
+        # The connection is still healthy: subscribing properly now works.
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
 
 def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypatch):
@@ -312,36 +297,35 @@ def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypa
 
     monkeypatch.setattr(type(alpha), "run", run)
 
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
-    ws.send_json(
-        {
-            "type": TaskLogSubscribeFrame.type,
-            "request_id": "tl-1",
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    backlog = frames_until(ws, TaskLogBacklogFrame)
-    assert backlog["lines"] == []
+        ws.send_json(
+            {
+                "type": TaskLogSubscribeFrame.type,
+                "request_id": "tl-1",
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        backlog = frames_until(ws, TaskLogBacklogFrame)
+        assert backlog["lines"] == []
 
-    action(ws, "r-22", session.session_id, "run_tasks", keys=[alpha.identity_key])
-    frame = frames_until(ws, TaskLogBatchLane)
-    assert frame["task_key"] == alpha.identity_key
-    assert any("alpha task-log hello" in line for line in frame["lines"])
+        action(ws, "r-22", session.session_id, "run_tasks", keys=[alpha.identity_key])
+        frame = frames_until(ws, TaskLogBatchLane)
+        assert frame["task_key"] == alpha.identity_key
+        assert any("alpha task-log hello" in line for line in frame["lines"])
 
-    ws.send_json(
-        {
-            "type": TaskLogUnsubscribeFrame.type,
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    # The unsubscribe is fire and forget: the connection stays healthy.
-    assert request(ws, "r-23", "batch_options", session_id=session.session_id)
-    ws.close()
+        ws.send_json(
+            {
+                "type": TaskLogUnsubscribeFrame.type,
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        # The unsubscribe is fire and forget: the connection stays healthy.
+        assert request(ws, "r-23", "batch_options", session_id=session.session_id)
 
 
 # --- manifests and restore_session ------------------------------------------
@@ -349,12 +333,13 @@ def test_task_log_subscription_serves_backlog_then_live_lines(e2e_repo, monkeypa
 
 def test_descriptor_option_rows_carry_action_const_and_initial(e2e_repo):
     orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator)
-    result = request(ws, "r-27", "descriptors")
-    (row,) = [o for o in result["result"]["overrides"] if o["name"] == "clear_cache"]
-    assert row["action"] == "store_true"
-    assert "initial" in row
-    ws.close()
+    with connect(SessionRegistry(), orchestrator=orchestrator) as ws:
+        result = request(ws, "r-27", "descriptors")
+        (row,) = [
+            o for o in result["result"]["overrides"] if o["name"] == "clear_cache"
+        ]
+        assert row["action"] == "store_true"
+        assert "initial" in row
 
 
 def test_workflow_option_initial_prefills_from_cli_args(e2e_repo):
@@ -362,14 +347,13 @@ def test_workflow_option_initial_prefills_from_cli_args(e2e_repo):
     the serve process's own CLI invocation supplied, not the class default
     (see Orchestrator.collect_workflow_args)."""
     orchestrator = serve_orchestrator(e2e_repo, "--client", "acme")
-    ws = connect(SessionRegistry(), orchestrator=orchestrator)
-    result = request(ws, "r-34", "descriptors")["result"]
-    identified = next(
-        row for row in result["workflows"] if row["workflow"] == "my-identified"
-    )
-    (client,) = [o for o in identified["options"] if o["name"] == "client"]
-    assert client["initial"] == "acme"
-    ws.close()
+    with connect(SessionRegistry(), orchestrator=orchestrator) as ws:
+        result = request(ws, "r-34", "descriptors")["result"]
+        identified = next(
+            row for row in result["workflows"] if row["workflow"] == "my-identified"
+        )
+        (client,) = [o for o in identified["options"] if o["name"] == "client"]
+        assert client["initial"] == "acme"
 
 
 # --- create_session error detail -------------------------------------------------
@@ -377,19 +361,20 @@ def test_workflow_option_initial_prefills_from_cli_args(e2e_repo):
 
 def test_create_session_error_carries_a_traceback_detail(e2e_repo, state_store):
     orchestrator = serve_orchestrator(e2e_repo)
-    ws = connect(SessionRegistry(), orchestrator=orchestrator, state_store=state_store)
-    ws.send_json(
-        {
-            "type": RequestFrame.type,
-            "request_id": "r-28",
-            "kind": "create_session",
-            "workflow": "my-identified",
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "requires client" in error["reason"]
-    assert "Traceback" in error["detail"]
-    ws.close()
+    with connect(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    ) as ws:
+        ws.send_json(
+            {
+                "type": RequestFrame.type,
+                "request_id": "r-28",
+                "kind": "create_session",
+                "workflow": "my-identified",
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "requires client" in error["reason"]
+        assert "Traceback" in error["detail"]
 
 
 # --- task_detail parity: workflow.task_info fills checked_at ---------------------
@@ -405,18 +390,17 @@ def test_task_detail_fills_checked_at_from_the_snapshot(e2e_repo, state_store):
     registry = SessionRegistry()
     registry.register(session)
     alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    action(ws, "r-29", session.session_id, "run_tasks", keys=[alpha.identity_key])
-    wait_for_status(workflow, alpha, S.COMPLETED)
-    result = request(
-        ws,
-        "r-30",
-        "task_detail",
-        session_id=session.session_id,
-        task_key=alpha.identity_key,
-    )
-    assert result["result"]["checked_at"] is not None
-    ws.close()
+    with connect(registry) as ws:
+        action(ws, "r-29", session.session_id, "run_tasks", keys=[alpha.identity_key])
+        wait_for_status(workflow, alpha, S.COMPLETED)
+        result = request(
+            ws,
+            "r-30",
+            "task_detail",
+            session_id=session.session_id,
+            task_key=alpha.identity_key,
+        )
+        assert result["result"]["checked_at"] is not None
 
 
 # --- envelope validation at the serve edge ---------------------------------------
@@ -426,103 +410,99 @@ def test_a_malformed_action_frame_answers_an_error_and_the_connection_survives(
     e2e_repo,
 ):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {"type": ActionFrame.type, "request_id": "r-31", "action": "run_tasks"}
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-31"
-    assert "malformed" in error["reason"]
+    with connect(registry) as ws:
+        ws.send_json(
+            {"type": ActionFrame.type, "request_id": "r-31", "action": "run_tasks"}
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-31"
+        assert "malformed" in error["reason"]
 
-    # The connection is still alive: a valid frame answers normally.
-    result = request(ws, "r-32", "batch_options", session_id=session.session_id)
-    assert result["request_id"] == "r-32"
-    ws.close()
+        # The connection is still alive: a valid frame answers normally.
+        result = request(ws, "r-32", "batch_options", session_id=session.session_id)
+        assert result["request_id"] == "r-32"
 
 
 def test_a_request_frame_naming_no_kind_answers_names_no_request(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json({"type": RequestFrame.type, "request_id": "r-33"})
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-33"
-    assert "names no request" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json({"type": RequestFrame.type, "request_id": "r-33"})
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-33"
+        assert "names no request" in error["reason"]
 
 
 def test_a_request_frame_missing_a_required_field_answers_malformed(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json({"type": RequestFrame.type, "kind": "log_tail", "request_id": "r-34"})
-    error = frames_until(ws, ErrorFrame)
-    assert error["request_id"] == "r-34"
-    assert "malformed" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {"type": RequestFrame.type, "kind": "log_tail", "request_id": "r-34"}
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert error["request_id"] == "r-34"
+        assert "malformed" in error["reason"]
 
 
 def test_a_valid_json_non_dict_frame_answers_an_error_and_the_connection_survives(
     e2e_repo,
 ):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json([1, 2])
-    error = frames_until(ws, ErrorFrame)
-    assert "must be a JSON object" in error["reason"]
+    with connect(registry) as ws:
+        ws.send_json([1, 2])
+        error = frames_until(ws, ErrorFrame)
+        assert "must be a JSON object" in error["reason"]
 
-    # The connection is still alive: a valid frame answers normally.
-    result = request(ws, "r-35", "batch_options", session_id=session.session_id)
-    assert result["request_id"] == "r-35"
-    ws.close()
+        # The connection is still alive: a valid frame answers normally.
+        result = request(ws, "r-35", "batch_options", session_id=session.session_id)
+        assert result["request_id"] == "r-35"
 
 
 def test_a_binary_frame_answers_an_error_and_the_connection_survives(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_bytes(b"\x00\x01")
-    error = frames_until(ws, ErrorFrame)
-    assert "text message" in error["reason"]
+    with connect(registry) as ws:
+        ws.send_bytes(b"\x00\x01")
+        error = frames_until(ws, ErrorFrame)
+        assert "text message" in error["reason"]
 
-    # The connection is still alive: a valid frame answers normally.
-    result = request(ws, "r-36", "batch_options", session_id=session.session_id)
-    assert result["request_id"] == "r-36"
-    ws.close()
+        # The connection is still alive: a valid frame answers normally.
+        result = request(ws, "r-36", "batch_options", session_id=session.session_id)
+        assert result["request_id"] == "r-36"
 
 
 def test_an_unhashable_session_id_on_a_subscribe_frame_answers_an_error(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": ["not", "a", "string"]})
-    error = frames_until(ws, ErrorFrame)
-    assert "malformed" in error["reason"]
+    with connect(registry) as ws:
+        ws.send_json(
+            {"type": SubscribeFrame.type, "session_id": ["not", "a", "string"]}
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "malformed" in error["reason"]
 
-    # The connection is still alive: a valid frame answers normally.
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
-    ws.close()
+        # The connection is still alive: a valid frame answers normally.
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
 
 
 def test_an_unhashable_session_id_on_a_task_log_frame_answers_an_error(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json(
-        {
-            "type": TaskLogSubscribeFrame.type,
-            "session_id": {"not": "a string"},
-            "task_key": "whatever",
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "malformed" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json(
+            {
+                "type": TaskLogSubscribeFrame.type,
+                "session_id": {"not": "a string"},
+                "task_key": "whatever",
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "malformed" in error["reason"]
 
 
 def test_a_malformed_unsubscribe_frame_answers_an_error(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    ws = connect(registry)
-    ws.send_json({"type": UnsubscribeFrame.type})
-    error = frames_until(ws, ErrorFrame)
-    assert "malformed" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json({"type": UnsubscribeFrame.type})
+        error = frames_until(ws, ErrorFrame)
+        assert "malformed" in error["reason"]
 
 
 # --- ended sessions answer directional errors, not a generic 500 ------------------
@@ -531,18 +511,17 @@ def test_a_malformed_unsubscribe_frame_answers_an_error(e2e_repo):
 def test_subscribe_task_log_answers_a_directional_error_once_ended(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ws = connect(registry)
-    ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
-    assert ws.receive_json()["type"] == SnapshotFrame.type
-    session.end()
-    ws.send_json(
-        {
-            "type": TaskLogSubscribeFrame.type,
-            "request_id": "r-37",
-            "session_id": session.session_id,
-            "task_key": alpha.identity_key,
-        }
-    )
-    error = frames_until(ws, ErrorFrame)
-    assert "has ended" in error["reason"]
-    ws.close()
+    with connect(registry) as ws:
+        ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
+        assert ws.receive_json()["type"] == SnapshotFrame.type
+        session.end()
+        ws.send_json(
+            {
+                "type": TaskLogSubscribeFrame.type,
+                "request_id": "r-37",
+                "session_id": session.session_id,
+                "task_key": alpha.identity_key,
+            }
+        )
+        error = frames_until(ws, ErrorFrame)
+        assert "has ended" in error["reason"]

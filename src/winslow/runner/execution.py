@@ -195,6 +195,9 @@ class ExecutionBatch:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     execution_context: Optional["TaskExecutionContext"] = None
+    # The user of the request that submitted the batch, or None for a local run
+    # (see winslow.task.context.current_user).
+    user: str | None = None
     # Task identity keys, batch-scoped. The durable data stays in the
     # TaskStatus values, which fill this set again each batch.
     errored: set = field(default_factory=set)
@@ -280,11 +283,15 @@ def _detached_error(exc):
 
 
 def new_batch(uuid, action, tasks, execution_context, errored):
+    # A lazy import: winslow.task imports the runner package.
+    from winslow.task.context import current_user
+
     return ExecutionBatch(
         uuid=uuid,
         action=action,
         created_at=datetime.now(),
         task_count=len(tasks),
         execution_context=execution_context,
+        user=current_user(),
         errored=errored,
     )

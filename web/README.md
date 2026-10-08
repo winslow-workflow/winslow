@@ -45,4 +45,4 @@ at `/` and its `assets/` under `/assets/`. The router uses hash URLs, so the sam
 in serve mode and under any prefix of a host application. `base` is `./` for the same reason.
 
 The page reads `window.WINSLOW` for its configuration: `wsUrl` (default: `/ws` on the page origin),
-`ticket` and `ticketUrl` (see `docs/serve.md`).
+`credential` and `credentialUrl` (see `docs/serve.md`).

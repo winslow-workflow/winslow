@@ -39,6 +39,7 @@ body {
 }
 
 .pane-title {
+  flex: 0 0 auto;
   font-size: 0.75rem;
   letter-spacing: 0.04em;
   text-transform: uppercase;
@@ -54,6 +55,7 @@ body {
 }
 
 .pane-header {
+  flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem 0.75rem;
@@ -221,6 +223,8 @@ body {
   border-bottom: 1px solid var(--ws-border);
 }
 
+/* Every BTabs layer joins the flex chain from .pane to .pane-body, so the tab body scrolls. */
+.pane .tabs,
 .pane .tab-content,
 .pane .tab-pane {
   flex: 1 1 auto;

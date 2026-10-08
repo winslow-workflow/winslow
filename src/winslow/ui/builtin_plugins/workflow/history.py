@@ -32,7 +32,7 @@ from winslow.ui.modals.common import BaseModal
 from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.icons import get_task_icon
 from winslow.ui.reads import port_read
-from winslow.ui.widgets.common import TaskRowBase
+from winslow.ui.widgets.common import GuardedButton, TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.widgets.common.params_table import ParamsTable
 from winslow.ui.workflow_events import (
@@ -41,6 +41,7 @@ from winslow.ui.workflow_events import (
     ExecutionStatusChanged,
     TaskLogUpdated,
 )
+from winslow.permissions import Permission
 
 _CSS = package_css(__package__, "_pane_header.tcss", "history.tcss")
 
@@ -75,6 +76,8 @@ class BatchView:
     # (identity key, TaskOutcome or None) per task. An event view starts
     # with no outcomes; the completion refresh fills them (see HistoryPane).
     entries: tuple
+    # The user that submitted the batch, or None for a local run.
+    user: str | None = None
 
     @classmethod
     def from_history_row(cls, row):
@@ -86,6 +89,7 @@ class BatchView:
             created_at=row.created_at,
             options=row.options,
             entries=tuple(row.tasks.items()),
+            user=row.user,
         )
 
     @classmethod
@@ -98,6 +102,7 @@ class BatchView:
             created_at=info.created_at,
             options=info.options,
             entries=tuple((key, None) for key in info.tasks),
+            user=info.user,
         )
 
 
@@ -209,6 +214,23 @@ class BatchDetailModal(BaseModal):
                 yield ParamsTable(self.view.options or {})
 
 
+class StopButton(GuardedButton):
+    """The stop of one batch. active follows the batch status: a stop reaches
+    a queued or running batch alone (see ACTIVE_BATCH_STATUSES)."""
+
+    active = reactive(True)
+
+    def __init__(self, *args, active=True, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.active = active
+
+    def watch_active(self, active):
+        self._refresh_disabled()
+
+    def _enabled(self):
+        return self.active
+
+
 class BatchCard(Widget):
     def __init__(self, view, infos_by_key, *args, **kwargs):
         self.view = view
@@ -228,22 +250,27 @@ class BatchCard(Widget):
         ts = datetime.fromtimestamp(view.created_at).strftime("%H:%M:%S")
         short_uuid = str(view.uuid)[:8]
         self._title_prefix = f" {view.action}  ·  {ts}  ·  {short_uuid}"
+        if view.user:
+            self._title_prefix += f"  ·  {view.user}"
 
         options = view.options or {}
         pills = [(label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)]
 
-        stoppable = view.status in ACTIVE_BATCH_STATUSES
         with Horizontal(classes="batch-header"):
             with Horizontal(classes="batch-tags"):
                 for label, cls in pills:
                     yield Label(label, classes=f"tag {cls}")
             yield Button("info", classes="details-btn", variant="default")
             if view.task_count > 1:
-                yield Button(
+                yield StopButton(
                     "stop",
                     classes="stop-btn",
                     variant="warning",
-                    disabled=not stoppable,
+                    # A stop needs the permission that could have submitted the batch.
+                    permission=Permission.CHECK_TASK
+                    if view.action == "CHECK"
+                    else Permission.RUN_TASK,
+                    active=view.status in ACTIVE_BATCH_STATUSES,
                 )
 
         for key, outcome in view.entries:
@@ -260,7 +287,7 @@ class BatchCard(Widget):
     def batch_completed(self, info):
         self.view = replace(self.view, status=info.status)
         if self.view.task_count > 1:
-            self.query_one(".stop-btn", Button).disabled = True
+            self.query_one(StopButton).active = False
         self.refresh_title()
 
     @on(Button.Pressed, ".details-btn")
@@ -273,7 +300,7 @@ class BatchCard(Widget):
         # action handler through it. The acceptance means "stop requested".
         ack = self.screen.submit_action(StopBatch(batch_uuid=self.view.uuid))
         if ack.accepted:
-            self.query_one(".stop-btn", Button).disabled = True
+            self.query_one(StopButton).active = False
 
 
 class HistoryPane(QuerySearchMixin, Widget):

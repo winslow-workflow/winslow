@@ -1,7 +1,7 @@
 from textual import on
 from textual.reactive import reactive
 from textual.widget import Widget
-from textual.widgets import Static, Label, Button
+from textual.widgets import Static, Label
 from textual.containers import VerticalScroll, Horizontal
 from textual.message import Message
 
@@ -12,6 +12,7 @@ from winslow.task.status import (
 )
 
 from winslow.ui.widgets.common import (
+    GuardedButton,
     TaskStatusWidget,
     TaskStatusIcon,
     TaskStatusLabel,
@@ -19,7 +20,8 @@ from winslow.ui.widgets.common import (
     InlineLog,
 )
 
-from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
+from winslow.ui.actions import TaskActionEnum
+from winslow.permissions import Permission
 
 
 # The UI hides the action buttons, and does not disable them, for a status that a
@@ -27,18 +29,19 @@ from winslow.ui.actions import TaskActionEnum, SESSION_ENDING_MESSAGE
 NO_ACTION_STATUSES = frozenset((TaskStatus.SKIPPED,))
 
 
-class TaskButton(Button):
+class TaskButton(GuardedButton):
+    """One task action. The status of the task decides the enabled state,
+    after the permission and the ending lock (see GuardedButton)."""
+
     ACTION = None
     LABEL = None
     VARIANT = None
     ENABLED_STATUSES = None
     HIDDEN_STATUSES = None
-    # True if this button starts a batch. Such a button locks while the session
-    # drains.
+    PERMISSION = Permission.VIEW_TASK
     BLOCKS_ON_ENDING = False
 
     status = reactive(None)
-    session_ending = reactive(False)
 
     class TaskAction(Message):
         """The payload is the identity key; the screen resolves it through
@@ -50,7 +53,12 @@ class TaskButton(Button):
             super().__init__()
 
     def __init__(self, key, action, *args, **kwargs):
-        super().__init__(label=self.LABEL, variant=self.VARIANT)
+        super().__init__(
+            self.LABEL,
+            variant=self.VARIANT,
+            permission=self.PERMISSION,
+            blocks_on_ending=self.BLOCKS_ON_ENDING,
+        )
 
         self.key = key
         self.action = action
@@ -64,20 +72,10 @@ class TaskButton(Button):
             self.display = status not in self.HIDDEN_STATUSES
         self._refresh_disabled()
 
-    def watch_session_ending(self, ending):
-        self._refresh_disabled()
-
-    def _refresh_disabled(self):
-        # A status update still arrives while the drain runs, so the lock of the
-        # ending session has priority over the status at each recompute.
-        if self.BLOCKS_ON_ENDING and self.session_ending:
-            self.disabled = True
-            self.tooltip = SESSION_ENDING_MESSAGE
-            return
+    def _enabled(self):
         if not self.ENABLED_STATUSES:
-            self.disabled = False
-        else:
-            self.disabled = self.status not in self.ENABLED_STATUSES
+            return True
+        return self.status in self.ENABLED_STATUSES
 
 
 class RunButton(TaskButton):
@@ -87,6 +85,7 @@ class RunButton(TaskButton):
     HIDDEN_STATUSES = NO_ACTION_STATUSES
     ACTION = TaskActionEnum.RUN
     BLOCKS_ON_ENDING = True
+    PERMISSION = Permission.RUN_TASK
 
 
 class CheckButton(TaskButton):
@@ -96,6 +95,7 @@ class CheckButton(TaskButton):
     HIDDEN_STATUSES = NO_ACTION_STATUSES
     ACTION = TaskActionEnum.CHECK
     BLOCKS_ON_ENDING = True
+    PERMISSION = Permission.CHECK_TASK
 
 
 class InfoButton(TaskButton):

@@ -7,9 +7,13 @@ from enum import Enum
 from winslow.actions import ActionHandler
 from winslow.exceptions import SessionEndingError
 from winslow.logger import SessionLogBuffer, release_session_logging, run_logger_name
-from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES
+from winslow.task.status import (
+    PASSING_STATUSES,
+    PROBLEMATIC_STATUSES,
+    UNSATISFIED_STATUSES,
+)
 from winslow.telemetry import emit_unscoped_error
-from winslow.task.context import LogContext, scoped_log_context
+from winslow.task.context import LogContext, current_user, scoped_log_context
 from winslow.task.info import release_session_caches
 from winslow.util import generate_id
 
@@ -34,6 +38,11 @@ class Session:
         # Set when the session ends. It freezes elapsed and marks the session as
         # history.
         self.ended_at = None
+        # The user that started the session and the user that asked for its end
+        # (see create_session, end). None for a local start, and for a session
+        # that ends by itself.
+        self.user = None
+        self.ended_by = None
         # A snapshot of task_status_summary, taken at the end. The store is
         # cleared at that moment.
         self._final_summary = None
@@ -120,6 +129,9 @@ class Session:
             if self.has_ended or self.is_ending:
                 return
             self.status = SessionStatus.ENDING
+            # Captured at the call: the finalization can run later, on the
+            # thread of the last batch, under the scope of that batch.
+            self.ended_by = current_user()
             if self.active_batches:
                 return
             self._finalize_end()
@@ -177,6 +189,18 @@ class Session:
                 workflow_class=type(self.workflow).__name__,
                 session_id=self.session_id,
             )
+
+    @property
+    def permission_scope(self):
+        return type(self.workflow).get_permission_scope()
+
+    @property
+    def unsettled_count(self):
+        """The tasks that are neither passing nor skipped. Zero means the
+        session is settled (see UNSATISFIED_STATUSES)."""
+        if self._final_summary is not None:
+            return 0
+        return sum(1 for s in self.workflow.store.values() if s in UNSATISFIED_STATUSES)
 
     @property
     def task_status_summary(self):
@@ -312,12 +336,15 @@ def create_session(
     session_id=None,
     seed=False,
     origin="serve",
+    user=None,
 ):
     """Build, initialize, persist, and register one session: the shared flow
     behind the serve create_session request and the local AppClient. origin
-    stamps the manifest with the endpoint that created the session. Raises with
-    a directional message on an unknown workflow; a failure after
-    registration marks the session errored and unregisters it.
+    stamps the manifest with the endpoint that created the session, user with
+    the person: the ambient user of the request by default, or the stored user
+    of a manifest on a restore. Raises with a directional message on an
+    unknown workflow; a failure after registration marks the session errored
+    and unregisters it.
 
     session_id and seed serve a restore: the caller passes the id of the
     stored manifest, so the session rebuilds under it, and seed=True replays
@@ -370,6 +397,7 @@ def create_session(
             logger=workflow_logger,
         )
         session = Session(workflow, session_id=session_id, log_buffer=log_buffer)
+        session.user = current_user() if user is None else user
         registry.register(session)
         try:
             workflow.initialize_tasks(logger=workflow.logger)
@@ -385,6 +413,7 @@ def create_session(
                 workflow_values=effective_workflow_values(
                     workflow_kls, workflow_base, workflow_values
                 ),
+                user=session.user,
             )
             if seed:
                 # After the eligibility pass: that pass overwrites earlier

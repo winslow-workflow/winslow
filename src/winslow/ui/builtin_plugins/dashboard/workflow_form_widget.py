@@ -7,13 +7,15 @@ from textual.widgets import (
     RadioSet,
     RadioButton,
     Rule,
-    Button,
 )
 
 from textual.containers import VerticalScroll, Horizontal
 
+from winslow.ui.widgets.common import GuardedButton
+
 from winslow.ui.widgets.common import FilterableOptionList
 from winslow.ui.validation import ORCHESTRATOR_FIELD, WORKFLOW_FIELD
+from winslow.permissions import Permission
 
 
 class FormLabel(Label):
@@ -154,10 +156,13 @@ class WorkflowFormGenerator:
                 yield Rule()
                 yield Vertical(
                     Center(
-                        Button.success(
+                        GuardedButton(
                             "Start Workflow",
+                            variant="success",
                             name=workflow_name,
                             classes="workflow-start",
+                            permission=Permission.START_WORKFLOW,
+                            scope_name=descriptor.permission_scope,
                         )
                     ),
                     Center(Label("", classes="form-error-summary hidden")),

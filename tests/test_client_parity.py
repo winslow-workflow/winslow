@@ -64,6 +64,10 @@ TIME_KEYS = frozenset(
     }
 )
 
+# The user fields of the DTOs: the in-process client stamps None, the wire
+# client the hello user, by design (see winslow.task.context.current_user).
+USER_KEYS = frozenset({"user", "ended_by", "written_by"})
+
 LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC")
 BATCH_UUID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
 ADDRESS = re.compile(r"0x[0-9a-f]+")
@@ -105,6 +109,8 @@ def canonical(value, names, key=None):
     if isinstance(value, (list, tuple)):
         items = [canonical(item, names, key) for item in value]
         return sorted(items) if key == "session_log_backlog" else items
+    if key in USER_KEYS:
+        return "<user>"
     if isinstance(value, str):
         return normalize_text(value, names)
     if isinstance(value, float) and key in TIME_KEYS:

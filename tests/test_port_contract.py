@@ -41,6 +41,7 @@ from winslow.session import SessionRegistry
 from test_client_websocket import TOKEN, ServedProcess
 from test_serve_actions import serve_orchestrator
 
+from harness import serve_credentials
 from harness import bare_orchestrator, scratch_state_store
 
 
@@ -267,11 +268,11 @@ class McpServedProcess(ServedProcess):
     """A served process with the MCP endpoint mounted next to the websocket."""
 
     def __init__(self, registry, orchestrator=None, state_store=None):
-        from winslow.serve import Credentials, create_app
+        from winslow.serve import create_app
 
         self.app = create_app(
             registry,
-            Credentials(token=TOKEN, require_credential=True),
+            serve_credentials(),
             hello_timeout=2.0,
             orchestrator=orchestrator or bare_orchestrator(),
             state_store=state_store or scratch_state_store(),

@@ -136,11 +136,16 @@ class ContextStampFilter(logging.Filter):
         # A lazy import. winslow.task.context and winslow.logger would otherwise
         # make an import cycle. decorators.py imports it lazily for the same
         # reason.
-        from winslow.task.context import get_log_context
+        from winslow.task.context import current_permissions, get_log_context
 
         ctx = get_log_context()
         for field in self.FIELDS:
             setattr(record, field, getattr(ctx, field, None) if ctx else None)
+        # The user and the credential come from the permission scope: a request
+        # sets it once, and a task scope inside the request keeps it.
+        permissions = current_permissions()
+        record.user = permissions.user if permissions else None
+        record.credential = permissions.credential if permissions else None
         return True
 
 
@@ -285,20 +290,26 @@ class StructuredFormatter(logging.Formatter):
         return None
 
     def format(self, record):
-        return json.dumps(
-            {
-                "ts": self.formatTime(record, self.datefmt),
-                "level": record.levelname,
-                "session_id": getattr(record, "session_id", None),
-                "workflow_name": getattr(record, "workflow_name", None),
-                "workflow_instance": getattr(record, "workflow_instance", None),
-                "task_name": getattr(record, "task_name", None),
-                "task_instance": getattr(record, "task_instance", None),
-                "batch_uuid": getattr(record, "batch_uuid", None),
-                "message": record.getMessage(),
-                "traceback": self._traceback(record),
-            }
-        )
+        payload = {
+            "ts": self.formatTime(record, self.datefmt),
+            "level": record.levelname,
+            "session_id": getattr(record, "session_id", None),
+            "workflow_name": getattr(record, "workflow_name", None),
+            "workflow_instance": getattr(record, "workflow_instance", None),
+            "task_name": getattr(record, "task_name", None),
+            "task_instance": getattr(record, "task_instance", None),
+            "batch_uuid": getattr(record, "batch_uuid", None),
+            "user": getattr(record, "user", None),
+            "credential": getattr(record, "credential", None),
+            "message": record.getMessage(),
+            "traceback": self._traceback(record),
+        }
+        # The fields of an audit line travel as data beside the message (see
+        # winslow.authz.audit).
+        audit = getattr(record, "audit", None)
+        if audit is not None:
+            payload["audit"] = audit
+        return json.dumps(payload)
 
 
 def stdout_json_sink():
