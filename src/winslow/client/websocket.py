@@ -9,14 +9,13 @@ import json
 import threading
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, InvalidStateError, wait
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from enum import Enum, auto
 from urllib.parse import urlsplit, urlunsplit
 
 from websockets.exceptions import WebSocketException
 from websockets.sync.client import connect as websocket_connect
 
-from winslow.actions import Ack, Action
 from winslow.client.base import AppClient, SessionClient
 from winslow.protocol.codec import CODEC
 from winslow.events import (
@@ -24,7 +23,8 @@ from winslow.events import (
 )
 from winslow.exceptions import MisconfigurationError, RequestError
 from winslow.logger import LOGGER
-from winslow.permissions import PermissionContext, parse_scopes
+from winslow.access.backends import GivenCredential
+from winslow.access.permissions import PermissionContext, parse_scopes
 from winslow.model import (
     EnvInfo,
     ConnectionEvent,
@@ -106,9 +106,11 @@ class Wire:
     to a pending exchange or a session lane. On a dropped connection it
     reconnects with backoff, replays the hello, and resubscribes every lane."""
 
-    def __init__(self, url, token=None, open_timeout=OPEN_TIMEOUT):
+    def __init__(self, url, credential, open_timeout=OPEN_TIMEOUT):
         self.url = normalize_url(url)
-        self.token = token
+        # Asked on every open, so a reconnect sends a renewed credential (see
+        # StoredCredential).
+        self.credential = credential
         self.open_timeout = open_timeout
         # Before connect, a Link with no socket refuses every send (see _send).
         self._link = Link(websocket=None)
@@ -248,39 +250,27 @@ class Wire:
         traceback for the create and restore error modal."""
         return RequestError(frame.reason, detail=frame.detail)
 
-    def action(self, session_id, action):
+    def action(self, session_id, spec, fields):
         """One action frame, blocking until its ack. A transport failure
         answers a refused ack, the same contract as the handler
         (see ActionHandler)."""
-        if not isinstance(action, Action):
-            return Ack(
-                accepted=False,
-                reason=f"{type(action).__name__} names no action of the wire - "
-                f"the actions are {sorted(Action.by_name)}.",
-            )
         try:
             frame = self.exchange(
-                ActionFrame,
-                session_id=session_id,
-                action=type(action).name,
-                fields=asdict(action),
+                ActionFrame, session_id=session_id, action=spec.name, fields=fields
             )
         except (ConnectionError, TimeoutError, RequestError) as exc:
-            return self._refused(action, str(exc))
-        return action.ack_class(**frame.ack)
-
-    @classmethod
-    def _refused(cls, action, reason):
-        return action.ack_class(accepted=False, reason=reason)
+            return spec.refused(str(exc))
+        return CODEC.decode(spec.ack, frame.ack)
 
     # --- the receiver thread -----------------------------------------------------
 
     def _open(self):
         """Open one socket and complete the handshake: send hello, then read
         hello_ok."""
+        token = self.credential.token()
         websocket = websocket_connect(self.url, open_timeout=self.open_timeout)
         try:
-            websocket.send(encode_frame(HelloFrame(token=self.token)))
+            websocket.send(encode_frame(HelloFrame(token=token)))
             reply = decode_frame(json.loads(websocket.recv(timeout=self.open_timeout)))
             if not isinstance(reply, HelloOkFrame):
                 # The server does not know the URL the person typed, so the
@@ -288,12 +278,12 @@ class Wire:
                 login = (
                     f". Run `winslow auth login {self.url}` to store a credential "
                     f"for this server"
-                    if self.token is None
+                    if token is None
                     else ""
                 )
                 raise MisconfigurationError(
                     f"{self.url} refused the connection - "
-                    f"{getattr(reply, 'reason', 'no hello_ok answer')}{login}"
+                    f"{getattr(reply, 'reason', 'no answer')}{login}"
                 )
             self.hello = reply
         except BaseException:
@@ -384,8 +374,11 @@ class RemoteAppClient(AppClient):
     socket and must run before the first read. A read the server refuses
     raises RequestError (see winslow.client.base)."""
 
-    def __init__(self, url, token=None, open_timeout=OPEN_TIMEOUT):
-        self.wire = Wire(url, token=token, open_timeout=open_timeout)
+    def __init__(self, url, token=None, credential=None, open_timeout=OPEN_TIMEOUT):
+        """token is one credential string. credential is an object the wire
+        asks for one on every open (see StoredCredential)."""
+        credential = credential or GivenCredential(token)
+        self.wire = Wire(url, credential, open_timeout=open_timeout)
 
     def connect(self):
         self.wire.connect()
@@ -398,9 +391,12 @@ class RemoteAppClient(AppClient):
         frame = self.wire.request(spec, **spec.bind(args, kwargs))
         return _decode(spec, frame)
 
+    def submit(self, spec, *args, **kwargs):
+        return self.wire.action(None, spec, spec.bind(args, kwargs))
+
     def environment(self):
         hello = self.wire.hello
-        return EnvInfo(name=hello.env, color=hello.env_color)
+        return EnvInfo(service=hello.service, name=hello.env, color=hello.env_color)
 
     def permissions(self):
         hello = self.wire.hello
@@ -413,6 +409,7 @@ class RemoteAppClient(AppClient):
             ),
             credential=hello.credential,
             expires_at=hello.expires_at,
+            credential_id=hello.credential_id,
         )
 
     def session(self, session_id):
@@ -545,8 +542,8 @@ class RemoteSessionClient(SessionClient):
 
     # --- actions ----------------------------------------------------------------
 
-    def submit(self, action):
-        return self.wire.action(self.session_id, action)
+    def submit(self, spec, *args, **kwargs):
+        return self.wire.action(self.session_id, spec, spec.bind(args, kwargs))
 
     # --- the lane: frames in, model events out -----------------------------------
 

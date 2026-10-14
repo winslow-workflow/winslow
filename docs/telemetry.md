@@ -62,19 +62,22 @@ The Sentry backend turns each error into one Sentry event.
 
 ### Configure the environment
 
-Set `SENTRY_DSN`; that is the whole integration. With the DSN present, the built-in
-`SentryConfiguration` activates for each run and flushes its events before the process exits
-(see [How activation works](#how-activation-works)).
+List the built-in `SentryConfiguration` in `TELEMETRY` and set `SENTRY_DSN`, both in the
+[settings module](settings.md). The configuration activates for each run and each serve, and flushes
+its events before the process exits (see [How activation works](#how-activation-works)).
 
-| Environment value    | Purpose                                        | When unset                 |
+```python title="etl/settings.py"
+from decouple import config
+
+TELEMETRY = ["winslow.contrib.sentry.SentryConfiguration"]
+SENTRY_DSN = config("SENTRY_DSN")
+```
+
+| Setting              | Purpose                                        | When None                  |
 | -------------------- | ---------------------------------------------- | -------------------------- |
-| `SENTRY_DSN`         | Activates the backend and selects the project. | The backend stays inactive. |
-| `SENTRY_ENVIRONMENT` | The `environment` tag of each event.           | Falls back to `WINSLOW_ENV`. |
+| `SENTRY_DSN`         | Selects the project.                           | Required, unless a host initialized the SDK. |
+| `SENTRY_ENVIRONMENT` | The `environment` tag of each event.           | Falls back to `ENV`. |
 | `SENTRY_RELEASE`     | The `release` of each event.                   | The SDK detects it (git, CI values). |
-
-Export the values, or put them in a `.env` file: the search for the file starts in the working
-directory and walks up its parents, and an exported variable always wins over the file
-(python-decouple).
 
 ### Run the workflow
 
@@ -115,26 +118,18 @@ A workflow that does not start reports the same way, with the workflow and sessi
 
 ### Customize: report from production only
 
-The built-in activates wherever the DSN is set. To decide differently, subclass
-`SentryConfiguration` in a `telemetry.py` file and override `get_handler`: the subclass replaces
-the built-in, and nothing else changes.
+The backend reports wherever it is listed. To report from production only, list it in the settings
+module of production and not in the one of a laptop:
 
-```python title="telemetry.py"
-from winslow import settings
-from winslow.contrib.sentry import SentryConfiguration
+```python title="etl/settings.py"
+from decouple import config
 
-
-class ProdOnlySentry(SentryConfiguration):
-    """Reports from production only, also where a DSN is set."""
-
-    def get_handler(self, orchestrator_config):
-        if settings.env != "prod":
-            return None
-        return super().get_handler(orchestrator_config)
+ENV = config("WINSLOW_ENV", default="local")
+TELEMETRY = ["winslow.contrib.sentry.SentryConfiguration"] if ENV == "prod" else []
 ```
 
-Run the workflow again: no events arrive, because `WINSLOW_ENV` defaults to `local`. With
-`WINSLOW_ENV=prod` the events flow as before.
+Run the workflow again: no events arrive, because `ENV` is `local`. With `WINSLOW_ENV=prod` in the
+environment the module lists the backend, and the events flow as before.
 
 ## OpenTelemetry
 
@@ -156,16 +151,19 @@ The OpenTelemetry backend turns each error into one short span with the exceptio
 
 ### Configure the endpoint
 
-Set an OTLP traces endpoint; that is the whole integration. With an endpoint present, the built-in
-`OpenTelemetryConfiguration` activates for each run and flushes its spans before the process exits
-(see [How activation works](#how-activation-works)). `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` is used
-exactly as given; the more general `OTEL_EXPORTER_OTLP_ENDPOINT` gets `/v1/traces` appended,
-following the OTLP http convention. Both are read through python-decouple, like the Sentry values.
+List the built-in `OpenTelemetryConfiguration` in `TELEMETRY` and set `OTEL_TRACES_ENDPOINT`, the
+full URL of the traces endpoint, both in the [settings module](settings.md). The configuration
+activates for each run and each serve, and flushes its spans before the process exits (see
+[How activation works](#how-activation-works)).
+
+```python title="etl/settings.py"
+TELEMETRY = ["winslow.contrib.otel.OpenTelemetryConfiguration"]
+OTEL_TRACES_ENDPOINT = "http://localhost:4318/v1/traces"
+```
 
 ### Run the workflow
 
 ```bash
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="http://localhost:4318/v1/traces"
 winslow run --mode headless --workflow etl
 ```
 
@@ -175,7 +173,8 @@ The run exports one span per errored `Boom` instance: the span is named `winslow
 status is `ERROR`, and the exception is recorded on it as the standard exception event. A workflow
 that does not start exports the same shape under the name `winslow.unscoped_error`.
 
-Look for the spans under the service name `winslow` (set `OTEL_SERVICE_NAME` to change it). The
+Look for the spans under the `SERVICE_NAME` of the deployment, `winslow` by default.
+`OTEL_SERVICE_NAME` overrides it for the tracer alone. The
 service identifies the winslow process, not a workflow: one process can run many workflows, and
 the spans of all of them share its service name. To select one workflow, filter on the span
 attributes:
@@ -194,16 +193,16 @@ attributes:
 | `winslow.session_id`         | The id of the execution session.                   | `etl-20260808T…`     |
 | `winslow.batch_uuid`         | The id of the batch, one run or check action.      | `39b83ad0-…`         |
 | `winslow.phase`              | The execution phase of the errored step.           | `run`                |
-| `winslow.env`                | `WINSLOW_ENV`.                                     | `prod`               |
+| `winslow.env`                | The `ENV` setting.                                 | `prod`               |
 
 ### Customize: replace the tracer provider
 
-The built-in builds its tracer provider from the environment alone. To change the exporter, the
-resource or the processor, subclass `OpenTelemetryConfiguration` in a `telemetry.py` file and
-override `get_tracer_provider`. This example replaces the service name and stamps the owning team
-onto the resource, so every span carries both:
+The built-in builds its tracer provider from the settings alone. To change the exporter, the
+resource or the processor, subclass `OpenTelemetryConfiguration` in a module of the project, override
+`get_tracer_provider`, and list the subclass in `TELEMETRY` in place of the built-in. This example
+replaces the service name and stamps the owning team onto the resource, so every span carries both:
 
-```python title="telemetry.py"
+```python title="etl/telemetry.py"
 from decouple import config
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import Resource
@@ -240,33 +239,24 @@ the provider, other span names or other attributes, override `get_handler` inste
 
 ## How activation works
 
-Both backends activate configuration first. When the environment carries their values, a DSN for
-Sentry or an OTLP endpoint for OpenTelemetry, the backend activates on its own for each run: no
-class, no import, no bootstrap code. Without the values, the backend stays inactive and adds no
-cost.
+The `TELEMETRY` setting lists the configuration classes of a process, each as a dotted path. At the
+start of a run or a serve, Winslow imports each class in list order, builds it, and registers the
+handler it answers. At exit it flushes the backends in reverse order and unregisters the handlers,
+so an embedding process can start again. A `show` runs no telemetry.
+
+A listed configuration is wanted: it builds at every start, with its extra installed and its
+settings set. An unlisted built-in costs nothing.
 
 An active backend is safe for the run itself: a backend that fails while reporting is logged and
 never reaches the batch.
 
-When the defaults are not enough, the repo declares a subclass of the built-in configuration class
-in a `telemetry.py` file. Winslow collects these files the way it collects `workflow.py` files, and
-among the collected classes only the most derived one activates. A subclass therefore replaces the
-built-in it inherits from, and never doubles the reports.
-
-!!! info "A configured backend needs its extra installed"
-
-    When the environment activates a backend whose extra is not installed, the run does not start
-    (`MisconfigurationError`).
-
 ## Write a custom backend
 
 The built-ins cover Sentry and OpenTelemetry, but the seam behind them is open. To add a backend
-next to the built-ins, declare a direct subclass of `TelemetryConfiguration` in a `telemetry.py`
-file: the configuration decides when its backend is active and builds the handler, and the handler
-consumes the errors.
+next to the built-ins, declare a subclass of `TelemetryConfiguration` in a module of the project and
+list it in `TELEMETRY`: the configuration builds the handler, and the handler consumes the errors.
 
-```python title="telemetry.py"
-from winslow import settings
+```python title="etl/telemetry.py"
 from winslow.telemetry import TelemetryConfiguration, TelemetryHandler
 
 
@@ -280,9 +270,11 @@ class PagerHandler(TelemetryHandler):
 
 class PagerTelemetry(TelemetryConfiguration):
     def get_handler(self, orchestrator_config):
-        if settings.env != "prod":
-            return None  # page from production only
         return PagerHandler()
+```
+
+```python title="etl/settings.py"
+TELEMETRY = ["etl.telemetry.PagerTelemetry"]
 ```
 
 One rule binds a handler: it runs on the worker thread that hit the error, so it must not block.

@@ -5,6 +5,7 @@ from textual.screen import Screen
 from textual.containers import Horizontal
 from textual.widgets import TabbedContent, TabPane
 
+from winslow.conf import settings
 from winslow.ui.plugin import UIPluginRegistry
 from winslow.ui.slot_inspector import COLORS, SlotHighlight, iter_slots
 
@@ -27,8 +28,8 @@ class SlottedScreen(Screen):
 
     def __init__(self, *args, **kwargs):
         self.plugin_registry = UIPluginRegistry()
-        self.plugin_registry.discover(self.PLUGINS_MODULE)
-        self.plugin_registry.discover_installed()
+        self.plugin_registry.register_package(self.PLUGINS_MODULE)
+        self.plugin_registry.load(settings.TUI_PLUGINS)
         super().__init__(*args, **kwargs)
 
     def _compose_slots(self, pane_class, slots, context):

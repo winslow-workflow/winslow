@@ -1,8 +1,8 @@
 """Durable session state: one directory per session, plus its task snapshots.
 
 A StateStore backend owns every durable write. FileStateStore is the default
-backend. A package registers another backend on STATE_BACKENDS and
-a deployment selects one with WINSLOW_STATE_BACKEND.
+backend, and a deployment names another with the STATE_STORE setting (see
+winslow.conf).
 """
 
 import collections
@@ -18,7 +18,6 @@ from dataclasses import asdict, dataclass, replace
 from functools import cached_property
 from pathlib import Path
 
-from winslow.backends import BackendRegistry
 from winslow.events import (
     BatchCompletedEvent,
     BatchCreatedEvent,
@@ -32,7 +31,7 @@ from winslow.exceptions import (
 )
 from winslow.logger import LOGGER
 from winslow.model import StatusSnapshot
-from winslow import settings
+from winslow.conf import settings
 from winslow.task.status import PASSING_STATUSES, SNAPSHOT_STATUSES, TaskStatus
 
 
@@ -89,8 +88,11 @@ class BatchRecord:
     tasks: dict | None = None
     closed_status: str | None = None
     completed_at: float | None = None
-    # The user that submitted the batch, or None for a local run.
+    # The user that submitted the batch and the kind and id of its credential.
+    # None for a local run.
     user: str | None = None
+    credential: str | None = None
+    credential_id: str | None = None
 
     @property
     def task_count(self):
@@ -158,12 +160,12 @@ class StateStore:
 
 
 class FileStateStore(StateStore):
-    """The default backend: one directory per session under WINSLOW_STATE_DIR.
+    """The default backend: one directory per session under STATE_DIR.
     open/ holds the live sessions, ended/ the archive, and error/ the failed
     sessions. Writes are strict and atomic; a corrupt or unreadable file reads
     as missing."""
 
-    # None resolves to the WINSLOW_STATE_DIR setting. A test or a project can
+    # None resolves to the STATE_DIR setting. A test or a project can
     # override it on a subclass. The default is relative to the CWD.
     base_directory = None
 
@@ -353,7 +355,7 @@ def is_trusted(checked_at, ttl, session_start, now):
     return checked_at >= session_start
 
 
-# The shutdown marker of the writer thread (see SessionPersistenceAdapter).
+# The shutdown marker of the writer thread (see SessionPersistenceSubscriber).
 _STOP = object()
 
 
@@ -366,7 +368,7 @@ class _BatchClose:
     logs: dict | None
 
 
-class SessionPersistenceAdapter:
+class SessionPersistenceSubscriber:
     """The single path of a task status onto and off persistence. The
     callback only queues, so it stays cheap on the writing thread, and the
     writer thread lands the write. A read overlays the writes of this session
@@ -472,6 +474,8 @@ class SessionPersistenceAdapter:
             execution_options=info.options,
             tasks=info.tasks,
             user=info.user,
+            credential=info.credential,
+            credential_id=info.credential_id,
         )
 
     def on_batch_created(self, event):
@@ -613,8 +617,3 @@ class StaleSweeper:
         persistence teardown (see Workflow.archive_state)."""
         self._closed = True
         self._wake.set()
-
-
-STATE_BACKENDS = BackendRegistry(
-    "STATE_BACKENDS", "WINSLOW_STATE_BACKEND", file=FileStateStore
-)

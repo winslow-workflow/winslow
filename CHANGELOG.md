@@ -8,111 +8,141 @@ versions may include breaking changes).
 
 ## [Unreleased]
 
-### Removed
-
-- The shared token. `winslow serve` no longer reads `WINSLOW_TOKEN`: a client
-  holds a per-user token or a ticket, and `WINSLOW_TOKEN` is where `winslow
-  connect` and an MCP client read theirs from. The hello has one credential
-  field, `token`, and the page config sets `credential` and `credentialUrl`
-  in place of `ticket` and `ticketUrl`.
-
 ### Added
 
+- Per-user credentials and a policy of winslow's own. `.winslow/policy.toml`
+  (`AUTH_POLICY_FILE`) holds groups, users and scopes, reloaded when it changes.
+  `winslow auth token create <user>` mints a `wsl_` token whose SHA-256 hash
+  lands in `.winslow/tokens` (`AUTH_TOKENS_FILE`), with `list`, `revoke`, `show`
+  and `check` beside it. `winslow serve` logs the accepted credentials at
+  startup and a WARNING for every grant of `*:*`.
+- Auth backends, in the shape of Django's `AUTHENTICATION_BACKENDS`.
+  `AUTH_BACKENDS` lists the credential kinds a server accepts, in order, and
+  the first backend whose shape matches a credential decides. `identify` says
+  who presented it, `scopes_for` what they may do, the policy file by
+  default, and a deployment subclasses one backend to override the rule.
+  `winslow.access.backends` holds `TokenBackend` and `TicketBackend`. A
+  backend that fails answers a refusal, and the server log has the traceback.
+  `winslow.contrib.oidc.OidcBackend` verifies the tokens of an OpenID Connect
+  issuer against its key set, takes the user and the groups from the claims,
+  and renews an expired token through the stored registration. With one
+  listed, the MCP resource metadata names the issuer as the authorization
+  server, so an agent logs in there by itself.
 - `winslow auth login <url>` stores the credential of a server in
-  `~/.config/winslow/credentials.toml`, prompted without echo or from stdin
-  with `--with-token`. `winslow connect` sends `WINSLOW_TOKEN` when set, else
-  the stored one, and records the user the server named. `logout` removes an
-  entry, `status` lists them. A `ws://` URL to a non-loopback host needs
-  `--insecure`.
+  `~/.config/winslow/credentials.toml` (`CREDENTIALS_FILE`): prompted without
+  echo, from stdin with `--with-token`, or through the browser login with PKCE
+  of the backend `--kind` names. `winslow connect` sends the stored
+  credential, renews an expired one first, and records the user the server
+  named. `logout` removes an entry, `status` lists them. A `ws://` URL to a
+  host other than loopback needs `--insecure`.
 - Tickets carry scopes. A ticket is a JWT signed with HS256 under
-  `WINSLOW_TICKET_SECRET`: `mint_ticket(secret, user, scopes, audience, ttl)`
-  spells what the user may do, `aud` names the server (`WINSLOW_PUBLIC_URL`,
-  required beside the secret), and the server checks the signature, the
-  audience and the expiry, tolerating a minting clock up to a minute ahead. A
-  ticket lives an hour at most and carries a `jti`. It travels as the token
-  of a hello and in the MCP bearer header. The `user:expiry:signature` format
-  is gone.
-- Per-user tokens and a policy of winslow's own. `.winslow/policy.toml`
-  (`WINSLOW_POLICY_FILE`) holds groups, users and scopes, reloaded when it
-  changes; `winslow auth token create <user>` mints a `wsl_` token whose
-  SHA-256 hash lands in `.winslow/tokens` (`WINSLOW_TOKENS_FILE`), with
-  `list`, `revoke`, `show` and `check` beside it. A token opens the websocket
-  hello, the MCP bearer header and `winslow connect` with the scopes of its
-  user. `WINSLOW_AUTH_OPEN=true`
-  passes every hello for development. `winslow.access` holds the
-  `PolicyStore` and `TokenStore` ports, the file stores, and the
-  `POLICY_BACKENDS` / `TOKEN_BACKENDS` registries for another store
-  (`WINSLOW_POLICY_BACKEND`, `WINSLOW_TOKEN_BACKEND`). `register_state_backend`
-  is `STATE_BACKENDS.register`. `winslow serve` logs
-  the stores and the accepted credentials at startup.
-- The credential lifetime on a live socket. The server closes a websocket
-  when the credential behind it expires, with close code 4402 and the reason
-  `credential expired - reconnect with a fresh one`, and both clients
-  reconnect at once: the web page fetches a fresh ticket first when it has a
-  `credentialUrl`, `winslow connect` replays its hello, and both show a
-  "credential renewed" notice. `ConnectionEvent` carries the close code of a
-  drop. The close codes live in `winslow.protocol.closes`. `WINSLOW_AUTH_MAX_CONNECTION`
-  caps every socket at one hour by default; a credential with an earlier
-  expiry keeps its own.
-- The permission check of the port. Every action handler and every read the
-  server runs carries a `@requires` decorator naming the permissions the
-  caller needs on the session's scope name, the three list reads a
-  `@visible` filter, and `create_session` and `restore_session` check the
-  scope name of their workflow argument. A refusal is a refused ack or a
-  `RequestError` with the reason, on both doors. A subscribe needs `view_task`
-  on the session. A stop needs the permission of the batch kind, and a
-  settled session ends on `check_task` too. Every credential still holds
-  every permission, so nothing is refused yet; a `winslow.audit` logger
-  records one line per action and per session start, and every log record
-  carries `credential` beside `user`.
+  `AUTH_TICKET_SECRET`: `mint_ticket(secret, user, scopes, audience, ttl)`
+  spells what the user may do, and `aud` names the server (`SERVE_PUBLIC_URL`,
+  required beside the secret). A ticket lives an hour at most, carries a
+  `jti`, and travels as the `token` of the connection request and in the MCP
+  bearer header.
+- The permission check of the port. Every `Read` and every `Action`
+  declaration names the permissions the caller needs on the scope of the
+  session, and the three list reads take a `visible` filter.
+  `create_session` and `restore_session` are actions of the app port: the
+  action frame carries no session id, and the `SessionAck` carries the
+  `SessionInfo`, or the traceback of a failed init in `detail`. A client
+  calls an action like a read, `client.run_tasks(keys=...)`, and the action
+  dataclasses are gone. A refusal is a refused ack or a `RequestError` with
+  the reason, on the websocket and the MCP endpoint alike. A subscribe needs
+  `view_task` on the session, a stop the permission of the batch kind, and a
+  settled session ends on `check_task` too. A `winslow.audit` logger records
+  one line per action and per session start.
 - The permission context of a connection. `hello_ok` carries `scopes`, the
   expanded `<scope name>:<permission>` set of the five permissions
   (`start_workflow`, `end_workflow`, `run_task`, `check_task`, `view_task`),
-  `credential`, the kind of credential, and `expires_at`, its expiry. A workflow
-  class names its scope with `permission_scope`, default the workflow name,
+  `credential`, the kind of credential, and `expires_at`. A workflow class
+  names its scope with `permission_scope`, default the workflow name,
   inherited by subclasses; `SessionInfo`, `WorkflowDescriptor` and
-  `ManifestInfo` carry it. Every credential holds every permission on every
-  workflow in this release. The TUI and the web UI render the guarded
-  controls disabled until the hello grants them, and again after a drop. The
-  standalone web page asks for a token when the server refuses the
-  credential, and keeps it for the tab. An Origin refusal closes with 4403,
-  apart from the credential code 4401. `winslow.permissions` holds
-  `PermissionContext` and `expand`; `AppClient.permissions()` serves the
-  context of a client.
-- The user on the records of a side effect. The serve process runs every
-  action and read under the user of the hello, and every thread it starts for
-  that work copies the scope. A batch record and its history row carry
-  `user`, the session manifest carries `user` and `ended_by`, a cache record
-  and its entry info carry `written_by`, and every log record of the work is
-  stamped with `user`. The history cards and the session rows of the TUI and
-  the web UI show the name. A local client sets no user, so its records carry
-  `None`, and a cache file from an earlier version reads with `written_by`
-  as `None`. `winslow.task.context.current_user` and `scoped_permissions` are
+  `ManifestInfo` carry it. The TUI and the web UI render the guarded controls
+  disabled until the server grants them, and again after a drop. The
+  standalone web page asks for a credential when the server refuses one, and
+  keeps it for the tab. `winslow.protocol.closes` names the close codes: 4400
+  malformed connection request, 4401 credential refused, 4402 credential
+  expired, 4403 origin refused, 4408 no connection request in time.
+  `winslow.access.permissions` holds `PermissionContext` and `expand`;
+  `AppClient.permissions()` serves the context of a client.
+- The credential lifetime on a live socket. The server closes a websocket
+  when the credential behind it expires, with close code 4402 and the reason
+  `credential expired - reconnect with a fresh one`. The web page fetches a
+  fresh ticket from `credentialUrl` and reconnects, `winslow connect`
+  renews its stored credential through its backend and reconnects, and both
+  show a "credential renewed" notice. `ConnectionEvent` carries the close code of a drop.
+  `AUTH_MAX_CONNECTION` caps every socket at one hour by default; a
+  credential with an earlier expiry keeps its own.
+- The records name the user and the credential. The serve process runs every
+  action and read under the user of the connection, and every thread it
+  starts for that work copies the scope. A batch record and its history row
+  carry `user` beside the credential kind and the token or ticket id, shown
+  as `can (token 9f86d081)` in the TUI and the web UI. The session manifest
+  carries `user` and `ended_by`, a cache record and its entry info
+  `written_by`, and every log record of the work `user`, `credential` and
+  `credential_id`. A local client sets no user, so its records carry `None`,
+  and a cache file from an earlier version reads with `written_by` as
+  `None`. `winslow.task.context.current_user` and `scoped_permissions` are
   the scope; `StateStore.mark_ended` takes `ended_by`.
 - The web UI: `winslow serve` hands out a browser UI at `/`, with the
   dashboard and the session screens of the terminal over the websocket
   endpoint. `web` is an endpoint of `--endpoints`, on by default beside `ws`;
   `--endpoints ws` serves the websocket alone. The Vue source lives in
   `web/`, the build travels inside the wheel, and `window.WINSLOW` configures
-  a page a front application embeds (see `docs/serve.md`).
+  a page a front application embeds: `wsUrl`, `credential`, `credentialUrl`
+  (see `docs/serve.md`). The assets answer with CORS headers for the listed
+  origins, so an embedding page on another origin loads them.
 - The `host_stats` read of the port: memory, cpu load, hostname and user of
   the machine that runs the sessions, over the websocket and as an MCP tool.
   The system resources pane of the terminal reads it, so `winslow connect`
   shows the server, and the web UI gains the same pane on both screens.
-- The header of the TUI and the navbar of the web UI name the environment of
-  the server and take its color. `WINSLOW_ENV_COLORS` adds or replaces the
-  colors per environment name (see `docs/serve.md`).
+- `SERVICE_NAME` names the deployment. The MCP server registers as
+  `<SERVICE_NAME>-<ENV>`, so a client lists one entry per deployment and
+  environment. The header of the TUI and the navbar of the web UI show the
+  service and the environment in the color of the environment, with a text
+  color that reads on it. `ENV_COLORS` adds or replaces the colors per
+  environment name (see `docs/serve.md`).
 
 ### Changed
 
-- `hello_ok` names a credential kind on every door: `open` for a hello
-  without a credential in open mode, where it was null. A `wsl_` token the
-  store does not know refuses as an unknown token, and a token of no known
-  shape names the credential kinds the server accepts.
-- `WINSLOW_ENV` defaults to `local` instead of `dev`.
+- One settings module, Django style. `settings.py` in the working directory,
+  or the module `WINSLOW_SETTINGS_MODULE` names, holds every setting: the
+  scalars, the secrets read the way its author chooses, and the code the
+  process wires as dotted paths. `winslow.conf.settings` is the object every
+  module reads, and `winslow.conf.template` the module to copy. Winslow
+  reads no other environment variable. `AUTH_BACKENDS`, `STATE_STORE`,
+  `TELEMETRY`, `TUI_PLUGINS` and `FILTER_PLUGINS` replace the backend
+  registries, the `telemetry.py` scan, the plugin entry points and the
+  `[tool.winslow]` table. A listed class loads at every start. `winslow
+  settings` prints every setting with its source and what each path resolves
+  to. `settings.env` is `ENV`, with `local` as its default in place of `dev`,
+  and `SessionPersistenceAdapter` is `SessionPersistenceSubscriber`.
+- A loopback bind passes every connection in the `local` env alone. With
+  `ENV` set, every bind requires a credential, so a server behind its proxy
+  on `127.0.0.1` reads the credentials like any other. `AUTH_OPEN = True`
+  passes every connection with every permission, for development. A bind on
+  every interface answers the web page under the hostname too, and the
+  origin of `SERVE_PUBLIC_URL` is accepted beside `SERVE_ORIGINS`.
+- `hello_ok` names a credential kind on every endpoint: `open` for a
+  connection without a credential in open mode, where it was null. A `wsl_`
+  token the store does not know refuses as an unknown token, and a token of
+  no known shape names the credential kinds the server accepts.
 - The workflow start form shows `clear_cache` as its only orchestrator
   option. The Tasks pane sets `dry_run`, `force_run`, `force_success` and
   `disable_concurrency` per batch.
+
+### Removed
+
+- Every `WINSLOW_*` environment variable but `WINSLOW_SETTINGS_MODULE`, the
+  shared token of `winslow serve` and the one `winslow connect` read
+  included: a client holds a per-user token, a ticket or an OIDC token, and a
+  job stores its token with `winslow auth login --with-token`. The
+  `user:expiry:signature` ticket format. The `winslow.tui_plugins` and
+  `winslow.filter_plugins` entry point groups, the `[tool.winslow]` lists and
+  the `autoload` flag. The `telemetry.py` file scan and the leaf rule: a
+  listed configuration answers a handler or stops the start.
 
 ### Fixed
 

@@ -2,34 +2,37 @@
 and the frame list the browser client mirrors (see web/src/protocol/frames.ts)."""
 
 import re
+import socket
 from pathlib import Path
 
 import pytest
 from starlette.testclient import TestClient
 
+from winslow.conf import settings
 from winslow.exceptions import MisconfigurationError
 
 from winslow.protocol.frames import Frame
 from winslow.protocol import lanes  # noqa: F401  - registers the lane frames
-from winslow.serve import Credentials, create_app
-from winslow.serve.app import page_origins
+from winslow.serve import create_app
+from winslow.serve.app import page_origins, serve_origins
 from winslow.session import SessionRegistry
 
-from harness import bare_orchestrator, scratch_state_store
+from harness import bare_orchestrator, loopback_authenticator, scratch_state_store
 
 WEB_FRAMES = (
     Path(__file__).resolve().parents[1] / "web" / "src" / "protocol" / "frames.ts"
 )
 
 
-def client(static_dir, endpoints=("ws", "web")):
+def client(static_dir, endpoints=("ws", "web"), **options):
     app = create_app(
         SessionRegistry(),
-        Credentials(require_credential=False),
+        loopback_authenticator(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         endpoints=endpoints,
         static_dir=static_dir,
+        **options,
     )
     return TestClient(app)
 
@@ -46,6 +49,16 @@ def test_the_index_and_the_assets_serve_from_the_build(tmp_path):
     assert web.get("/").text == "<html>ui</html>"
     assert web.get("/assets/app.js").text == "console.log(1)"
     assert web.get("/elsewhere").status_code == 404
+
+
+def test_an_asset_answers_a_listed_origin_with_cors_and_an_unlisted_one_without(
+    tmp_path,
+):
+    web = client(build(tmp_path), allowed_origins=("http://front.example",))
+    listed = web.get("/assets/app.js", headers={"Origin": "http://front.example"})
+    assert listed.headers["access-control-allow-origin"] == "http://front.example"
+    other = web.get("/assets/app.js", headers={"Origin": "http://other.example"})
+    assert "access-control-allow-origin" not in other.headers
 
 
 def test_the_websocket_upgrades_beside_the_page(tmp_path):
@@ -74,6 +87,22 @@ def test_the_page_origins_of_a_bind():
         "http://localhost:8866",
     )
     assert page_origins("etl-host", 9000) == ("http://etl-host:9000",)
+    everywhere = page_origins("0.0.0.0", 8866)
+    assert everywhere[:3] == page_origins("127.0.0.1", 8866)
+    assert everywhere[3] == f"http://{socket.gethostname()}:8866"
+
+
+def test_the_origin_of_the_public_url_joins_the_accepted_ones(monkeypatch):
+    monkeypatch.setattr(
+        settings, "SERVE_PUBLIC_URL", "https://etl.example:8443/winslow"
+    )
+    monkeypatch.setattr(settings, "SERVE_ORIGINS", ("http://front.example",))
+    assert serve_origins("0.0.0.0", 8866, ("ws",)) == (
+        "http://front.example",
+        "https://etl.example:8443",
+    )
+    monkeypatch.setattr(settings, "SERVE_PUBLIC_URL", None)
+    assert serve_origins("0.0.0.0", 8866, ("ws",)) == ("http://front.example",)
 
 
 def test_the_browser_client_lists_every_frame_type():

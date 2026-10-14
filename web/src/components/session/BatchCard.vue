@@ -53,6 +53,13 @@ const store = useSessionScope()
 
 const outcome = computed(() => store.historyByUuid.get(props.batch.uuid))
 
+// The user with the credential that named them: `can (token 9f86d081)`.
+const submitter = computed(() => {
+  const { user, credential, credential_id } = props.batch
+  if (!user) return null
+  return credential_id ? `${user} (${credential} ${credential_id})` : user
+})
+
 function statusOf(key: string): TaskStatusName | undefined {
   return store.executionStatuses[recordKey(props.batch.uuid, key)] ?? outcome.value?.tasks[key]?.status
 }
@@ -125,7 +132,7 @@ function rowClass(row: RecordRowView) {
       <span class="fw-semibold">{{ batch.action }}</span>
       <span class="text-secondary">{{ formatClock(batch.created_at) }}</span>
       <span class="mono text-secondary">{{ shortUuid(batch.uuid) }}</span>
-      <span v-if="batch.user" class="text-secondary">{{ batch.user }}</span>
+      <span v-if="submitter" class="text-secondary">{{ submitter }}</span>
       <span class="summary">
         <span :class="{ completed: summary.completed }">{{ summary.completed }}</span> /
         <span :class="{ problematic: summary.problematic }">{{ summary.problematic }}</span> / {{ summary.total }}

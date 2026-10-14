@@ -1,7 +1,7 @@
-"""The credential file of one person: the token `winslow auth login` stored
-for each server, which `winslow connect` sends when WINSLOW_TOKEN is unset
-(see specs/auth-step-5-spec.md). The layout holds the OAuth fields the SDK
-adapter of a later step reads, so one file serves both."""
+"""The credential file of one person: the credential `winslow auth login`
+stored for each server, which `winslow connect` sends (see
+specs/auth-step-5-spec.md). The layout holds the OAuth fields the OIDC backend
+reads, so one file serves every kind."""
 
 import os
 import tomllib
@@ -12,12 +12,11 @@ from urllib.parse import urlsplit, urlunsplit
 import tomli_w
 from pydantic import ConfigDict
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.access.file import FileSnapshot, _write_text
-from winslow.access.tokens import TOKEN_PREFIX
 from winslow.constants import LOOPBACK_HOSTS
 from winslow.exceptions import MisconfigurationError
-from winslow.permissions import CredentialKind
+from winslow.access.permissions import CredentialKind
 from winslow.protocol.codec import CODEC, ValidationError, report
 
 LOGIN_SCHEMES = ("ws", "wss")
@@ -27,11 +26,13 @@ ROOT_PATHS = ("", "/", "/ws")
 
 @dataclass(frozen=True)
 class CredentialEntry:
-    """One stored credential. token is what the hello sends. user is the
-    name the server answered with. The rest are the OAuth fields of the
-    SDK adapter: an absolute expiry, and the registration stored whole."""
+    """One stored credential. token is what the hello sends, kind the backend
+    that obtained it. user is the name the server answered with. The rest are
+    the OAuth fields of the OIDC backend: an absolute expiry, and the
+    registration stored whole."""
 
     token: str
+    kind: CredentialKind
     user: str | None = None
     refresh_token: str | None = None
     expires_at: int | None = None
@@ -39,13 +40,11 @@ class CredentialEntry:
     client: dict | None = None
     __pydantic_config__ = ConfigDict(extra="forbid")
 
-    @property
-    def kind(self):
-        if self.refresh_token is not None or self.client is not None:
-            return "oauth"
-        if self.token.startswith(TOKEN_PREFIX):
-            return "per-user token"
-        return "ticket"
+
+def default_path():
+    """The credential file under the XDG config home, or ~/.config."""
+    home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(home, "winslow", "credentials.toml")
 
 
 def credential_key(url):
@@ -86,7 +85,9 @@ class CredentialFile(FileSnapshot):
     noun = "credentials"
 
     def __init__(self, path=None):
-        super().__init__(os.path.expanduser(path or settings.CREDENTIALS_FILE))
+        super().__init__(
+            os.path.expanduser(path or settings.CREDENTIALS_FILE or default_path())
+        )
 
     def parse(self, text):
         try:
@@ -129,21 +130,17 @@ class CredentialFile(FileSnapshot):
         return tuple(self.load().items())
 
 
-def credential_for(url, store, environment):
-    """The credential connect sends: environment when it is a non-empty
-    string, else the stored token for the URL, else None."""
-    if environment:
-        return environment
+def credential_for(url, store):
+    """The credential connect sends: the stored token for the URL, or None."""
     entry = store.get(url)
     return None if entry is None else entry.token
 
 
 def remember_user(store, url, hello):
     """Write the user of a hello_ok to the entry of the URL, when the hello
-    came from a per-user token or a ticket: a loopback or open-mode server
-    names no person."""
+    came from a credential: a loopback or open-mode server names no person."""
     entry = store.get(url)
-    named = hello.credential in (CredentialKind.TOKEN, CredentialKind.TICKET)
+    named = hello.credential not in (CredentialKind.LOCAL, CredentialKind.OPEN)
     if entry is None or not named or entry.user == hello.user:
         return
     store.set(url, CredentialEntry(**{**CODEC.dump(entry), "user": hello.user}))

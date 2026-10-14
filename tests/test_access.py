@@ -6,29 +6,29 @@ import re
 
 import pytest
 
-from winslow import settings
-from winslow.access import (
+from winslow.conf import settings
+from winslow.access.file import FilePolicyStore, FileTokenStore
+from winslow.access.policy import (
     EMPTY,
-    POLICY_BACKENDS,
-    TOKEN_BACKENDS,
-    FilePolicyStore,
-    FileTokenStore,
     Policy,
-    TokenRecord,
     checked_name,
+    policy_warnings,
+    policy_scopes,
+)
+from winslow.access.tokens import (
+    TokenRecord,
     expired,
     new_token,
     parse_duration,
-    policy_warnings,
-    scopes_for,
     token_hash,
 )
 from winslow.access.cli import token_create, token_revoke
 from winslow.exceptions import CredentialRefused, MisconfigurationError
-from winslow.permissions import Permission, Scope, wire_scopes
+from winslow.access.permissions import Permission, Scope, wire_scopes
 from winslow.protocol.frames import HelloFrame
-from winslow.serve import Credentials
-from winslow.serve.auth import TokenCredential
+from winslow.access.backends import AuthBackend, Identity, TokenBackend, token_backend
+
+from harness import credential_authenticator
 
 P = Permission
 
@@ -65,15 +65,15 @@ def policy_file(tmp_path, text=POLICY):
 
 def test_the_union_of_groups_and_direct_scopes(tmp_path):
     policy = FilePolicyStore(policy_file(tmp_path)).load()
-    assert scopes_for(policy, "can") == {Scope("etl", p) for p in Permission} | {
+    assert policy_scopes(policy, "can") == {Scope("etl", p) for p in Permission} | {
         Scope("*", P.VIEW_TASK)
     }
-    assert wire_scopes(scopes_for(policy, "lucas")) == (
+    assert wire_scopes(policy_scopes(policy, "lucas")) == (
         "etl:check_task",
         "etl:start_workflow",
         "etl:view_task",
     )
-    assert wire_scopes(scopes_for(policy, "ci-bot")) == (
+    assert wire_scopes(policy_scopes(policy, "ci-bot")) == (
         "etl:check_task",
         "etl:run_task",
         "etl:view_task",
@@ -82,12 +82,12 @@ def test_the_union_of_groups_and_direct_scopes(tmp_path):
 
 def test_a_user_the_file_does_not_list_holds_the_groups_the_token_asserts(tmp_path):
     policy = FilePolicyStore(policy_file(tmp_path)).load()
-    assert scopes_for(policy, "guest") == frozenset()
-    assert scopes_for(policy, "guest", idp_groups=["WinslowProdViewers"]) == {
+    assert policy_scopes(policy, "guest") == frozenset()
+    assert policy_scopes(policy, "guest", idp_groups=["WinslowProdViewers"]) == {
         Scope("*", P.VIEW_TASK)
     }
     # An asserted group adds to a listed user too.
-    assert Scope("*", P.VIEW_TASK) in scopes_for(
+    assert Scope("*", P.VIEW_TASK) in policy_scopes(
         policy, "lucas", ["WinslowProdViewers"]
     )
 
@@ -154,7 +154,7 @@ def test_the_warnings_name_the_entries_that_grant_everything_or_nothing(tmp_path
 
 
 def test_the_empty_policy_grants_nothing():
-    assert scopes_for(EMPTY, "can") == frozenset()
+    assert policy_scopes(EMPTY, "can") == frozenset()
 
 
 # --- the file policy store --------------------------------------------------------
@@ -284,41 +284,51 @@ class DictTokenStore:
         return tuple(r for r in self.records.values() if user is None or r.user == user)
 
 
-def test_a_registered_token_store_pairs_with_the_file_policy(tmp_path, monkeypatch):
-    TOKEN_BACKENDS.register("dict", DictTokenStore)
-    monkeypatch.setattr(settings, "TOKEN_BACKEND", "dict")
-    try:
-        tokens = TOKEN_BACKENDS.create()
-    finally:
-        TOKEN_BACKENDS.backends.pop("dict")
-    assert isinstance(tokens, DictTokenStore)
-    policy = Credentials(
-        chain=(TokenCredential(tokens, FilePolicyStore(policy_file(tmp_path))),)
-    )
-    token = token_create(tokens, "lucas")
+def test_a_subclass_names_another_token_store_and_pairs_with_the_file_policy(
+    tmp_path,
+):
+    class DictTokenBackend(TokenBackend):
+        def __init__(self):
+            super().__init__(
+                tokens=DictTokenStore(), policy=FilePolicyStore(policy_file(tmp_path))
+            )
+
+    backend = DictTokenBackend()
+    policy = credential_authenticator(backend)
+    token = token_create(backend.tokens, "lucas")
     context = policy.verify_hello(HelloFrame(token=token))
     assert context.user == "lucas"
     assert context.allows("etl", P.CHECK_TASK) and not context.allows("etl", P.RUN_TASK)
-    assert token_revoke(tokens, user="lucas") == 1
+    assert token_revoke(backend.tokens, user="lucas") == 1
     with pytest.raises(CredentialRefused, match="unknown token"):
         policy.verify_hello(HelloFrame(token=token))
 
 
-def test_the_registries_select_a_backend_and_refuse_an_unknown_one(monkeypatch):
-    assert isinstance(POLICY_BACKENDS.create(), FilePolicyStore)
-    assert isinstance(TOKEN_BACKENDS.create(), FileTokenStore)
+def test_the_default_backend_holds_the_file_stores_and_a_bad_path_names_itself(
+    monkeypatch,
+):
+    backend = token_backend()
+    assert isinstance(backend.policy, FilePolicyStore)
+    assert isinstance(backend.tokens, FileTokenStore)
+    monkeypatch.setattr(
+        settings, "AUTH_BACKENDS", ["winslow.access.redis.RedisBackend"]
+    )
+    with pytest.raises(MisconfigurationError, match="RedisBackend' does not import"):
+        token_backend()
+    monkeypatch.setattr(
+        settings, "AUTH_BACKENDS", ["winslow.access.backends.TicketBackend"]
+    )
+    with pytest.raises(MisconfigurationError, match="no token backend is listed"):
+        token_backend()
 
-    class StubPolicy:
-        def load(self):
-            return EMPTY
 
-    POLICY_BACKENDS.register("stub", StubPolicy)
-    monkeypatch.setattr(settings, "POLICY_BACKEND", "stub")
-    try:
-        assert isinstance(POLICY_BACKENDS.create(), StubPolicy)
-    finally:
-        POLICY_BACKENDS.backends.pop("stub")
-    monkeypatch.setattr(settings, "TOKEN_BACKEND", "redis")
-    with pytest.raises(MisconfigurationError, match="TOKEN_BACKENDS.register"):
-        TOKEN_BACKENDS.create()
-    assert "redis" not in TOKEN_BACKENDS.backends
+def test_the_base_rule_answers_the_carried_scopes_else_the_policy_file(tmp_path):
+    backend = AuthBackend(policy=FilePolicyStore(policy_file(tmp_path)))
+    carried = frozenset({Scope("etl", P.RUN_TASK)})
+    assert backend.scopes_for(Identity("x", "ticket", scopes=carried)) == carried
+    assert backend.scopes_for(Identity("guest", "oidc")) == frozenset()
+    asserted = Identity("guest", "oidc", groups=("WinslowProdViewers",))
+    assert Scope("*", P.VIEW_TASK) in backend.scopes_for(asserted)
+    assert backend.scopes_for(Identity("lucas", "token")) == policy_scopes(
+        FilePolicyStore(policy_file(tmp_path)).load(), "lucas"
+    )

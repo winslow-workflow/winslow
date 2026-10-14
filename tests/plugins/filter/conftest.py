@@ -1,9 +1,6 @@
-import importlib
-from types import SimpleNamespace
-
 import pytest
 
-from winslow import autodiscovery
+from winslow.conf import settings
 from winslow.constants import Mode
 
 from harness import COMPLETED_LADDER, UNPROCESSED, build_workflow, by_name
@@ -11,41 +8,23 @@ from harness import COMPLETED_LADDER, UNPROCESSED, build_workflow, by_name
 FLAVOR_TASKS = ("Sweet", "Sour", "Salty", "Bitter")
 
 
-class FakeEntryPoint:
-    """Duck-types importlib.metadata.EntryPoint for discover_installed: .load()
-    returns the already-importable test package, .dist.name is the source dist
-    the qualified names key off."""
-
-    def __init__(self, package, dist):
-        self._package = package
-        self.dist = SimpleNamespace(name=dist)
-
-    def load(self):
-        return self._package
+FLAVOR = "plugins.filter.my_filters.filters.FlavorFilter"
+TAG = "plugins.filter.my_filters.filters.TagFilter"
+DUP_ONE = "plugins.filter.my_filters_clash.filters.DupOne"
+DUP_TWO = "plugins.filter.my_filters_clash.filters.DupTwo"
 
 
 @pytest.fixture
-def install_filters(monkeypatch):
-    """Make FilterRegistry discover tests/plugins/filter/my_filters as if it were an
-    installed `winslow.filter_plugins` dist, with an optional [tool.winslow] config.
-    Patches the two seams a real install would provide; everything downstream
-    (guard chain, resolve, parse, filtered run) stays real. Must be called
-    before build_workflow, since FilterRegistry is built in Workflow.__init__."""
+def list_filters(monkeypatch):
+    """Set FILTER_PLUGINS to the given paths, the way a project module does.
+    Call it before build_workflow, since FilterRegistry is built in
+    Workflow.__init__; everything downstream (resolve, parse, the filtered
+    run) stays real."""
 
-    def _install(
-        package="plugins.filter.my_filters", tool_winslow=None, dist="acme-filters"
-    ):
-        entry_point = FakeEntryPoint(importlib.import_module(package), dist)
-        monkeypatch.setattr(
-            autodiscovery,
-            "entry_points",
-            lambda group: [entry_point] if group == "winslow.filter_plugins" else [],
-        )
-        monkeypatch.setattr(
-            autodiscovery, "_winslow_pyproject_table", lambda cwd: tool_winslow or {}
-        )
+    def _list(*paths):
+        monkeypatch.setattr(settings, "FILTER_PLUGINS", list(paths))
 
-    return _install
+    return _list
 
 
 @pytest.fixture

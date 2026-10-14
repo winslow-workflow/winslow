@@ -21,7 +21,7 @@ from winslow.exceptions import (
     InitializationError,
     EligibilityError,
 )
-from winslow import settings
+from winslow.conf import import_string, settings
 from winslow.logger import (
     LOGGER,
     setup_run_logging,
@@ -29,7 +29,6 @@ from winslow.logger import (
     stdout_json_sink,
 )
 from winslow.telemetry import (
-    TelemetryRegistry,
     activate_telemetry_configurations,
     emit_unscoped_error,
     shutdown_telemetry_configurations,
@@ -45,6 +44,7 @@ class Command(Enum):
     SERVE = "serve"
     CONNECT = "connect"
     AUTH = "auth"
+    SETTINGS = "settings"
 
 
 def _parse_mode(value):
@@ -88,7 +88,6 @@ def _merged_config(base, overrides):
 
 class Orchestrator(_ConfigBase):
     workflow_registry_class = WorkflowRegistry
-    telemetry_registry_class = TelemetryRegistry
     global_cache_registry_class = GlobalCacheRegistry
 
     workflow = ConfigOption(
@@ -279,9 +278,6 @@ class Orchestrator(_ConfigBase):
         super().__init__(orchestrator_config)
 
         self.workflow_registry = self.workflow_registry_class(self.orchestrator_config)
-        self.telemetry_registry = self.telemetry_registry_class(
-            self.orchestrator_config
-        )
         self.global_cache_registry = self.global_cache_registry_class(
             self.orchestrator_config
         )
@@ -362,13 +358,17 @@ class Orchestrator(_ConfigBase):
         connect_parser.add_argument(
             "url",
             help="The websocket URL of the serve process, e.g. ws://host:8866. "
-            "A non-loopback server needs a credential: WINSLOW_TOKEN holds this "
-            "client's per-user token or ticket, or `winslow auth login` stores one.",
+            "A non-loopback server needs a credential: `winslow auth login` "
+            "stores one for the URL.",
         )
 
         from winslow.access import cli
 
         cli.add_parser(subparsers).set_defaults(action=Command.AUTH)
+        subparsers.add_parser(
+            "settings",
+            help="Print every setting, its source and what each path resolves to.",
+        ).set_defaults(action=Command.SETTINGS)
 
         return parser
 
@@ -659,26 +659,25 @@ class Orchestrator(_ConfigBase):
                 "pip install 'winslow[serve]'"
             ) from e
         from winslow.serve.app import serve_origins
-        from winslow.serve.auth import Credentials
+        from winslow.serve.auth import Authenticator
         from winslow.session import SessionRegistry
-        from winslow.state import STATE_BACKENDS
 
         config = self.orchestrator_config
         self.logger.info(f"Serving on {config.host}:{config.port}")
-        credentials = Credentials.from_env(config.host)
-        for level, line in credentials.describe(f"{config.host}:{config.port}"):
+        authenticator = Authenticator.from_settings(config.host)
+        for level, line in authenticator.describe(f"{config.host}:{config.port}"):
             self.logger.log(level, line)
         # The boundary must exist before the first session logs (see
         # setup_run_logging). WINSLOW_LOG_JSON sends the run lane to stdout
         # for the log store of a pod; the default keeps the session files.
         setup_run_logging(sinks=[stdout_json_sink()] if settings.LOG_JSON else None)
         registry = SessionRegistry()
-        state_store = STATE_BACKENDS.create(config)
+        state_store = import_string(settings.STATE_STORE)(config)
         self._restore_sessions(registry, state_store)
         self._auto_init_sessions(registry, state_store)
         serve = ServeApp(
             registry,
-            credentials,
+            authenticator,
             orchestrator=self,
             state_store=state_store,
             endpoints=config.endpoints,
@@ -700,6 +699,19 @@ class Orchestrator(_ConfigBase):
             # A forced exit skips the lifespan, so the drain runs here for both paths.
             serve.drain(SHUTDOWN_GRACE)
             shutdown_run_logging()
+
+    def _with_telemetry(self, handle):
+        """Run handle with the configurations TELEMETRY lists active. A show
+        produces no errors worth a backend, so it stays outside. The finally
+        flushes and unregisters, so an embedding process can start again."""
+        active = activate_telemetry_configurations(
+            [import_string(path) for path in settings.TELEMETRY],
+            self.orchestrator_config,
+        )
+        try:
+            return handle()
+        finally:
+            shutdown_telemetry_configurations(active)
 
     def _restore_sessions(self, registry, state_store):
         """Rebuild every open manifest at serve startup: the sessions of a
@@ -742,17 +754,12 @@ class Orchestrator(_ConfigBase):
                 )
 
     def _handle_auth(self):
-        from winslow.access import POLICY_BACKENDS, TOKEN_BACKENDS, cli
+        from winslow.access import cli
         from winslow.access.credentials import CredentialFile
 
-        stores = cli.Stores(
-            policy=POLICY_BACKENDS.create(),
-            tokens=TOKEN_BACKENDS.create(),
-            credentials=CredentialFile(),
-        )
         # False exits with 1 and no further message, the way a failed run does
         # (see cli.main): the command already printed its answer.
-        return cli.run(self.orchestrator_config, stores, print) == 0
+        return cli.run(self.orchestrator_config, CredentialFile(), print) == 0
 
     def _handle_connect(self):
         """The remote TUI: the same app over the wire transport of the
@@ -766,20 +773,17 @@ class Orchestrator(_ConfigBase):
                 "pip install 'winslow[connect]'"
             ) from e
 
-        from winslow.access.credentials import (
-            CredentialFile,
-            credential_for,
-            remember_user,
-        )
+        from winslow.access.backends import StoredCredential
+        from winslow.access.credentials import CredentialFile, remember_user
 
         config = self.orchestrator_config
         store = CredentialFile()
-        token = credential_for(config.url, store, settings.CONNECT_TOKEN)
-        client = RemoteAppClient(config.url, token=token)
+        client = RemoteAppClient(
+            config.url, credential=StoredCredential(store, config.url)
+        )
         client.connect()
         self.logger.info(f"Connected to {config.url}")
-        if not settings.CONNECT_TOKEN:
-            remember_user(store, config.url, client.wire.hello)
+        remember_user(store, config.url, client.wire.hello)
 
         # The tasks run on the serve process, so no run record reaches this
         # one: run-log wiring here would only create an empty log directory.
@@ -811,14 +815,13 @@ class Orchestrator(_ConfigBase):
 
         from winslow.client import LocalAppClient
         from winslow.session import SessionRegistry
-        from winslow.state import STATE_BACKENDS
 
         # The composition root of the local TUI: this process owns the registry
         # and the durable store (see winslow.state); the app consumes the port.
         local_client = LocalAppClient(
             SessionRegistry(),
             orchestrator=self,
-            state_store=STATE_BACKENDS.create(self.orchestrator_config),
+            state_store=import_string(settings.STATE_STORE)(self.orchestrator_config),
         )
         app = Winslow(client=local_client, logger=self.logger, owns_sessions=True)
 
@@ -885,6 +888,12 @@ class Orchestrator(_ConfigBase):
         if self.orchestrator_config.action is Command.AUTH:
             # The stores alone: no workflow, no server.
             return self._handle_auth()
+        if self.orchestrator_config.action is Command.SETTINGS:
+            from winslow.conf.report import lines
+
+            for line in lines(settings):
+                print(line)
+            return True
 
         self.validate_option_dependencies(
             self.orchestrator_config, subcommand=self.orchestrator_config.action.value
@@ -901,15 +910,6 @@ class Orchestrator(_ConfigBase):
         if self.orchestrator_config.action is Command.SHOW:
             self._handle_show()
         elif self.orchestrator_config.action is Command.SERVE:
-            self._handle_serve()
+            self._with_telemetry(self._handle_serve)
         elif self.orchestrator_config.action is Command.RUN:
-            # Runs only: a show produces no errors worth a backend. The finally
-            # flushes and unregisters, so an embedding process can start again.
-            self.telemetry_registry.collect_classes(self.directory)
-            active_telemetry = activate_telemetry_configurations(
-                self.telemetry_registry.classes, self.orchestrator_config
-            )
-            try:
-                return self._handle_run()
-            finally:
-                shutdown_telemetry_configurations(active_telemetry)
+            return self._with_telemetry(self._handle_run)

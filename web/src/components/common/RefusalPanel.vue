@@ -10,13 +10,13 @@ const token = ref('')
 const headline = computed(() => {
   switch (connection.refusal?.code) {
     case MALFORMED_HELLO:
-      return 'The server did not understand the hello.'
+      return 'The server did not understand the connection request.'
     case CREDENTIAL_REFUSED:
       return 'The server refused the credential.'
     case ORIGIN_REFUSED:
       return 'The server refused the origin of this page.'
     case HELLO_TIMEOUT:
-      return 'The server closed the socket before the hello arrived.'
+      return 'The server closed the socket before the connection request arrived.'
     default:
       return 'The server refused the connection.'
   }
@@ -57,7 +57,7 @@ function submitToken() {
       <p v-else class="small text-secondary mb-3">
         A remote server needs a credential: the page that embeds the UI sets
         <code>window.WINSLOW = { wsUrl, credential, credentialUrl }</code>. A local server accepts a page from its own origin,
-        or from an origin listed in <code>WINSLOW_ORIGINS</code>.
+        or from an origin listed in <code>SERVE_ORIGINS</code>.
       </p>
       <BButton variant="primary" @click="connection.retry()">Retry</BButton>
     </BCard>

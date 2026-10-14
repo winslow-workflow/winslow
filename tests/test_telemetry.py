@@ -7,6 +7,8 @@ from winslow.exceptions import EligibilityError, MisconfigurationError, TaskSkip
 from winslow.runner.execution import ExecutionPhase
 from winslow.session import Session
 from winslow.task.status import TaskStatus as S
+from winslow.conf import settings
+from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.telemetry import (
     TelemetryConfiguration,
     TelemetryHandler,
@@ -250,8 +252,8 @@ class _ListHandler(TelemetryHandler):
 
 def test_activation_registers_and_shutdown_unregisters():
     """The framework-owned lifecycle: get_handler receives the orchestrator
-    config, an active handler is registered for the run, a None gate stays
-    out, and shutdown unregisters and flushes."""
+    config, the handler is registered for the run, and shutdown unregisters
+    and flushes."""
     sentinel = object()
 
     class Active(TelemetryConfiguration):
@@ -262,11 +264,7 @@ def test_activation_registers_and_shutdown_unregisters():
         def shutdown(self):
             self.flushed = True
 
-    class GatedOff(TelemetryConfiguration):
-        def get_handler(self, orchestrator_config):
-            return None
-
-    active = activate_telemetry_configurations([Active, GatedOff], sentinel)
+    active = activate_telemetry_configurations([Active], sentinel)
 
     ((configuration, handler),) = active
     assert type(configuration) is Active
@@ -279,30 +277,30 @@ def test_activation_registers_and_shutdown_unregisters():
     assert configuration.flushed
 
 
-def test_activation_prefers_leaf_classes():
-    """The override rule: a subclass replaces every class it inherits from,
-    an unrelated class is additive - so a repo override of a built-in never
-    doubles the reports."""
+def test_a_configuration_that_cannot_build_stops_the_activation():
+    """Listed means wanted: a configuration that answers no handler raises,
+    and the ones activated before it are shut down and unregistered."""
 
-    class Base(TelemetryConfiguration):
+    class Active(TelemetryConfiguration):
         def get_handler(self, orchestrator_config):
             return _ListHandler()
 
-    class Override(Base):
+        def shutdown(self):
+            self.flushed = True
+
+    class Broken(TelemetryConfiguration):
+        def get_handler(self, orchestrator_config):
+            raise MisconfigurationError("no DSN")
+
+    class Bare(TelemetryConfiguration):
         pass
 
-    class Additive(TelemetryConfiguration):
-        def get_handler(self, orchestrator_config):
-            return _ListHandler()
-
-    active = activate_telemetry_configurations([Base, Override, Additive], None)
-    try:
-        assert {type(configuration) for configuration, _ in active} == {
-            Override,
-            Additive,
-        }
-    finally:
-        shutdown_telemetry_configurations(active)
+    before = get_registered_handlers()
+    with pytest.raises(MisconfigurationError, match="no DSN"):
+        activate_telemetry_configurations([Active, Broken], None)
+    assert get_registered_handlers() == before
+    with pytest.raises(NotImplementedError):
+        activate_telemetry_configurations([Bare], None)
 
 
 def test_shutdown_failure_is_logged_not_raised():
@@ -324,13 +322,13 @@ def test_shutdown_failure_is_logged_not_raised():
     assert handler not in get_registered_handlers()
 
 
-def test_configuration_discovered_from_the_repo(e2e_repo, monkeypatch, tmp_path):
-    """The configuration-first path end to end: a TelemetryConfiguration in
-    a telemetry.py file of the repo activates for a headless run - gated on
-    its environment values - reports the error of the run, and is flushed
-    and unregistered afterwards."""
+def test_a_listed_configuration_activates_for_a_run(e2e_repo, monkeypatch, tmp_path):
+    """The settings path end to end: a TelemetryConfiguration the TELEMETRY
+    setting lists activates for a headless run, reports the error of the run,
+    and is flushed and unregistered afterwards."""
     sink = tmp_path / "telemetry.jsonl"
     monkeypatch.setenv("WINSLOW_TEST_TELEMETRY_SINK", str(sink))
+    monkeypatch.setattr(settings, "TELEMETRY", ["e2e_repo.telemetry.FileSink"])
     orchestrator = headless_orchestrator(e2e_repo, "my-boom-eligibility")
 
     with pytest.raises(EligibilityError):
@@ -345,3 +343,27 @@ def test_configuration_discovered_from_the_repo(e2e_repo, monkeypatch, tmp_path)
     assert not any(
         type(h).__name__ == "_FileSinkHandler" for h in get_registered_handlers()
     )
+
+
+class ServeConfiguration(TelemetryConfiguration):
+    """Listed by path in the serve test: its handler records nothing, the
+    test reads the registry while the serve handler runs."""
+
+    def get_handler(self, orchestrator_config):
+        return _ListHandler()
+
+
+def test_a_listed_configuration_activates_under_serve(e2e_repo, monkeypatch):
+    monkeypatch.setattr(settings, "TELEMETRY", ["test_telemetry.ServeConfiguration"])
+    seen = []
+
+    def fake_serve(self):
+        seen.append([type(h) for h in get_registered_handlers()])
+
+    monkeypatch.setattr(Orchestrator, "_handle_serve", fake_serve)
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["serve"], namespace=OrchestratorConfig()
+    )
+    Orchestrator(config, directory=e2e_repo, unknown_args=unknown).start()
+    assert seen == [[_ListHandler]]
+    assert _ListHandler not in [type(h) for h in get_registered_handlers()]

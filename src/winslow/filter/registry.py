@@ -1,5 +1,6 @@
-from winslow.autodiscovery import BaseRegistry
+from winslow.conf import settings
 from winslow.exceptions import PluginError
+from winslow.plugins import BaseRegistry
 
 from .base import TaskFilter
 from .builtin import NameFilter, GroupFilter
@@ -8,21 +9,22 @@ from .query import FilterQuery
 
 
 class FilterRegistry(BaseRegistry):
-    _config_key = "filter_plugins"
-    _entry_point_group = "winslow.filter_plugins"
+    """The filters of one workflow: the built-ins, then the FILTER_PLUGINS of
+    the project. A filter registers under its commands."""
+
     _base_class = TaskFilter
+    _setting = "FILTER_PLUGINS"
 
     def __init__(self, orchestrator_config, workflow_config):
-        super().__init__()
         self.orchestrator_config = orchestrator_config
         self.workflow_config = workflow_config
         self._short = {}
         self._long = {}
         self._default = NameFilter
-        self._register(GroupFilter, source="builtin")
-        self.discover_installed()
+        self._register(GroupFilter)
+        self.load(settings.FILTER_PLUGINS)
 
-    def _do_register(self, cls, source):
+    def _do_register(self, cls):
         if cls.short_command:
             existing = self._short.get(cls.short_command)
             if existing and existing is not cls:

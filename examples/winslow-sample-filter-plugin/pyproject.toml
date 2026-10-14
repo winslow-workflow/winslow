@@ -11,6 +11,3 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
-
-[project.entry-points."winslow.filter_plugins"]
-winslow-sample-filter-plugin = "winslow_sample_filter_plugin"

@@ -225,7 +225,7 @@ class BaseRunner(_Base):
             elif status is TaskStatus.ERROR:
                 batch.errored.add(task.identity_key)
         # A seed write stamps SEED: a fresh stamp would move checked_at
-        # without a probe (see SessionPersistenceAdapter).
+        # without a probe (see SessionPersistenceSubscriber).
         self.store.set(task, status, origin=origin)
 
     def seed_interrupted_batches(self, records):
@@ -242,6 +242,8 @@ class BaseRunner(_Base):
                 task_count=record.task_count,
                 status=ExecutionStatus.INTERRUPTED,
                 user=record.user,
+                credential=record.credential,
+                credential_id=record.credential_id,
                 # The stored snapshot restores the flag pills of the history
                 # card, which reads the context fields.
                 execution_context=(

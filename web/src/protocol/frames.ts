@@ -2,7 +2,7 @@
 // one per lane of src/winslow/protocol/lanes.py. FRAME_TYPES lists every wire
 // type name; tests/test_serve_web.py compares it with the Python registry.
 
-import type { BatchInfo, SessionSnapshot, TaskStatusName } from './model'
+import type { Ack, BatchInfo, SessionSnapshot, TaskStatusName } from './model'
 
 export const FRAME_TYPES = [
   'hello',
@@ -62,7 +62,7 @@ export interface RequestFrame {
 
 export interface ActionFrame {
   type: 'action'
-  session_id: string
+  session_id?: string
   action: string
   request_id: string
   fields: Record<string, unknown>
@@ -75,7 +75,9 @@ export type ClientFrame = HelloFrame | SubscribeFrame | TaskLogSubscribeFrame | 
 export interface HelloOkFrame {
   type: 'hello_ok'
   user: string
-  // The environment of the serving process and its header color, a CSS color.
+  // The service and the environment of the serving process, and the header
+  // color of the environment, a CSS color.
+  service: string
   env: string
   env_color: string
   // The PermissionContext of the connection: the expanded permission set,
@@ -84,6 +86,8 @@ export interface HelloOkFrame {
   scopes: string[]
   credential: string
   expires_at: number | null
+  // The id of the credential the server records, the token id or the ticket id.
+  credential_id?: string | null
 }
 
 export interface HelloErrorFrame {
@@ -109,7 +113,7 @@ export interface ResultFrame {
 export interface AckFrame {
   type: 'ack'
   request_id: string | null
-  ack: { accepted: boolean; reason: string | null; batch_uuid?: string | null }
+  ack: Ack
 }
 
 export interface TaskLogBacklogFrame {

@@ -8,14 +8,14 @@ import time
 import anyio
 import pytest
 
-from winslow.actions import RunTasks
+from winslow.client.base import SessionClient
 from winslow.constants import Mode
 from winslow.runner.execution import ExecutionStatus
 from winslow.serve.app import ServeApp
 from winslow.serve.server import HttpServer
 from winslow.session import Session, SessionRegistry
 
-from harness import serve_credentials
+from harness import serve_authenticator
 from harness import bare_orchestrator, build_workflow, by_name, scratch_state_store
 
 
@@ -27,7 +27,7 @@ def served_session(e2e_repo):
     registry.register(session)
     app = ServeApp(
         registry,
-        serve_credentials(),
+        serve_authenticator(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
     )
@@ -36,7 +36,7 @@ def served_session(e2e_repo):
 
 def running_batch(workflow, session, keys):
     ack = session.actions.submit_guarded(
-        RunTasks(keys=keys, options={"disable_concurrency": True})
+        SessionClient.run_tasks(keys=keys, options={"disable_concurrency": True})
     )
     assert ack.accepted, ack.reason
     batch = workflow.runner.get_batch(ack.batch_uuid)
@@ -102,7 +102,7 @@ def mcp_session(e2e_repo):
     registry.register(session)
     return ServeApp(
         registry,
-        serve_credentials(),
+        serve_authenticator(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         endpoints=("ws", "mcp"),

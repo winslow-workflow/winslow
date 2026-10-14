@@ -34,7 +34,7 @@ class MoodSystemStats(SystemStats):
 
 class ResourcesMoodPlugin(DashboardSystemResourcesPlugin):
     label = "System Mood"
-    replace = "builtin.dashboard-system-resources-plugin"
+    replace = "dashboard-system-resources-plugin"
 
     def create_widget(self, context):
         return MoodSystemStats()

@@ -11,6 +11,3 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-root = ""
-
-[project.entry-points."winslow.tui_plugins"]
-winslow-sample-tui-plugin = "winslow_sample_tui_plugin"

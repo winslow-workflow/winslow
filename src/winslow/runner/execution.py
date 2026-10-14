@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum, auto
 from typing import Optional, TYPE_CHECKING
 
-from winslow.settings import EXECUTION_RECORD_LOG_BUFFER_SIZE
+from winslow.conf import settings
 
 if TYPE_CHECKING:
     from winslow.task.context import TaskExecutionContext
@@ -103,7 +103,7 @@ class ExecutionRecord:
     store: "Optional[ExecutionRecordStore]" = field(default=None, repr=False)
     logs: collections.deque = field(
         default_factory=lambda: collections.deque(
-            maxlen=EXECUTION_RECORD_LOG_BUFFER_SIZE
+            maxlen=settings.EXECUTION_RECORD_LOG_BUFFER_SIZE
         )
     )
     # Each container below is rebound per write, so a reader on another
@@ -195,9 +195,11 @@ class ExecutionBatch:
     started_at: datetime | None = None
     completed_at: datetime | None = None
     execution_context: Optional["TaskExecutionContext"] = None
-    # The user of the request that submitted the batch, or None for a local run
-    # (see winslow.task.context.current_user).
+    # The user of the request that submitted the batch, the kind and the id of
+    # its credential. None for a local run (see PermissionContext).
     user: str | None = None
+    credential: str | None = None
+    credential_id: str | None = None
     # Task identity keys, batch-scoped. The durable data stays in the
     # TaskStatus values, which fill this set again each batch.
     errored: set = field(default_factory=set)
@@ -284,14 +286,17 @@ def _detached_error(exc):
 
 def new_batch(uuid, action, tasks, execution_context, errored):
     # A lazy import: winslow.task imports the runner package.
-    from winslow.task.context import current_user
+    from winslow.task.context import current_permissions
 
+    permissions = current_permissions()
     return ExecutionBatch(
         uuid=uuid,
         action=action,
         created_at=datetime.now(),
         task_count=len(tasks),
         execution_context=execution_context,
-        user=current_user(),
+        user=permissions.user if permissions else None,
+        credential=permissions.credential if permissions else None,
+        credential_id=permissions.credential_id if permissions else None,
         errored=errored,
     )

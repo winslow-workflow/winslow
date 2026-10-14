@@ -4,7 +4,7 @@ from textual.widgets import Button, Checkbox
 
 from winslow.ui.builtin_plugins.workflow.pane_header import PaneSearch
 from winslow.ui.widgets.common import GuardedButton
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 
 class TaskBar(Widget):

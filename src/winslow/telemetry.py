@@ -1,15 +1,15 @@
 """A generic hook for error telemetry.
 
 A backend subclasses TelemetryHandler and activates through a
-TelemetryConfiguration or directly through register_error_handler. Each
-error emits once, at the error boundaries. A handler runs on the worker
-thread that hit the error: do not block. An exception from a handler is
-logged and never reaches the batch (see docs/telemetry.md).
+TelemetryConfiguration the TELEMETRY setting lists, or directly through
+register_error_handler. Each error emits once, at the error boundaries. A
+handler runs on the worker thread that hit the error: do not block. An
+exception from a handler is logged and never reaches the batch (see
+docs/telemetry.md).
 """
 
 from winslow._base import derive_name
 from winslow.logger import LOGGER
-from winslow.registry import Registry
 
 
 class TelemetryHandler:
@@ -62,13 +62,13 @@ def get_registered_handler(handler_class):
 
 
 class TelemetryConfiguration:
-    """The configuration-first activation seam: declared in the telemetry.py
-    files of a repo, driven by the orchestrator (see docs/telemetry.md)."""
+    """The activation seam: a class the TELEMETRY setting lists by path,
+    driven by the orchestrator (see docs/telemetry.md)."""
 
     def get_handler(self, orchestrator_config):
-        """Return the TelemetryHandler to register, or None to stay
-        inactive. An exception fails the start of the run loudly."""
-        return None
+        """Return the TelemetryHandler to register. A configuration that
+        cannot build raises MisconfigurationError, and the start stops."""
+        raise NotImplementedError
 
     def shutdown(self):
         """Flush and release the backend, once, before the process exits."""
@@ -78,46 +78,30 @@ class TelemetryConfiguration:
         return derive_name(cls)
 
 
-class TelemetryRegistry(Registry):
-    """Collects the TelemetryConfiguration classes of a repo from its
-    telemetry.py files."""
-
-    item_class = TelemetryConfiguration
-    file_filter = {"telemetry.py"}
-
-
 def activate_telemetry_configurations(configuration_classes, orchestrator_config):
-    """Register the handler of each active configuration and return the
-    [(configuration, handler)] pairs. Only leaf classes activate: a repo
-    subclass replaces the built-in it inherits from."""
-    # A lazy import: the contrib modules import this module, so a
-    # module-level import would make a cycle.
-    from winslow.contrib import default_telemetry_configurations
-
-    defaults = list(default_telemetry_configurations())
-    classes = defaults + [kls for kls in configuration_classes if kls not in defaults]
-    leaves = [
-        kls
-        for kls in classes
-        if not any(other is not kls and issubclass(other, kls) for other in classes)
-    ]
-
+    """Register the handler of each configuration, in order, and return the
+    [(configuration, handler)] pairs. Every listed configuration answers a
+    handler or stops the start (see TelemetryConfiguration.get_handler)."""
     active = []
-    for kls in sorted(leaves, key=lambda kls: kls.get_name()):
-        configuration = kls()
-        handler = configuration.get_handler(orchestrator_config)
-        if handler is None:
-            continue
-        register_error_handler(handler)
-        active.append((configuration, handler))
-        LOGGER.debug(f"Telemetry configuration {configuration} activated.")
+    try:
+        for kls in configuration_classes:
+            configuration = kls()
+            handler = configuration.get_handler(orchestrator_config)
+            register_error_handler(handler)
+            active.append((configuration, handler))
+            LOGGER.debug(f"Telemetry configuration {configuration} activated.")
+    except BaseException:
+        # A later configuration that cannot build leaves no earlier handler
+        # behind, so the next start of an embedding process is clean.
+        shutdown_telemetry_configurations(active)
+        raise
     return active
 
 
 def shutdown_telemetry_configurations(active):
-    """Unregister the handlers and flush the backends. A shutdown that
-    raises is logged: a failing backend must not mask the run result."""
-    for configuration, handler in active:
+    """Unregister the handlers and flush the backends, last first. A shutdown
+    that raises is logged: a failing backend must not mask the run result."""
+    for configuration, handler in reversed(active):
         unregister_error_handler(handler)
         try:
             configuration.shutdown()

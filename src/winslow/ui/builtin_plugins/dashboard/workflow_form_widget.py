@@ -15,7 +15,7 @@ from winslow.ui.widgets.common import GuardedButton
 
 from winslow.ui.widgets.common import FilterableOptionList
 from winslow.ui.validation import ORCHESTRATOR_FIELD, WORKFLOW_FIELD
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 
 class FormLabel(Label):

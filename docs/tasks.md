@@ -154,8 +154,8 @@ Run it headless with `winslow run --mode headless --workflow release`. Each vari
 | The variation | The result |
 | --- | --- |
 | The default, in the `local` environment | Build, test and verify complete. Publish is skipped, because the environment is not production. |
-| `WINSLOW_ENV=prod` | Every task completes. |
-| `WINSLOW_ENV=prod` and `--maintenance` | Publish is blocked, because a maintenance window is open. |
-| `WINSLOW_ENV=prod` and `--offline` | Verify is blocked, and publish waits on it. |
+| `ENV = "prod"` in the settings module | Every task completes. |
+| `ENV = "prod"` and `--maintenance` | Publish is blocked, because a maintenance window is open. |
+| `ENV = "prod"` and `--offline` | Verify is blocked, and publish waits on it. |
 
 Each task writes a marker into the `state` directory. Delete the directory to run the flow again.

@@ -9,7 +9,8 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 )
 from opentelemetry.trace import StatusCode
 
-from winslow import settings
+from winslow.conf import settings
+from winslow.exceptions import MisconfigurationError
 from winslow.contrib.otel import (
     OpenTelemetryConfiguration,
     OpenTelemetryHandler,
@@ -60,7 +61,7 @@ def test_task_error_span(e2e_repo, mode, spans):
     assert "winslow.groups" not in boom.attributes
     assert boom.attributes["winslow.phase"] == "run"
     assert boom.attributes["winslow.batch_uuid"]
-    assert boom.attributes["winslow.env"] == settings.env
+    assert boom.attributes["winslow.env"] == settings.ENV
     (event,) = boom.events
     assert event.name == "exception"
     assert event.attributes["exception.type"] == "RuntimeError"
@@ -110,14 +111,16 @@ def test_parameters_become_attributes(e2e_repo, mode):
 def test_configuration_inactive_without_endpoint():
     """The gate of the built-in: no OTLP endpoint means None - the backend
     costs nothing where it is not configured."""
-    assert OpenTelemetryConfiguration().get_handler(object()) is None
+    with pytest.raises(MisconfigurationError, match="set OTEL_TRACES_ENDPOINT"):
+        OpenTelemetryConfiguration().get_handler(object())
 
 
-def test_configuration_activates_from_the_environment(monkeypatch):
-    """An OTLP endpoint alone activates the built-in: the generic endpoint
-    gets /v1/traces appended (the OTLP http convention), the service name
+def test_configuration_activates_from_the_settings(monkeypatch):
+    """OTEL_TRACES_ENDPOINT alone activates the built-in: the service name
     defaults to winslow, and shutdown flushes the provider."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector.invalid:4318")
+    monkeypatch.setattr(
+        settings, "OTEL_TRACES_ENDPOINT", "http://collector.invalid:4318/v1/traces"
+    )
     configuration = OpenTelemetryConfiguration()
 
     handler = configuration.get_handler(object())
@@ -132,14 +135,12 @@ def test_configuration_activates_from_the_environment(monkeypatch):
     configuration.shutdown()
 
 
-def test_configuration_uses_the_traces_endpoint_as_given(monkeypatch):
-    """OTEL_EXPORTER_OTLP_TRACES_ENDPOINT names the full path already and
-    wins over the generic endpoint."""
-    monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://generic.invalid:4318")
-    monkeypatch.setenv(
-        "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", "http://traces.invalid:4318/v1/traces"
+def test_configuration_names_the_service(monkeypatch):
+    """OTEL_SERVICE_NAME names the resource."""
+    monkeypatch.setattr(
+        settings, "OTEL_TRACES_ENDPOINT", "http://traces.invalid:4318/v1/traces"
     )
-    monkeypatch.setenv("OTEL_SERVICE_NAME", "my-service")
+    monkeypatch.setattr(settings, "OTEL_SERVICE_NAME", "my-service")
     configuration = OpenTelemetryConfiguration()
 
     handler = configuration.get_handler(object())

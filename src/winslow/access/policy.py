@@ -1,8 +1,7 @@
-"""The policy: who holds which scopes. A Policy is a frozen snapshot every
-store produces (see winslow.access.ports), and scopes_for is the one rule over
-it, so the file store and a database store answer alike. PolicyFile is the
-schema of the policy file: the codec refuses an unknown key, a wrong shape, a
-bad name and a bad scope with the path of the field."""
+"""The policy: who holds which scopes. A Policy is a frozen snapshot of the
+policy file (see FilePolicyStore), and policy_scopes is the one rule over it.
+PolicyFile is the schema of the file: the codec refuses an unknown key, a
+wrong shape, a bad name and a bad scope with the path of the field."""
 
 import re
 from dataclasses import dataclass
@@ -10,7 +9,7 @@ from typing import Annotated
 
 from pydantic import AfterValidator, ConfigDict
 
-from winslow.permissions import ALL, expand, parse_scopes
+from winslow.access.permissions import ALL, expand, parse_scopes
 from winslow.protocol.codec import CODEC, ValidationError, report
 
 # A name is one token of the token file line and one TOML key.
@@ -148,24 +147,32 @@ class Policy:
 EMPTY = Policy(groups={}, users={})
 
 
-def scopes_for(policy, user, idp_groups=None):
+def policy_scopes(policy, user, idp_groups=None):
     """The scopes of a caller: the scopes of the groups the user entry names,
     the direct scopes of that entry, and the scopes of every group whose
     idp_groups intersect the groups a token asserts. An entry is optional: a
     user with no entry and no match holds no scope."""
-    entry = policy.users.get(user, User(name=user, groups=(), scopes=frozenset()))
+
+    entry = policy.users.get(user)
+    # The scopes the entry grants by itself, for a service account or a one-off.
+    direct = entry.scopes if entry else frozenset()
+
+    # The groups the entry lists under `groups = [...]`.
+    named = [policy.groups[name] for name in entry.groups] if entry else []
+
+    # The group names an identity provider put in the token (the OAuth kind).
     asserted = frozenset(idp_groups or ())
-    matched = (group for group in policy.groups.values() if group.idp_groups & asserted)
-    named = (policy.groups[name] for name in entry.groups)
-    return frozenset().union(
-        entry.scopes, *(group.scopes for group in (*named, *matched))
-    )
+
+    # The policy groups that admit one of those names through `idp_groups`.
+    matched = [group for group in policy.groups.values() if group.idp_groups & asserted]
+
+    return direct.union(*(group.scopes for group in named + matched))
 
 
 def policy_warnings(policy):
     """The sentences the startup log warns with: every group or user that
     grants every permission on every workflow, and every group that grants
-    nothing (see Credentials.describe)."""
+    nothing (see Authenticator.describe)."""
     everything = tuple(
         f"{kind} {entry.name!r} grants every permission on every workflow"
         for kind, entries in (("group", policy.groups), ("user", policy.users))

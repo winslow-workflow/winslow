@@ -14,7 +14,7 @@ from winslow.ui.builtin_plugins.dashboard.sessions import RestorableWidget
 from winslow.ui.modals import WorkflowConfirmation, ErrorDetail, ForceEndModal
 from winslow.ui.reads import READ_FAILURES, port_read
 from winslow.ui.validation import WorkflowFormValidator, FormValues
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 SESSION_ADOPTION_INTERVAL = 2
 

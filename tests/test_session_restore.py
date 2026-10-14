@@ -2,6 +2,7 @@
 store from the task snapshots, seeds an untrusted success as STALE, and
 registers the batches that a dead process left open as INTERRUPTED."""
 
+import json
 import time
 
 import pytest
@@ -125,6 +126,9 @@ def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):
                 "disable_concurrency": False,
             },
             tasks={"task-a": "A", "task-b": "B", "task-c": "C"},
+            user="can",
+            credential="token",
+            credential_id="9f86d081",
         )
     )
 
@@ -136,12 +140,43 @@ def test_open_batches_seed_as_interrupted(e2e_repo, state_store, mode):
     batch = second.runner.get_batch("dead-batch")
     assert batch.status is ExecutionStatus.INTERRUPTED
     assert batch.task_count == 3
+    assert (batch.user, batch.credential, batch.credential_id) == (
+        "can",
+        "token",
+        "9f86d081",
+    )
     # The stored option snapshot restores the context of the history card.
     assert batch.execution_context.dry_run is True
     assert batch.completed_at is not None
     assert batch not in second.runner.active_batches
     # The record stamped INTERRUPTED, so a second restore does not seed it.
     assert state_store.load_open_batches(session.session_id) == []
+
+
+def test_a_record_written_before_the_credential_fields_loads_with_none(state_store):
+    state_store.save_batch(
+        BatchRecord(
+            batch_uuid="old-batch",
+            session_id="old-session",
+            action="RUN",
+            created_at=time.time(),
+            tasks={"task-a": "A"},
+        )
+    )
+    path = (
+        state_store.open_directory
+        / "old-session"
+        / "batches"
+        / "old-batch"
+        / "record.json"
+    )
+    stored = json.loads(path.read_text())
+    for key in ("user", "credential", "credential_id"):
+        del stored[key]
+    path.write_text(json.dumps(stored))
+
+    (loaded,) = state_store.load_open_batches("old-session")
+    assert (loaded.user, loaded.credential, loaded.credential_id) == (None, None, None)
 
 
 def test_a_record_close_failure_does_not_break_the_restore(e2e_repo, state_store, mode):

@@ -75,6 +75,7 @@ function handshake(socket: FakeSocket) {
   socket.feed({
     type: 'hello_ok',
     user: 'can',
+    service: 'winslow',
     env: 'local',
     env_color: 'royalblue',
     scopes: [],
@@ -110,6 +111,7 @@ describe('the handshake', () => {
     socket.feed({
       type: 'hello_ok',
       user: 'can',
+      service: 'etl',
       env: 'uat',
       env_color: 'gold',
       scopes: [],
@@ -118,6 +120,7 @@ describe('the handshake', () => {
     })
     expect(wire.state).toBe('connected')
     expect(wire.user).toBe('can')
+    expect(wire.service).toBe('etl')
     expect(wire.env).toBe('uat')
     expect(wire.envColor).toBe('gold')
   })
@@ -129,6 +132,7 @@ describe('the handshake', () => {
     socket.feed({
       type: 'hello_ok',
       user: 'can',
+      service: 'winslow',
       env: 'local',
       env_color: 'royalblue',
       scopes: ['etl:check_task', 'etl:view_task', '*:view_task'],
@@ -146,13 +150,13 @@ describe('the handshake', () => {
     expect(wire.allows('etl', 'view_task')).toBe(false)
   })
 
-  it('keeps the hello_error reason when the refusal close follows', () => {
+  it('keeps the hello_error reason and takes the code of the close that follows', () => {
     const { wire, socket } = connect()
     socket.open()
     socket.feed({ type: 'hello_error', reason: 'bad bearer token', detail: null })
     socket.close(CREDENTIAL_REFUSED, 'bad bearer token')
     expect(wire.state).toBe('refused')
-    expect(wire.refusal).toEqual({ code: null, reason: 'bad bearer token', detail: null })
+    expect(wire.refusal).toEqual({ code: CREDENTIAL_REFUSED, reason: 'bad bearer token', detail: null })
     // No reconnect timer: a refusal waits for retry.
     expect(FakeSocket.instances).toHaveLength(1)
     wire.retry()

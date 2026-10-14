@@ -9,7 +9,7 @@ from winslow import Workflow
 from winslow.client import LocalAppClient
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
-from winslow.permissions import (
+from winslow.access.permissions import (
     ALL,
     CredentialKind,
     Permission,
@@ -24,7 +24,7 @@ from winslow.serve import create_app
 from winslow.session import Session, SessionRegistry
 from winslow.task.context import current_permissions, current_user, scoped_permissions
 
-from harness import TOKEN, serve_credentials
+from harness import TOKEN, serve_authenticator, started
 from harness import bare_orchestrator, build_workflow, scratch_state_store
 
 P = Permission
@@ -161,7 +161,7 @@ def test_a_base_class_sets_the_scope_name_for_its_family():
 def app_for(registry, orchestrator=None, state_store=None):
     return create_app(
         registry,
-        serve_credentials(),
+        serve_authenticator(),
         hello_timeout=1.0,
         orchestrator=orchestrator or bare_orchestrator(),
         state_store=state_store or scratch_state_store(),
@@ -214,7 +214,7 @@ def test_the_descriptors_and_the_manifests_carry_the_scope_name(e2e_repo, state_
     orchestrator = collecting_orchestrator(e2e_repo)
     registry = SessionRegistry()
     port = LocalAppClient(registry, orchestrator=orchestrator, state_store=state_store)
-    info = port.create_session("my-workflow")
+    info = started(port.create_session("my-workflow"))
     # The process dies: the manifest stays open with no live session.
     registry.remove(info.session_id)
 

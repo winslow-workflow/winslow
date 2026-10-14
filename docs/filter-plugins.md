@@ -3,7 +3,7 @@
 A filter plugin adds a command to the [filter language](filters.md). The built-in commands select a task by
 its name and by its group. A plugin command can select by any property of a task.
 
-A filter ships in a plugin package with an entry point in the `winslow.filter_plugins` group (see
+A filter is a class the settings module lists in `FILTER_PLUGINS` (see
 [How Winslow finds a plugin](plugins.md#how-winslow-finds-a-plugin)).
 
 ## Write a filter
@@ -54,10 +54,10 @@ winslow-sample-filter-plugin/
 
 [Download this example](https://github.com/winslow-workflow/winslow/tree/main/examples/winslow-sample-filter-plugin)
 
-The `pyproject.toml` declares the entry point:
+The [settings module](settings.md) of the workflow project lists the class:
 
-```toml title="examples/winslow-sample-filter-plugin/pyproject.toml"
---8<-- "examples/winslow-sample-filter-plugin/pyproject.toml"
+```python title="settings.py of the workflow project"
+FILTER_PLUGINS = ["winslow_sample_filter_plugin.filters.DependsOnFilter"]
 ```
 
 Install the package into the workflow project. An editable install keeps a local plugin live while

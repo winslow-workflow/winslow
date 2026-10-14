@@ -12,7 +12,7 @@ from winslow.constraints import (
 )
 from winslow.util import to_tuple, safe_repr, flatten
 from winslow.logger import LOGGER, TASK_LOGGER_NAME, get_task_dispatcher
-from winslow.settings import TASK_LOG_BUFFER_SIZE
+from winslow.conf import settings
 from winslow._parameterization import (
     _ParameterizationBase,
     _GetParametersNotImplemented,
@@ -169,7 +169,7 @@ class Task(_ParameterizationBase):
         modal. The graph calls this at setup time, in interactive mode only. The
         finalizer drops the buffer when the task is collected. A released task
         therefore frees its buffer, and a task that history retains keeps it."""
-        self._log_buffer = collections.deque(maxlen=TASK_LOG_BUFFER_SIZE)
+        self._log_buffer = collections.deque(maxlen=settings.TASK_LOG_BUFFER_SIZE)
         dispatcher = get_task_dispatcher()
         dispatcher.register_buffer(self.log_key, self._log_buffer)
         weakref.finalize(self, dispatcher.unregister, self.log_key)

@@ -5,11 +5,9 @@
 import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 
-import { messageOf } from '@/protocol/errors'
 import { plural } from '@/protocol/format'
-import type { Descriptors, ManifestInfo, SessionInfo } from '@/protocol/model'
+import type { Ack, Descriptors, ManifestInfo, SessionInfo } from '@/protocol/model'
 import { ACTIVE_BATCH_STATUSES } from '@/protocol/status'
-import { RequestError } from '@/protocol/wire'
 import { useConnectionStore } from './connection'
 import { useNoticesStore } from './notices'
 
@@ -109,22 +107,25 @@ export const useSessionsStore = defineStore('sessions', () => {
     { immediate: true },
   )
 
-  // One session through the port: create answers a SessionInfo. A failure
-  // lands in the history as a failed row with the traceback.
-  async function start(workflow: string, create: () => Promise<SessionInfo>) {
+  // One session through the port: the action answers an ack with the
+  // SessionInfo. A refusal lands in the history as a failed row with the
+  // traceback the ack carries.
+  async function start(workflow: string, create: () => Promise<Ack>) {
     const entry: PendingSession = { id: ++ids, workflow }
     pending.value.push(entry)
     notices.record('info', `Initializing workflow: ${workflow}`)
     try {
-      const info = await create()
+      const ack = await create()
+      if (!ack.accepted || !ack.session) {
+        const message = ack.reason ?? 'the server refused the start'
+        const detail = ack.detail ?? null
+        failed.value.push({ id: ++ids, workflow, error: message, detail, at: Date.now() / 1000 })
+        notices.error(`Could not start '${workflow}': ${message}`, 'Workflow init failed', detail)
+        return null
+      }
+      const info = ack.session
       rows.value = [...rows.value.filter((row) => row.session_id !== info.session_id), info]
       return info
-    } catch (error) {
-      const detail = error instanceof RequestError ? error.detail : null
-      const message = messageOf(error)
-      failed.value.push({ id: ++ids, workflow, error: message, detail, at: Date.now() / 1000 })
-      notices.error(`Could not start '${workflow}': ${message}`, 'Workflow init failed', detail)
-      return null
     } finally {
       pending.value = pending.value.filter((item) => item.id !== entry.id)
     }

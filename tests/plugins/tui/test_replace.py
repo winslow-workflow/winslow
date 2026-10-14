@@ -1,6 +1,5 @@
 """The replace mechanism, driven through the registry's public register(): a
-plugin can evict another in the same slot, but only coherently (matching slot)
-and only if it will actually load."""
+plugin names the one it evicts, in the same slot."""
 
 import pytest
 from textual.widgets import Label
@@ -20,7 +19,7 @@ class Target(UIPlugin):
 class Replacer(UIPlugin):
     name = "replacer"
     slot = Slots.TASK_OVERVIEW
-    replace = "builtin.target"
+    replace = "target"
 
     def create_widget(self, context):
         return Label("replacer")
@@ -29,17 +28,7 @@ class Replacer(UIPlugin):
 class ReplacerWrongSlot(UIPlugin):
     name = "replacer-wrong-slot"
     slot = Slots.WORKFLOW_LOGS
-    replace = "builtin.target"
-
-    def create_widget(self, context):
-        return Label("replacer")
-
-
-class OptInReplacer(UIPlugin):
-    name = "optin-replacer"
-    slot = Slots.TASK_OVERVIEW
-    replace = "builtin.target"
-    autoload = False
+    replace = "target"
 
     def create_widget(self, context):
         return Label("replacer")
@@ -47,22 +36,34 @@ class OptInReplacer(UIPlugin):
 
 def test_replace_evicts_target(make_registry):
     reg = make_registry()
-    reg.register(Target, source="builtin")
-    reg.register(Replacer, source="builtin")
+    reg.register(Target)
+    reg.register(Replacer)
 
     assert [p.get_name() for p in reg.for_slot(Slots.TASK_OVERVIEW)] == ["replacer"]
 
 
 def test_replace_slot_mismatch_raises(make_registry):
     reg = make_registry()
-    reg.register(Target, source="builtin")
-    with pytest.raises(PluginError):
-        reg.register(ReplacerWrongSlot, source="builtin")
+    reg.register(Target)
+    with pytest.raises(PluginError, match="slot mismatch"):
+        reg.register(ReplacerWrongSlot)
 
 
-def test_replace_with_optin_not_enabled_raises(make_registry):
+def test_a_replacement_keeps_the_companion_of_its_target(make_registry):
+    class Detail(UIPlugin):
+        name = "detail"
+        slot = Slots.TASK_OVERVIEW
+        detail_of = Target
+
+        def create_widget(self, context):
+            return Label("detail")
+
+    class Subclassing(Target):
+        name = "subclassing"
+        replace = "target"
+
     reg = make_registry()
-    # replace + autoload=False + not enabled would evict the target with nothing
-    # replacing it - rejected up front in UIPluginRegistry._register.
-    with pytest.raises(PluginError):
-        reg.register(OptInReplacer, source="builtin")
+    reg.register(Target)
+    reg.register(Detail)
+    reg.register(Subclassing)
+    assert reg.companion(Subclassing) is Detail

@@ -4,7 +4,8 @@ import pytest
 
 sentry_sdk = pytest.importorskip("sentry_sdk")
 
-from winslow import settings
+from winslow.conf import settings
+from winslow.exceptions import MisconfigurationError
 from winslow.contrib.sentry import (
     SentryConfiguration,
     SentryTelemetryHandler,
@@ -100,12 +101,14 @@ def test_reraise_still_one_event(e2e_repo, mode, events, handler):
     assert len(events) == 1
 
 
-def test_unscoped_error_event(e2e_repo, events):
+def test_unscoped_error_event(e2e_repo, events, monkeypatch):
     """A workflow that never starts reports with the workflow and the session
     stamped, and without a task tag - there is no task. No handler is
-    registered here: the active client alone activates the built-in
-    SentryConfiguration for the run, the configuration-first path end to
-    end."""
+    registered here: TELEMETRY lists the built-in SentryConfiguration, which
+    keeps the active client, the settings path end to end."""
+    monkeypatch.setattr(
+        settings, "TELEMETRY", ["winslow.contrib.sentry.SentryConfiguration"]
+    )
     orchestrator = headless_orchestrator(e2e_repo, "my-boom-eligibility")
 
     with pytest.raises(EligibilityError):
@@ -201,15 +204,16 @@ def test_configuration_inactive_without_dsn_or_client():
     the backend costs nothing where it is not configured."""
     sentry_sdk.get_global_scope().set_client(None)
 
-    assert SentryConfiguration().get_handler(object()) is None
+    with pytest.raises(MisconfigurationError, match="set SENTRY_DSN"):
+        SentryConfiguration().get_handler(object())
 
 
 def test_configuration_activates_from_the_environment(events, monkeypatch):
     """SENTRY_DSN alone activates the built-in: it owns the SDK init (PII
-    off, WINSLOW_ENV as the environment) and returns the handler."""
+    off, ENV as the environment) and returns the handler."""
     sentry_sdk.get_client().close()
     sentry_sdk.get_global_scope().set_client(None)
-    monkeypatch.setenv("SENTRY_DSN", TEST_DSN)
+    monkeypatch.setattr(settings, "SENTRY_DSN", TEST_DSN)
     configuration = SentryConfiguration()
 
     handler = configuration.get_handler(object())
@@ -218,14 +222,14 @@ def test_configuration_activates_from_the_environment(events, monkeypatch):
     client = sentry_sdk.get_client()
     assert client.is_active()
     assert client.options["send_default_pii"] is False
-    assert client.options["environment"] == settings.env
+    assert client.options["environment"] == settings.ENV
     configuration.shutdown()  # flush must leave the client active
     assert sentry_sdk.get_client().is_active()
 
 
 def test_setup_initializes_when_no_client(events):
     """Without an active client, setup_sentry owns the init: PII off, and the
-    environment defaults to WINSLOW_ENV instead of the SDK's "production"."""
+    environment defaults to ENV instead of the SDK's "production"."""
     sentry_sdk.get_client().close()
     sentry_sdk.get_global_scope().set_client(None)
 
@@ -234,7 +238,7 @@ def test_setup_initializes_when_no_client(events):
         client = sentry_sdk.get_client()
         assert client.is_active()
         assert client.options["send_default_pii"] is False
-        assert client.options["environment"] == settings.env
+        assert client.options["environment"] == settings.ENV
     finally:
         unregister_error_handler(handler)
 
@@ -280,9 +284,9 @@ def test_error_logs_become_breadcrumbs_not_events(events):
 
 def test_setup_honors_sentry_environment_and_release(events, monkeypatch):
     """SENTRY_ENVIRONMENT and SENTRY_RELEASE pass to the SDK explicitly:
-    the SDK reads os.environ only, so a .env value would otherwise be lost."""
-    monkeypatch.setenv("SENTRY_ENVIRONMENT", "staging")
-    monkeypatch.setenv("SENTRY_RELEASE", "1.2.3")
+    the SDK reads os.environ only, and the values live in the settings."""
+    monkeypatch.setattr(settings, "SENTRY_ENVIRONMENT", "staging")
+    monkeypatch.setattr(settings, "SENTRY_RELEASE", "1.2.3")
     sentry_sdk.get_client().close()
     sentry_sdk.get_global_scope().set_client(None)
 

@@ -14,7 +14,7 @@ from winslow.exceptions import (
     StorageError,
 )
 from winslow.logger import LOGGER
-from winslow import settings
+from winslow.conf import settings
 
 
 # The sentinel for a key with no record. None cannot mark it, because None is

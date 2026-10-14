@@ -1,6 +1,5 @@
 import asyncio
 import inspect
-import traceback
 from functools import partial
 
 from textual import on
@@ -10,7 +9,6 @@ from textual.widgets import Footer, Header, Button
 
 from winslow.ui import screens
 from winslow.ui.store_adapter import SessionLifecycleEvent
-from winslow.actions import EndSession
 from winslow.events import SessionEndedEvent
 from winslow.protocol.closes import CREDENTIAL_EXPIRED
 
@@ -99,19 +97,23 @@ class Winslow(App):
         self.client.subscribe_connection(self._relay_connection)
 
     def _paint_environment(self):
-        """The header names the environment of the serving process and takes
-        its color (see winslow.settings.ENV_COLORS)."""
+        """The header names the service and the environment of the serving
+        process and takes the color of the environment (see ENV_COLORS)."""
         environment = self.client.environment()
+        self.title = environment.service
         self.sub_title = environment.name
         try:
             color = Color.parse(environment.color)
         except ColorParseError:
             self.logger.warning(
                 f"{environment.color!r} is not a color the header can paint - "
-                f"set WINSLOW_ENV_COLORS with a CSS color name or a hex value."
+                f"set ENV_COLORS in the settings module with a CSS color name or a hex value."
             )
             return
-        self.query_one(Header).styles.background = color
+        header = self.query_one(Header)
+        header.styles.background = color
+        # Black on a light color, white on a dark one, so gold reads as well as red.
+        header.styles.color = color.get_contrast_text()
 
     def _relay_connection(self, event):
         self.post_message(
@@ -153,27 +155,27 @@ class Winslow(App):
         )
 
     async def _start_session(self, workflow_name, create):
-        """One session through the port: `create` is the AppClient call that
-        answers a SessionInfo. A failure lands in the history as a failed row
-        with the traceback."""
+        """One session through the port: `create` is the AppClient action that
+        answers a SessionAck. A refusal lands in the history as a failed row
+        with the traceback the ack carries (see SessionAck.detail)."""
         row_widget = await self.dashboard.add_pending_session(workflow_name)
         self.logger.info(f"Initializing workflow: {workflow_name}")
-        try:
-            session_info = await asyncio.to_thread(create)
-        except Exception as e:
-            # The session log carries the traceback through the create flow;
-            # the failed row shows it for the ErrorDetail modal. A wire
-            # refusal carries the server traceback (see RequestError.detail).
-            tb = getattr(e, "detail", None) or traceback.format_exc()
-            self.logger.error(f"Failed to initialize workflow '{workflow_name}': {e}")
+        ack = await asyncio.to_thread(create)
+        if not ack.accepted:
+            self.logger.error(
+                f"Failed to initialize workflow '{workflow_name}': {ack.reason}"
+            )
             await row_widget.remove()
-            await self.dashboard.add_failed_session(workflow_name, tb)
+            await self.dashboard.add_failed_session(
+                workflow_name, ack.detail or ack.reason
+            )
             self.notify(
-                f"Could not start '{workflow_name}': {e}",
+                f"Could not start '{workflow_name}': {ack.reason}",
                 title="Workflow init failed",
                 severity="error",
             )
             return
+        session_info = ack.session
 
         self.logger.info(f"Workflow '{workflow_name}' ready.")
         row_widget.complete(session_info)
@@ -239,7 +241,7 @@ class Winslow(App):
         # releases the workflow cache at once.
         screen = self.get_screen(session_screen_name(session_id))
         screen.prepare_session_end()
-        ack = screen.client.submit(EndSession())
+        ack = screen.client.end_session()
         if not ack.accepted:
             self.notify(ack.reason, severity="warning")
 

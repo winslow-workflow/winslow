@@ -15,7 +15,7 @@ from winslow.events import (
 )
 from winslow.exceptions import RegistrationError
 from winslow.session import Session
-from winslow.state import SessionPersistenceAdapter
+from winslow.state import SessionPersistenceSubscriber
 from winslow.task.status import TaskStatus
 
 from harness import build_workflow, by_name, ready, run_batch
@@ -78,7 +78,7 @@ def test_close_is_idempotent_and_final():
 
 
 def test_the_persistence_subscriber_acts_only_on_run_writes(state_store):
-    adapter = SessionPersistenceAdapter(state_store, "sess-origin")
+    adapter = SessionPersistenceSubscriber(state_store, "sess-origin")
     try:
         adapter.on_task_status(
             TaskStatusEvent(key="k", status=TaskStatus.COMPLETED, origin=Origin.SEED)

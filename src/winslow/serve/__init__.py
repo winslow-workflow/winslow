@@ -1,9 +1,9 @@
 """The serve process: a websocket endpoint and an optional MCP mount over the
 live sessions of a SessionRegistry (see ServeApp). Requires the [serve] extra."""
 
-from .auth import Credentials, mint_ticket, verify_ticket
+from .auth import Authenticator, mint_ticket, verify_ticket
 
-__all__ = ["Credentials", "mint_ticket", "verify_ticket", "create_app"]
+__all__ = ["Authenticator", "mint_ticket", "verify_ticket", "create_app"]
 
 
 def create_app(*args, **kwargs):

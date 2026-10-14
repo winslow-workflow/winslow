@@ -1,5 +1,5 @@
 // One method per Read declaration of src/winslow/client/base.py, typed by its
-// result, plus one method per action of src/winslow/actions.py.
+// result, plus one method per Action declaration, typed by its ack.
 
 import type {
   Ack,
@@ -37,16 +37,17 @@ export class AppReads {
     return this.wire.request('host_stats') as Promise<HostStats>
   }
 
+  // The two app actions: the ack carries the SessionInfo, or a refusal with its traceback.
   createSession(
     workflow: string,
     overrides: Record<string, unknown> | null,
     values: Record<string, unknown> | null,
-  ): Promise<SessionInfo> {
-    return this.wire.request('create_session', { workflow, overrides, values }) as Promise<SessionInfo>
+  ): Promise<Ack> {
+    return this.wire.action(null, 'create_session', { workflow, overrides, values })
   }
 
-  restoreSession(sessionId: string): Promise<SessionInfo> {
-    return this.wire.request('restore_session', { session_id: sessionId }) as Promise<SessionInfo>
+  restoreSession(sessionId: string): Promise<Ack> {
+    return this.wire.action(null, 'restore_session', { session_id: sessionId })
   }
 }
 

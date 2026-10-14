@@ -1,25 +1,26 @@
 """The serve process: ServeApp owns the process state (the registry, the
-credential policy, the bridges), Connection owns one socket after its hello
+authenticator, the bridges), Connection owns one socket after its hello
 (the session queues, the control queue, the one sender task, the request
 jobs). create_app builds the ASGI app from a ServeApp."""
 
 import asyncio
 import json
+import socket
 import time
-import traceback
 from contextlib import asynccontextmanager
 from importlib.resources import files as package_files
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from starlette.applications import Starlette
+from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import FileResponse
 from starlette.routing import Mount, Route, WebSocketRoute
 from starlette.staticfiles import StaticFiles
 from starlette.websockets import WebSocketState
 
-from winslow import settings
-from winslow.actions import Action
-from winslow.constants import DEFAULT_ENDPOINTS, ENDPOINTS, LOOPBACK_HOSTS
+from winslow.conf import settings
+from winslow.constants import ANY_HOSTS, DEFAULT_ENDPOINTS, ENDPOINTS, LOOPBACK_HOSTS
 from winslow.client import LocalAppClient
 from winslow.protocol.codec import CODEC, ValidationError, report
 from winslow.protocol.closes import (
@@ -35,11 +36,11 @@ from winslow.protocol.closes import (
 from winslow.exceptions import CredentialRefused, MisconfigurationError, RequestError
 from winslow.logger import LOGGER
 from winslow.serve.bridge import EventBridge, FrameQueue
-from winslow.authz import check
-from winslow.permissions import Permission, wire_scopes
+from winslow.access.authz import check
+from winslow.access.permissions import Permission, wire_scopes
 from winslow.task.context import scoped_permissions
 from winslow._meta import _tagged, handles
-from winslow.client.base import PORT_READS
+from winslow.client.base import PORT_ACTIONS, PORT_READS
 from winslow.protocol.frames import (
     AckFrame,
     ActionFrame,
@@ -96,20 +97,37 @@ def parse_frame(message):
 
 def page_origins(host, port):
     """The origins a browser sends for the web UI the serve process hands
-    out itself. A loopback bind answers under every loopback name."""
-    hosts = LOOPBACK_HOSTS if host in LOOPBACK_HOSTS else (host,)
+    out itself. A loopback bind answers under every loopback name, a bind on
+    every interface under the loopback names and the name of the host."""
+    if host in LOOPBACK_HOSTS:
+        hosts = LOOPBACK_HOSTS
+    elif host in ANY_HOSTS:
+        hosts = LOOPBACK_HOSTS + (socket.gethostname(),)
+    else:
+        hosts = (host,)
     return tuple(
         f"http://[{name}]:{port}" if ":" in name else f"http://{name}:{port}"
         for name in hosts
     )
 
 
+def public_origin():
+    """The origin of SERVE_PUBLIC_URL, the address clients reach the server on, or
+    None without one."""
+    if settings.SERVE_PUBLIC_URL is None:
+        return None
+    parts = urlsplit(settings.SERVE_PUBLIC_URL)
+    return f"{parts.scheme}://{parts.netloc}"
+
+
 def serve_origins(host, port, endpoints):
-    """The browser origins the websocket accepts: WINSLOW_ORIGINS, plus the
-    origins of the served page when the web endpoint is on."""
-    listed = tuple(o for o in settings.SERVE_ORIGINS.split(",") if o)
+    """The browser origins the websocket accepts: SERVE_ORIGINS, the origin
+    of SERVE_PUBLIC_URL, plus the origins of the served page when the web endpoint
+    is on."""
+    listed = tuple(settings.SERVE_ORIGINS)
+    public = (public_origin(),) if public_origin() else ()
     served = page_origins(host, port) if "web" in endpoints else ()
-    return listed + served
+    return listed + public + served
 
 
 class Bridges:
@@ -146,13 +164,13 @@ class Bridges:
 class ServeApp:
     """One serve process: the live sessions of the registry behind the
     endpoints of ENDPOINTS: the websocket, the web UI at the root, and the
-    MCP mount. The endpoints share the registry and the credential policy.
+    MCP mount. The endpoints share the registry and the authenticator.
     The port carries the orchestrator and the state store (see LocalAppClient)."""
 
     def __init__(
         self,
         registry,
-        credentials,
+        authenticator,
         *,
         orchestrator,
         state_store,
@@ -164,7 +182,7 @@ class ServeApp:
         allowed_origins=None,
     ):
         self.registry = registry
-        self.credentials = credentials
+        self.authenticator = authenticator
         self.allowed_origins = allowed_origins
         self.hello_timeout = hello_timeout
         self.qsize = qsize
@@ -223,20 +241,25 @@ class ServeApp:
 
     async def read(self, spec, session_id, fields):
         """One port read on a worker thread, for both endpoints. A refusal raises
-        RequestError with the served reason. A traceback read runs project
-        init code, so a broad catch answers, with the traceback for the error
-        modal of a client (see RequestError.detail)."""
-        caught = Exception if spec.traceback else READ_REFUSALS
+        RequestError with the served reason."""
         try:
             return await asyncio.to_thread(self._port_call, spec, session_id, fields)
-        except caught as exc:
+        except READ_REFUSALS as exc:
             reason = str(exc.args[0] if exc.args else exc)
-            detail = traceback.format_exc() if spec.traceback else None
-            raise RequestError(reason, detail=detail) from exc
+            raise RequestError(reason) from exc
 
-    async def submit(self, session_id, action):
-        """One guarded submit on a worker thread, for both endpoints. An unknown
-        session id raises RequestError (see SessionRegistry.resolve)."""
+    async def submit(self, action, session_id=None):
+        """One guarded submit on a worker thread, for both endpoints: an app
+        action to the handler of the port, a session action to the handler of
+        the named session. An unknown session id raises RequestError (see
+        SessionRegistry.resolve)."""
+        if action.spec.scope == "app":
+            return await asyncio.to_thread(self.local.actions.submit_guarded, action)
+        if session_id is None:
+            raise RequestError(
+                f"{action.spec.name} is a session action - the frame names the "
+                f"session in session_id."
+            )
         try:
             session = self.registry.resolve(session_id)
         except KeyError as exc:
@@ -286,7 +309,13 @@ class ServeApp:
             routes.append(Route("/", self.index))
             assets = self.static_dir / "assets"
             if assets.is_dir():
-                routes.append(Mount("/assets", app=StaticFiles(directory=assets)))
+                # A front application on a listed origin embeds the page and
+                # loads the module script from here: a module needs CORS.
+                files = CORSMiddleware(
+                    StaticFiles(directory=assets),
+                    allow_origins=list(self.allowed_origins or ()),
+                )
+                routes.append(Mount("/assets", app=files))
         if self.mcp_endpoint is not None:
             routes.append(Mount("/", app=self.mcp_endpoint.streamable_http_app()))
         return Starlette(routes=routes, lifespan=self._lifespan)
@@ -333,7 +362,9 @@ class ServeApp:
             message = await asyncio.wait_for(websocket.receive(), self.hello_timeout)
         except asyncio.TimeoutError:
             await self._refuse(
-                websocket, HELLO_TIMEOUT, f"no hello within {self.hello_timeout:g}s"
+                websocket,
+                HELLO_TIMEOUT,
+                f"no connection request within {self.hello_timeout:g}s",
             )
             return None
         if message["type"] == "websocket.disconnect":
@@ -341,11 +372,14 @@ class ServeApp:
         try:
             frame = parse_frame(message)
             if frame.get("type") != HelloFrame.type:
-                raise ValueError("the first message must be a hello.")
+                raise ValueError("the first message must be the connection request.")
             hello = CODEC.decode(HelloFrame, frame)
         except ValidationError as exc:
             await self._refuse(
-                websocket, MALFORMED_HELLO, "the hello is malformed", detail=report(exc)
+                websocket,
+                MALFORMED_HELLO,
+                "the connection request is malformed",
+                detail=report(exc),
             )
             return None
         except ValueError as exc:
@@ -361,7 +395,7 @@ class ServeApp:
             return None
         try:
             # Off the loop: a store behind a database blocks no other socket.
-            return await asyncio.to_thread(self.credentials.verify_hello, hello)
+            return await asyncio.to_thread(self.authenticator.verify_hello, hello)
         except CredentialRefused as exc:
             await self._refuse(websocket, CREDENTIAL_REFUSED, str(exc))
             return None
@@ -375,7 +409,7 @@ class Connection:
     def __init__(self, app, websocket, permissions):
         self.app = app
         self.websocket = websocket
-        # The PermissionContext of the hello (see winslow.permissions).
+        # The PermissionContext of the hello (see winslow.access.permissions).
         self.permissions = permissions
         self.wake = asyncio.Event()
         self.control = FrameQueue(wake=self.wake, maxlen=app.qsize)
@@ -389,11 +423,13 @@ class Connection:
             encode_frame(
                 HelloOkFrame(
                     user=self.permissions.user,
-                    env=settings.env,
-                    env_color=settings.ENV_COLOR,
+                    service=settings.SERVICE_NAME,
+                    env=settings.ENV,
+                    env_color=settings.env_color(),
                     scopes=wire_scopes(self.permissions.scopes),
                     credential=self.permissions.credential,
                     expires_at=self.permissions.expires_at,
+                    credential_id=self.permissions.credential_id,
                 )
             )
         )
@@ -652,17 +688,21 @@ class Connection:
         """One action as an ack frame, or an error frame (see ServeApp.submit).
         The handler runs as the user of this socket (see Connection.run)."""
         try:
-            action = Action.build(envelope.action, envelope.fields)
-            ack = await self.app.submit(envelope.session_id, action)
+            spec = PORT_ACTIONS.get(envelope.action)
+            if spec is None:
+                raise ValueError(
+                    f"{envelope.action!r} names no action. The actions are "
+                    f"{sorted(PORT_ACTIONS)}."
+                )
+            action = spec.build(envelope.fields)
+            ack = await self.app.submit(action, envelope.session_id)
         except (ValueError, RequestError) as exc:
             self.request_error(envelope.request_id, str(exc))
             return
         self.reply(AckFrame(request_id=envelope.request_id, ack=ack))
 
     async def run_read(self, envelope, spec):
-        """One port read as a result frame, or an error frame (see ServeApp.read).
-        create_session and restore_session are reads, so the session start
-        runs as the user of this socket too."""
+        """One port read as a result frame, or an error frame (see ServeApp.read)."""
         fields = {name: getattr(envelope, name) for name in spec.fields}
         try:
             result = await self.app.read(
@@ -686,11 +726,11 @@ Connection.inbound = {
 }
 
 
-def create_app(registry, credentials, *, orchestrator, state_store, **kwargs):
+def create_app(registry, authenticator, *, orchestrator, state_store, **kwargs):
     """The ASGI app of one serve process (see ServeApp)."""
     return ServeApp(
         registry,
-        credentials,
+        authenticator,
         orchestrator=orchestrator,
         state_store=state_store,
         **kwargs,

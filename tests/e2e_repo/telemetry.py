@@ -1,10 +1,11 @@
-"""The telemetry fixture of the e2e repo: a file-sink backend, gated on an
-environment value like the real built-ins, so it stays inert in every test
-that does not set WINSLOW_TEST_TELEMETRY_SINK."""
+"""The telemetry fixture of the e2e repo: a file-sink backend the one
+telemetry test lists in TELEMETRY. The path of the sink comes from
+WINSLOW_TEST_TELEMETRY_SINK, which that test sets."""
 
 import json
 import os
 
+from winslow.exceptions import MisconfigurationError
 from winslow.telemetry import TelemetryConfiguration, TelemetryHandler
 
 
@@ -50,7 +51,7 @@ class FileSink(TelemetryConfiguration):
     def get_handler(self, orchestrator_config):
         self._path = os.environ.get("WINSLOW_TEST_TELEMETRY_SINK")
         if not self._path:
-            return None
+            raise MisconfigurationError("WINSLOW_TEST_TELEMETRY_SINK is unset")
         self._mode = orchestrator_config.mode.value
         return _FileSinkHandler(self._path)
 

@@ -8,16 +8,8 @@ from dataclasses import asdict
 
 import pytest
 
-from winslow import settings
-from winslow.actions import (
-    BatchAck,
-    CheckTasks,
-    ClearCacheEntries,
-    EndSession,
-    LoadCacheEntries,
-    RunTasks,
-    StopBatch,
-)
+from winslow.conf import settings
+from winslow.actions import BatchAck
 from winslow.client import LocalAppClient, LocalSessionClient
 from winslow.constants import Mode
 from winslow.events import (
@@ -47,6 +39,7 @@ from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus
 
 from harness import (
+    started,
     bare_orchestrator,
     build_workflow,
     by_name,
@@ -84,7 +77,7 @@ def local_orchestrator(e2e_repo, *workflow_argv):
 
 def run_to_completion(workflow, client, task):
     """Submit one run through the port and block until the batch drains."""
-    ack = client.submit(RunTasks(keys=(task.identity_key,)))
+    ack = client.run_tasks(keys=(task.identity_key,))
     assert ack.accepted, ack.reason
     workflow.runner.get_batch(ack.batch_uuid).wait()
     return ack
@@ -130,10 +123,10 @@ def test_connection_subscription_is_idle_in_process(e2e_repo):
 
 
 def test_the_environment_carries_the_setting_and_its_color(monkeypatch):
-    monkeypatch.setattr(settings, "env", "uat")
-    monkeypatch.setattr(settings, "ENV_COLOR", "gold")
+    monkeypatch.setattr(settings, "ENV", "uat")
+    monkeypatch.setattr(settings, "ENV_COLORS", {"uat": "gold"})
     app = LocalAppClient(SessionRegistry(), None, None)
-    assert app.environment() == EnvInfo(name="uat", color="gold")
+    assert app.environment() == EnvInfo(service="winslow", name="uat", color="gold")
 
 
 def test_descriptors_names_the_collected_workflows_and_overrides(e2e_repo):
@@ -156,7 +149,7 @@ def test_create_session_registers_and_stamps_a_local_manifest(e2e_repo, state_st
     app = LocalAppClient(
         registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
     )
-    row = app.create_session("my-workflow")
+    row = started(app.create_session("my-workflow"))
     assert row.session_id in registry
     assert row.status == "ACTIVE"
     manifest = state_store.load_manifest(row.session_id)
@@ -178,13 +171,13 @@ def test_manifests_and_restore_round_trip(e2e_repo, state_store):
     app = LocalAppClient(
         registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
     )
-    row = app.create_session("my-workflow")
+    row = started(app.create_session("my-workflow"))
     session_id = row.session_id
 
     # A live session is no restore candidate, and restoring it is refused.
     assert session_id not in {m.session_id for m in app.manifests()}
-    with pytest.raises(RequestError, match="already a live session"):
-        app.restore_session(session_id)
+    refused = app.restore_session(session_id)
+    assert "already a live session" in refused.reason
 
     # Simulate a dead process: the session drops out of the registry, but
     # its manifest stays open.
@@ -192,7 +185,7 @@ def test_manifests_and_restore_round_trip(e2e_repo, state_store):
     (manifest,) = [m for m in app.manifests() if m.session_id == session_id]
     assert manifest.workflow_class == "my-workflow"
 
-    restored = app.restore_session(session_id)
+    restored = started(app.restore_session(session_id))
     assert restored.session_id == session_id
     assert restored.status == "ACTIVE"
     assert session_id in registry
@@ -410,7 +403,7 @@ def test_session_log_lane_emits_the_logger_lines(e2e_repo):
         "no session log event",
     )
     # A full log view carries the timestamped format: a timestamp prefixes
-    # the level and the message (see INTERACTIVE_FORMATTER).
+    # the level and the message (see interactive_formatter).
     line = next(e.line for e in lines if "hello from the session logger" in e.line)
     assert line.endswith("WARNING - hello from the session logger")
     assert line != "WARNING - hello from the session logger"
@@ -424,7 +417,7 @@ def test_cache_updated_lane_reports_the_cache_name(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
     events = []
     client.subscribe(CacheUpdatedEvent, events.append)
-    ack = client.submit(LoadCacheEntries(entries=(("weather", "forecast"),)))
+    ack = client.load_cache_entries(entries=(("weather", "forecast"),))
     assert ack.accepted
     wait_for(
         lambda: any(e.cache_name == "weather" for e in events),
@@ -497,12 +490,12 @@ def test_close_disconnects_every_subscription(e2e_repo):
 def test_submit_answers_the_acks_of_the_action_handler(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ack = client.submit(RunTasks(keys=(alpha.identity_key,)))
+    ack = client.run_tasks(keys=(alpha.identity_key,))
     assert isinstance(ack, BatchAck)
     assert ack.accepted
     workflow.runner.get_batch(ack.batch_uuid).wait()
 
-    refused = client.submit(StopBatch(batch_uuid="no-such-batch"))
+    refused = client.stop_batch(batch_uuid="no-such-batch")
     assert refused.accepted is False
     assert "no-such-batch" in refused.reason
 
@@ -510,7 +503,7 @@ def test_submit_answers_the_acks_of_the_action_handler(e2e_repo):
 def test_check_tasks_submits_a_check_batch(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ack = client.submit(CheckTasks(keys=(alpha.identity_key,)))
+    ack = client.check_tasks(keys=(alpha.identity_key,))
     assert ack.accepted
     batch = workflow.runner.get_batch(ack.batch_uuid)
     batch.wait()
@@ -546,7 +539,7 @@ def test_stop_batch_stops_a_running_batch(e2e_repo):
     workflow, tasks = gated_workflow(e2e_repo)
     client = LocalSessionClient(workflow.session)
     gate, batch = start_gated_batch(workflow, tasks)
-    ack = client.submit(StopBatch(batch_uuid=batch.uuid))
+    ack = client.stop_batch(batch_uuid=batch.uuid)
     assert ack.accepted
     gate.set()
     batch.wait()
@@ -558,17 +551,13 @@ def test_submit_options_snapshot_per_batch_through_the_port(e2e_repo):
     snapshots them and the session baseline never changes."""
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ack = client.submit(
-        RunTasks(keys=(alpha.identity_key,), options={"force_run": True})
-    )
+    ack = client.run_tasks(keys=(alpha.identity_key,), options={"force_run": True})
     assert ack.accepted, ack.reason
     workflow.runner.get_batch(ack.batch_uuid).wait()
     assert workflow.runner.get_batch(ack.batch_uuid).execution_context.force_run
     assert client.batch_options()["force_run"] is False
 
-    refused = client.submit(
-        RunTasks(keys=(alpha.identity_key,), options={"warp_speed": True})
-    )
+    refused = client.run_tasks(keys=(alpha.identity_key,), options={"warp_speed": True})
     assert not refused.accepted
     assert "names no batch option" in refused.reason
 
@@ -576,7 +565,7 @@ def test_submit_options_snapshot_per_batch_through_the_port(e2e_repo):
 def test_clear_cache_entries_invalidates_through_the_handler(e2e_repo):
     workflow, session, client = session_client(e2e_repo, "my-cache")
     assert client.cache_value("weather", "cities").state == "warm"
-    ack = client.submit(ClearCacheEntries(entries=(("weather", "cities"),)))
+    ack = client.clear_cache_entries(entries=(("weather", "cities"),))
     assert ack.accepted
     # The ack means "started": the handler clears on a worker thread.
     wait_for(
@@ -594,12 +583,12 @@ def test_cache_actions_run_under_the_session_log_scope(e2e_repo, state_store):
     app = LocalAppClient(
         registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
     )
-    row = app.create_session("my-cache")
+    row = started(app.create_session("my-cache"))
     client = app.session(row.session_id)
     # The drop line is info level; the run logger must let it through.
     registry.get(row.session_id).workflow.logger.setLevel(logging.INFO)
 
-    ack = client.submit(ClearCacheEntries(entries=(("weather", "cities"),)))
+    ack = client.clear_cache_entries(entries=(("weather", "cities"),))
     assert ack.accepted
     wait_for(
         lambda: any(
@@ -615,13 +604,13 @@ def test_end_session_publishes_session_ended_and_refuses_later_actions(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
     events = []
     client.subscribe(SessionEndedEvent, events.append)
-    ack = client.submit(EndSession())
+    ack = client.end_session()
     assert ack.accepted
     wait_for(lambda: events, "no session_ended event")
     assert events[0].session_id == session.session_id
     assert session.has_ended
 
-    refused = client.submit(RunTasks(keys=(alpha.identity_key,)))
+    refused = client.run_tasks(keys=(alpha.identity_key,))
     assert refused.accepted is False
     assert "has ended" in refused.reason
 
@@ -670,7 +659,7 @@ def test_snapshot_names_the_caches_until_the_session_ends(e2e_repo):
     empty tuple (see SessionSnapshot.cache_names)."""
     workflow, session, client = session_client(e2e_repo, "my-cache")
     assert "weather" in client.snapshot().cache_names
-    client.submit(EndSession())
+    client.end_session()
     assert client.snapshot().cache_names is None
 
     workflow, session, cacheless = session_client(e2e_repo)
@@ -681,7 +670,7 @@ def test_cache_reads_refuse_an_ended_session_with_direction(e2e_repo):
     """The release guard names the true state: the session ended, and the
     recorded reads live in the history (see Workflow.caches)."""
     workflow, session, client = session_client(e2e_repo, "my-cache")
-    client.submit(EndSession())
+    client.end_session()
     assert session.has_ended
     with pytest.raises(RequestError, match="has ended and released its caches"):
         client.caches()
@@ -702,9 +691,7 @@ def test_caches_before_initialize_tasks_keep_the_init_message(e2e_repo):
 def test_history_rows_carry_the_batch_options(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
-    ack = client.submit(
-        RunTasks(keys=(alpha.identity_key,), options={"force_run": True})
-    )
+    ack = client.run_tasks(keys=(alpha.identity_key,), options={"force_run": True})
     assert ack.accepted, ack.reason
     workflow.runner.get_batch(ack.batch_uuid).wait()
     (row,) = client.history()
@@ -771,12 +758,12 @@ def test_create_session_fills_unsent_options_from_the_cli_base(e2e_repo, state_s
         state_store=state_store,
     )
     # client is required; the parsed CLI base satisfies it without a value.
-    row = app.create_session("my-identified")
+    row = started(app.create_session("my-identified"))
     session = registry.get(row.session_id)
     assert session.workflow.workflow_config.client == "acme"
 
     # A sent value still wins over the base.
-    row = app.create_session("my-identified", values={"client": "beta"})
+    row = started(app.create_session("my-identified", values={"client": "beta"}))
     session = registry.get(row.session_id)
     assert session.workflow.workflow_config.client == "beta"
 
@@ -799,7 +786,7 @@ def test_apply_filter_history_scope_survives_the_session_end(e2e_repo):
     workflow, session, client = session_client(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
     run_to_completion(workflow, client, alpha)
-    ack = client.submit(EndSession())
+    ack = client.end_session()
     assert ack.accepted
     wait_for(lambda: session.has_ended, "the session never ended")
 
@@ -843,7 +830,7 @@ def test_an_ending_session_finalizes_when_its_last_batch_drains(e2e_repo):
     events = []
     client.subscribe(SessionEndedEvent, events.append)
 
-    ack = client.submit(EndSession())
+    ack = client.end_session()
     assert ack.accepted
     assert workflow.session.is_ending
     assert not workflow.session.has_ended
@@ -866,7 +853,7 @@ def test_restore_does_not_depend_on_the_argv_of_the_restoring_process(
         orchestrator=local_orchestrator(e2e_repo, "--client", "acme"),
         state_store=state_store,
     )
-    row = creating.create_session("my-identified")
+    row = started(creating.create_session("my-identified"))
     manifest = state_store.load_manifest(row.session_id)
     assert manifest.workflow_values["client"] == "acme"
 
@@ -877,7 +864,7 @@ def test_restore_does_not_depend_on_the_argv_of_the_restoring_process(
         orchestrator=local_orchestrator(e2e_repo),
         state_store=state_store,
     )
-    restored = restoring.restore_session(row.session_id)
+    restored = started(restoring.restore_session(row.session_id))
     session = restoring.registry.get(restored.session_id)
     assert session.workflow.workflow_config.client == "acme"
 

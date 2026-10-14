@@ -29,12 +29,14 @@ from winslow.protocol.frames import (
 from winslow.protocol.lanes import BatchCompletedLane
 from winslow.serve import create_app
 from winslow.session import Session, SessionRegistry
-from winslow.permissions import CredentialKind, PermissionContext
+from winslow.access.permissions import CredentialKind, PermissionContext
 from winslow.task.context import current_user, scoped_permissions
+from winslow.ui.builtin_plugins.workflow.history import BatchView
 from winslow.task.status import TaskStatus as S
 
-from harness import TOKEN, serve_credentials
+from harness import TOKEN, serve_authenticator
 from harness import (
+    started,
     bare_orchestrator,
     build_workflow,
     by_name,
@@ -46,9 +48,11 @@ from test_serve_mcp import call_tools, mcp_app
 from test_serve_mcp import registered as mcp_registered
 
 
-def as_user(name):
+def as_user(name, credential_id=None):
     """The scope of a request from `name`, with every permission."""
-    return scoped_permissions(PermissionContext.full(name, CredentialKind.TICKET))
+    return scoped_permissions(
+        PermissionContext.full(name, CredentialKind.TICKET, credential_id=credential_id)
+    )
 
 
 def persisted(e2e_repo, state_store, name="my-workflow", **state_kwargs):
@@ -114,13 +118,17 @@ def test_a_new_thread_starts_with_no_user():
     assert seen == [None]
 
 
-def test_the_stamp_filter_carries_the_user():
+def test_the_stamp_filter_carries_the_user_and_the_credential():
     record = logging.LogRecord("x", logging.INFO, __file__, 1, "hello", (), None)
-    with as_user("can"):
+    with as_user("can", credential_id="4c1f"):
         ContextStampFilter().filter(record)
-    assert record.user == "can"
+    assert (record.user, record.credential, record.credential_id) == (
+        "can",
+        "ticket",
+        "4c1f",
+    )
     ContextStampFilter().filter(record)
-    assert record.user is None
+    assert (record.user, record.credential, record.credential_id) == (None, None, None)
 
 
 # --- the batch ------------------------------------------------------------------
@@ -146,7 +154,7 @@ def test_the_batch_worker_runs_as_the_submitter(e2e_repo, state_store):
     logger.addHandler(stamped)
     logger.setLevel(logging.INFO)
     try:
-        with as_user("can"):
+        with as_user("can", credential_id="4c1f"):
             batch = workflow.runner.submit_run([alpha])
         batch.wait()
     finally:
@@ -154,10 +162,15 @@ def test_the_batch_worker_runs_as_the_submitter(e2e_repo, state_store):
         logger.setLevel(level)
     workflow.persistence_listener.flush()
 
-    assert batch.user == "can"
-    assert BatchInfo.from_batch(batch, [alpha]).user == "can"
+    assert (batch.user, batch.credential, batch.credential_id) == (
+        "can",
+        "ticket",
+        "4c1f",
+    )
+    info = BatchInfo.from_batch(batch, [alpha])
+    assert (info.user, info.credential, info.credential_id) == ("can", "ticket", "4c1f")
     (row,) = history(workflow)
-    assert row.user == "can"
+    assert (row.user, row.credential, row.credential_id) == ("can", "ticket", "4c1f")
     record_path = (
         state_store.open_directory
         / session.session_id
@@ -165,9 +178,33 @@ def test_the_batch_worker_runs_as_the_submitter(e2e_repo, state_store):
         / batch.uuid
         / "record.json"
     )
-    assert json.loads(record_path.read_text())["user"] == "can"
+    stored = json.loads(record_path.read_text())
+    assert (stored["user"], stored["credential"], stored["credential_id"]) == (
+        "can",
+        "ticket",
+        "4c1f",
+    )
     # The run logged from the worker thread, under the copied scope.
     assert any(record.user == "can" and record.task_name for record in stamped.records)
+
+
+def test_the_history_row_names_the_submitter_with_the_credential_id():
+    def view(**fields):
+        return BatchView(
+            uuid="b",
+            action="RUN",
+            status="COMPLETED",
+            task_count=1,
+            created_at=0.0,
+            options=None,
+            entries=(),
+            **fields,
+        )
+
+    assert view().submitter is None
+    assert view(user="local", credential="local").submitter == "local"
+    named = view(user="can", credential="token", credential_id="9f86d081")
+    assert named.submitter == "can (token 9f86d081)"
 
 
 # --- the session ----------------------------------------------------------------
@@ -203,7 +240,7 @@ def test_create_session_stamps_the_ambient_user_and_a_restore_keeps_it(
         state_store=state_store,
     )
     with as_user("can"):
-        info = port.create_session("my-workflow")
+        info = started(port.create_session("my-workflow"))
     assert info.user == "can"
     assert registry.resolve(info.session_id).user == "can"
     (manifest,) = state_store.list_open_manifests()
@@ -217,7 +254,7 @@ def test_create_session_stamps_the_ambient_user_and_a_restore_keeps_it(
         state_store=state_store,
     )
     with as_user("lucas"):
-        restored = port.restore_session(info.session_id)
+        restored = started(port.restore_session(info.session_id))
     assert restored.user == "can"
     (manifest,) = state_store.list_open_manifests()
     assert manifest.user == "can"
@@ -270,7 +307,7 @@ def test_the_json_file_round_trips_the_writer_and_reads_an_old_file_as_none(
 def wire(registry):
     app = create_app(
         registry,
-        serve_credentials(),
+        serve_authenticator(),
         hello_timeout=1.0,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),

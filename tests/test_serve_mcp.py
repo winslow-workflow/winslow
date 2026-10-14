@@ -9,15 +9,21 @@ from dataclasses import asdict
 
 import pytest
 
+from winslow.conf import settings
 from winslow.constants import Mode
 from winslow.exceptions import MisconfigurationError
 from winslow.model import Descriptors, HostStats
-from winslow.serve import Credentials, create_app
+from winslow.serve import create_app
 from winslow.serve.app import ServeApp
 from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus as S
 
-from harness import TOKEN, serve_credentials
+from harness import (
+    TOKEN,
+    credential_authenticator,
+    loopback_authenticator,
+    serve_authenticator,
+)
 from harness import (
     bare_orchestrator,
     build_workflow,
@@ -36,11 +42,11 @@ def registered(e2e_repo):
     return workflow, session, registry
 
 
-def mcp_app(registry, credentials=None):
-    credentials = credentials or serve_credentials()
+def mcp_app(registry, authenticator=None):
+    authenticator = authenticator or serve_authenticator()
     return create_app(
         registry,
-        credentials,
+        authenticator,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         endpoints=("ws", "mcp"),
@@ -134,7 +140,7 @@ def test_a_wrong_token_is_refused_before_any_tool(e2e_repo):
 
 def test_a_loopback_bind_serves_mcp_without_auth(e2e_repo):
     workflow, session, registry = registered(e2e_repo)
-    app = mcp_app(registry, credentials=Credentials(require_credential=False))
+    app = mcp_app(registry, authenticator=loopback_authenticator())
     (listed,) = call_tools(app, [("list_sessions", {})], token=None)
     row = listed[0] if isinstance(listed, list) else listed
     assert row["session_id"] == session.session_id
@@ -142,10 +148,10 @@ def test_a_loopback_bind_serves_mcp_without_auth(e2e_repo):
 
 def test_the_mcp_door_builds_without_a_ticket_secret():
     """A non-loopback bind accepts per-user tokens, so the mount needs no
-    secret (see Credentials.verify_bearer)."""
+    secret (see BackendChain.context)."""
     app = create_app(
         SessionRegistry(),
-        Credentials(require_credential=True),
+        credential_authenticator(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         endpoints=("mcp",),
@@ -157,7 +163,7 @@ def test_an_unknown_door_refuses_at_build():
     with pytest.raises(MisconfigurationError, match="grpc"):
         ServeApp(
             SessionRegistry(),
-            Credentials(require_credential=False),
+            loopback_authenticator(),
             orchestrator=bare_orchestrator(),
             state_store=scratch_state_store(),
             endpoints=("ws", "grpc"),
@@ -182,7 +188,7 @@ def test_the_descriptors_tool_matches_the_websocket_shape(e2e_repo):
     orchestrator = serve_orchestrator(e2e_repo)
     app = create_app(
         SessionRegistry(),
-        serve_credentials(),
+        serve_authenticator(),
         endpoints=("ws", "mcp"),
         base_url="http://testserver",
         orchestrator=orchestrator,
@@ -213,3 +219,23 @@ def test_a_read_refuses_an_unknown_session_as_data(e2e_repo):
     )
     assert "does not resolve" in result["error"]
     assert options["dry_run"] is False
+
+
+def test_the_server_names_its_service_and_its_environment(monkeypatch):
+    from winslow.serve.app import ServeApp
+
+    monkeypatch.setattr(settings, "SERVICE_NAME", "etl")
+    monkeypatch.setattr(settings, "ENV", "prod")
+    serve_app = ServeApp(
+        SessionRegistry(),
+        serve_authenticator(),
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+        endpoints=("ws", "mcp"),
+        base_url="http://testserver",
+    )
+    server = serve_app._build_mcp().server
+    assert server.name == "etl-prod"
+    assert server.instructions.startswith(
+        "The live sessions of etl in the prod environment."
+    )

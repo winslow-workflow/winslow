@@ -1,24 +1,17 @@
-"""The two storage ports of access control. A store keeps records and
-decides nothing: the policy rule lives in scopes_for, the token rules in
-winslow.access.tokens, so a file store and a database store behave alike
-(see FilePolicyStore, FileTokenStore, and the django-winslow adapters).
+"""The token store port of access control. A store keeps records and
+decides nothing: the token rules live in winslow.access.tokens, so a file
+store and a database store behave alike (see FileTokenStore). The policy
+rule is a method of the backend (see AuthBackend.scopes_for).
 
 The rules a store follows:
 
-- load() and get() run per hello and per MCP request, on a worker thread,
-  so a slow source blocks no socket (see ServeApp._handshake).
+- get() runs per hello and per MCP request, on a worker thread, so a slow
+  source blocks no socket (see ServeApp._handshake).
 - A store answers from a snapshot. A source that fails to read returns the
   previous snapshot and logs the reason (see FileSnapshot).
-- A Policy is built through Policy.from_mapping, so every group a user
-  names is defined and the scopes are expanded.
 """
 
 from typing import Protocol
-
-
-class PolicyStore(Protocol):
-    def load(self):
-        """Return the current Policy snapshot."""
 
 
 class TokenStore(Protocol):

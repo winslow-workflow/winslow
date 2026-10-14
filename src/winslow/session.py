@@ -4,9 +4,18 @@ import time
 from contextlib import contextmanager
 from enum import Enum
 
-from winslow.actions import ActionHandler
-from winslow.exceptions import SessionEndingError
-from winslow.logger import SessionLogBuffer, release_session_logging, run_logger_name
+import traceback
+
+from winslow.access import authz
+from winslow.actions import ActionHandler, BaseActionHandler, SessionAck
+from winslow.exceptions import RequestError, SessionEndingError
+from winslow.model import SessionInfo
+from winslow.logger import (
+    LOGGER,
+    SessionLogBuffer,
+    release_session_logging,
+    run_logger_name,
+)
 from winslow.task.status import (
     PASSING_STATUSES,
     PROBLEMATIC_STATUSES,
@@ -335,7 +344,7 @@ def create_session(
     workflow_values=None,
     session_id=None,
     seed=False,
-    origin="serve",
+    origin="local",
     user=None,
 ):
     """Build, initialize, persist, and register one session: the shared flow
@@ -466,3 +475,118 @@ class SessionRegistry:
 
     def __len__(self):
         return len(self._sessions)
+
+
+class AppActionHandler(BaseActionHandler):
+    """The handler of the app port actions, one per process: the actions that
+    make a session exist (see ActionHandler for the actions of one session).
+    An app action names its target outside any session, a workflow or a
+    manifest. The handler resolves the target, checks the permission on the
+    scope of the target, acts, and answers with a SessionAck."""
+
+    logger = LOGGER
+    log_name = "the server log"
+
+    def __init__(self, orchestrator, state_store, registry):
+        self.orchestrator = orchestrator
+        self.state_store = state_store
+        self.registry = registry
+
+    def _audit_fields(self, action):
+        return None, getattr(action, "session_id", None)
+
+    def scope_of(self, workflow_name):
+        """The scope name of a collected workflow, None for an unknown name."""
+        workflows = self.orchestrator.workflow_registry
+        if workflow_name not in workflows.names:
+            return None
+        return workflows[workflow_name].get_permission_scope()
+
+    def submit(self, action):
+        """The one entry point: the value of one app Action declaration
+        dispatches to the target resolver and the method of its name."""
+        spec = action.spec
+        scope_name = None
+        try:
+            target, scope_name = getattr(self, f"{spec.name}_target")(action)
+            reason = authz.check(spec.requires, scope_name)
+            ack = spec.refused(reason) if reason else getattr(self, spec.name)(target)
+        except RequestError as exc:
+            ack = spec.refused(str(exc))
+        session_id = ack.session.session_id if ack.session else None
+        authz.audit(
+            spec.name,
+            scope_name,
+            session_id or getattr(action, "session_id", None),
+            ack.accepted,
+            ack.reason,
+        )
+        return ack
+
+    def create_session_target(self, action):
+        # An unknown name is checked as given, so a caller without a scope
+        # learns no workflow name from the refusal.
+        return action, self.scope_of(action.workflow) or action.workflow
+
+    def create_session(self, action):
+        return self._started(action.workflow, action.overrides, action.values)
+
+    def restore_session_target(self, action):
+        # A refusal here names what exists, so the check runs first: on the
+        # scope of a live session, else on the id as given (see create_session_target).
+        live = self.registry.get(action.session_id)
+        if live is not None:
+            raise RequestError(
+                authz.check(action.spec.requires, live.permission_scope)
+                or f"{action.session_id!r} is already a live session."
+            )
+        manifest = next(
+            (
+                m
+                for m in self.state_store.list_open_manifests()
+                if m.session_id == action.session_id
+            ),
+            None,
+        )
+        if manifest is None:
+            reason = f"{action.session_id!r} names no open manifest to restore."
+        elif manifest.workflow_class not in self.orchestrator.workflow_registry.names:
+            reason = (
+                f"the manifest names workflow {manifest.workflow_class!r}, "
+                f"which this process does not collect."
+            )
+        else:
+            return manifest, self.scope_of(manifest.workflow_class)
+        raise RequestError(
+            authz.check(action.spec.requires, action.session_id) or reason
+        )
+
+    def restore_session(self, manifest):
+        return self._started(
+            manifest.workflow_class,
+            manifest.orchestrator_overrides or {},
+            manifest.workflow_values or {},
+            session_id=manifest.session_id,
+            user=manifest.user,
+            seed=True,
+        )
+
+    def _started(self, workflow_name, overrides, values, **kwargs):
+        """The SessionAck of one create_session call. The init code of the
+        workflow runs inside, so any raise is a refusal with its traceback."""
+        try:
+            session = create_session(
+                self.orchestrator,
+                self.state_store,
+                self.registry,
+                workflow_name,
+                overrides,
+                values,
+                **kwargs,
+            )
+        except Exception as exc:
+            reason = str(exc.args[0] if exc.args else exc)
+            return SessionAck(
+                accepted=False, reason=reason, detail=traceback.format_exc()
+            )
+        return SessionAck(accepted=True, session=SessionInfo.from_session(session))

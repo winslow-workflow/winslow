@@ -1,6 +1,6 @@
 import pytest
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.constants import Mode
 from winslow.orchestrator import OrchestratorConfig
 from winslow.state import FileStateStore

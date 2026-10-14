@@ -2,11 +2,11 @@ import json
 
 import pytest
 
-from winslow import settings
+from winslow.conf import import_string, settings
 from winslow.exceptions import MisconfigurationError, SerializationError
 from winslow.orchestrator import OrchestratorConfig
 from winslow.state import (
-    STATE_BACKENDS,
+    StateStore,
     BatchRecord,
     FileStateStore,
     StatusSnapshot,
@@ -300,24 +300,14 @@ def test_no_ttl_trusts_only_this_session():
     assert not is_trusted(999.0, None, 1000.0, 2000.0)
 
 
-def test_the_default_backend_is_the_file_store(monkeypatch):
-    monkeypatch.setattr(settings, "STATE_BACKEND", "file")
-    assert isinstance(STATE_BACKENDS.create(OrchestratorConfig()), FileStateStore)
+def test_the_default_state_store_is_the_file_store():
+    store = import_string(settings.STATE_STORE)(OrchestratorConfig())
+    assert isinstance(store, FileStateStore)
 
 
-def test_a_registered_backend_is_selectable(monkeypatch):
-    class RecordingStore(FileStateStore):
-        pass
-
-    STATE_BACKENDS.register("recording", RecordingStore)
-    try:
-        monkeypatch.setattr(settings, "STATE_BACKEND", "recording")
-        assert isinstance(STATE_BACKENDS.create(OrchestratorConfig()), RecordingStore)
-    finally:
-        STATE_BACKENDS.backends.pop("recording", None)
-
-
-def test_an_unknown_backend_raises(monkeypatch):
-    monkeypatch.setattr(settings, "STATE_BACKEND", "nope")
-    with pytest.raises(MisconfigurationError, match="'nope'.*STATE_BACKENDS.register"):
-        STATE_BACKENDS.create(OrchestratorConfig())
+def test_a_module_names_another_state_store(monkeypatch):
+    monkeypatch.setattr(settings, "STATE_STORE", "winslow.state.StateStore")
+    assert import_string(settings.STATE_STORE) is StateStore
+    monkeypatch.setattr(settings, "STATE_STORE", "winslow.state.Nope")
+    with pytest.raises(MisconfigurationError, match="winslow.state has no 'Nope'"):
+        import_string(settings.STATE_STORE)

@@ -42,7 +42,7 @@ class HeadlessRunner(BaseRunner):
         batch.start()
         self._batch_admitted(batch, tasks)
         # On the submitter thread, before any task work: a crash during the
-        # batch must leave the open record behind (see SessionPersistenceAdapter).
+        # batch must leave the open record behind (see SessionPersistenceSubscriber).
         self.workflow.bus.publish(BatchCreatedEvent(BatchInfo.from_batch(batch, tasks)))
         return batch, tasks
 

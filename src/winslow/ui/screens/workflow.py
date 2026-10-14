@@ -31,7 +31,6 @@ from winslow.ui.workflow_events import (
     TaskSelected,
 )
 
-from winslow.actions import CheckTasks, RunTasks
 from winslow.exceptions import RegistrationError
 from winslow.events import (
     BatchCompletedEvent,
@@ -107,7 +106,7 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         # label by identity key (see RecordRow).
         self.roster = () if self._has_ended else client.roster()
         # The toggles of this client: view state, seeded from the session
-        # baseline and sent with every submit (see RunTasks.options).
+        # baseline and sent with every submit (see SessionClient.run_tasks).
         self.batch_options = dict(client.batch_options())
         # The statuses-by-key mirror of the session, read by the DTO-driven
         # panes (see WorkflowRenderContext.task_statuses).
@@ -337,12 +336,13 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         await self._select_row(event.task_row)
         self.show_task_detail(event.task_info)
 
-    def submit_action(self, action):
+    def submit_action(self, action, **fields):
+        """One bound action of the client with its fields, refusals as a toast."""
         # The submit is fast, because the handler only does the admission and
         # the registration, and the worker of the runner does the work. The
         # submit thus stays on the UI thread, and a refusal appears here as a
         # toast (see ActionHandler).
-        ack = self.client.submit(action)
+        ack = action(**fields)
         if not ack.accepted:
             self.notify(ack.reason, severity="warning")
         return ack
@@ -356,23 +356,21 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
     @on(Checkbox.Changed, "#disable-concurrency")
     def _sync_batch_option(self, event):
         # The toggle is view state of this client alone; the next submit
-        # carries it (see RunTasks.options).
+        # carries it (see SessionClient.run_tasks).
         name = event.control.id.replace("-", "_")
         self.batch_options[name] = event.value
 
-    def _submit_batch(self, action_class, keys):
-        return self.submit_action(
-            action_class(keys=keys, options=dict(self.batch_options))
-        )
+    def _submit_batch(self, action, keys):
+        return self.submit_action(action, keys=keys, options=dict(self.batch_options))
 
     async def _handle_task_run(self, key):
-        self._submit_batch(RunTasks, (key,))
+        self._submit_batch(self.client.run_tasks, (key,))
 
     async def _handle_task_check(self, key):
-        self._submit_batch(CheckTasks, (key,))
+        self._submit_batch(self.client.check_tasks, (key,))
 
-    async def _handle_bulk_action(self, verb, action_class):
-        ack = self._submit_batch(action_class, self._visible_keys())
+    async def _handle_bulk_action(self, verb, action):
+        ack = self._submit_batch(action, self._visible_keys())
         if not ack.accepted:
             return
         # The batch_created event carries the admitted count. The toast waits
@@ -380,10 +378,10 @@ class WorkflowScreen(QuerySearchMixin, SlottedScreen):
         self._pending_bulk[ack.batch_uuid] = verb
 
     async def _handle_bulk_run(self):
-        await self._handle_bulk_action("Running", RunTasks)
+        await self._handle_bulk_action("Running", self.client.run_tasks)
 
     async def _handle_bulk_check(self):
-        await self._handle_bulk_action("Checking", CheckTasks)
+        await self._handle_bulk_action("Checking", self.client.check_tasks)
 
     @refuse_if_ending
     async def _handle_task_info(self, key):

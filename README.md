@@ -180,9 +180,8 @@ you need it.
 
 - **A pluggable UI.** The dashboard and the workflow screen are assembled from
   plugins that fill named slots. Subclass `UIPlugin` to add a tab or a panel,
-  or to replace a built-in one. UI plugins and filters can live in their own
-  packages, found through entry points (`winslow.tui_plugins`,
-  `winslow.filter_plugins`).
+  or to replace a built-in one. UI plugins and filters live in their own
+  packages, listed in the settings module of the project.
 
 ## CLI at a glance
 
@@ -222,10 +221,9 @@ requires and see what fits.
 
 Treat a workflow directory like a `Makefile` or a `conftest.py`: running
 `winslow` in a directory runs the code of that directory, imported at startup
-before any prompt. Plugin and filter autodiscovery is opt-out as well. An
-installed package with a winslow entry point loads on startup, and the
-[plugin guide](https://winslow-workflow.org/plugins/) shows how to constrain or
-allowlist them. A serve credential grants every action on the serving host,
+before any prompt. A plugin loads when the settings module of the project
+lists it, and the [plugin guide](https://winslow-workflow.org/plugins/) shows
+the lists. A serve credential grants every action on the serving host,
 including starting a workflow, which runs its code. The full trust model and
 the vulnerability reporting process are in [SECURITY.md](SECURITY.md).
 

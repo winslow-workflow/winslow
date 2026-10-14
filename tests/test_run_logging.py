@@ -109,7 +109,7 @@ def test_the_structured_formatter_carries_the_traceback():
 
 def test_the_console_emits_json_under_the_env_switch(monkeypatch):
     import winslow.logger as logger_module
-    from winslow import settings
+    from winslow.conf import settings
 
     monkeypatch.setattr(settings, "LOG_JSON", True)
     handler = logger_module._console_handler()

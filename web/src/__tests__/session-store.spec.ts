@@ -2,12 +2,13 @@ import { createPinia, setActivePinia } from 'pinia'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { LaneFrame } from '@/protocol/frames'
-import type { Ack, SessionSnapshot } from '@/protocol/model'
+import type { Ack, SessionInfo, SessionSnapshot } from '@/protocol/model'
 import * as wireModule from '@/protocol/wire'
 import type { LaneListener } from '@/protocol/wire'
 import { useConnectionStore } from '@/stores/connection'
 import { useNoticesStore } from '@/stores/notices'
 import { MAX_OPEN_LANES, useSessionStore } from '@/stores/session'
+import { useSessionsStore } from '@/stores/sessions'
 
 // The wire behind the stores: canned results per read kind, canned acks, and
 // the lane listeners the stores subscribe, so a test feeds frames directly.
@@ -30,7 +31,7 @@ vi.mock('@/protocol/wire', async (importOriginal) => {
     }
     acks: Ack[] = []
     requests: { kind: string; sessionId?: string }[] = []
-    actions: { action: string; fields: Record<string, unknown> }[] = []
+    actions: { action: string; fields: Record<string, unknown>; sessionId: string | null }[] = []
 
     constructor() {
       instances.push(this)
@@ -53,8 +54,8 @@ vi.mock('@/protocol/wire', async (importOriginal) => {
       throw new actual.RequestError(`no ${kind}`)
     }
 
-    async action(_sessionId: string, action: string, fields: Record<string, unknown>) {
-      this.actions.push({ action, fields })
+    async action(sessionId: string | null, action: string, fields: Record<string, unknown>) {
+      this.actions.push({ action, fields, sessionId })
       return this.acks.shift() ?? { accepted: true, reason: null }
     }
 
@@ -80,7 +81,7 @@ interface FakeWireLike {
   results: Record<string, unknown>
   acks: Ack[]
   requests: { kind: string; sessionId?: string }[]
-  actions: { action: string; fields: Record<string, unknown> }[]
+  actions: { action: string; fields: Record<string, unknown>; sessionId: string | null }[]
   lanes: Map<string, LaneListener>
 }
 
@@ -119,6 +120,8 @@ function batch(uuid: string, completed = false) {
     completed_at: completed ? 2 : null,
     error: null,
     user: null,
+    credential: null,
+    credential_id: null,
   } as const
 }
 
@@ -243,5 +246,44 @@ describe('the lane reducer', () => {
     wire().acks.push({ accepted: false, reason: 'no such batch' })
     await store.stopBatch('nope')
     expect(notices.queue[0]).toMatchObject({ variant: 'warning', body: 'no such batch' })
+  })
+})
+
+describe('a session start', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
+  const info: SessionInfo = {
+    session_id: 's9',
+    workflow: 'etl',
+    status: 'ACTIVE',
+    display_name: 'etl',
+    instance_name: 'etl',
+    identifier_suffix: '',
+    started_at: 1,
+    elapsed: 0,
+    task_status_summary: { completed: 0, problematic: 0, total: 2 },
+    root_dir: null,
+    user: 'can',
+    permission_scope: 'etl',
+  }
+
+  it('sends an app action without a session id and lists the session of the ack', async () => {
+    useConnectionStore().connect()
+    const sessions = useSessionsStore()
+    wire().acks.push({ accepted: true, reason: null, session: info })
+    const started = await sessions.createSession('etl', {}, {})
+    expect(wire().actions[0]).toMatchObject({ action: 'create_session', sessionId: null })
+    expect(started?.session_id).toBe('s9')
+    expect(sessions.failed).toEqual([])
+  })
+
+  it('files a refusal as a failed row with the traceback of the ack', async () => {
+    useConnectionStore().connect()
+    const sessions = useSessionsStore()
+    wire().acks.push({ accepted: false, reason: 'init failed', detail: 'Traceback ...' })
+    const started = await sessions.restoreSession({ session_id: 's9', workflow_class: 'etl' } as never)
+    expect(started).toBeNull()
+    expect(sessions.failed[0]).toMatchObject({ workflow: 'etl', error: 'init failed', detail: 'Traceback ...' })
+    expect(useNoticesStore().queue[0]).toMatchObject({ variant: 'danger', detail: 'Traceback ...' })
   })
 })

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from winslow.autodiscovery import Registerable
+from winslow.plugins import Registerable
 
 
 class TaskFilter(Registerable):

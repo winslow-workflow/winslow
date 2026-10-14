@@ -12,12 +12,13 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.constants import Mode
 from winslow.exceptions import CredentialRefused, MisconfigurationError
-from winslow.permissions import ALL, expand, wire_scopes
-from winslow.serve import Credentials, create_app, mint_ticket, verify_ticket
-from winslow.serve.auth import TicketCredential
+from winslow.access.permissions import ALL, expand, wire_scopes
+from winslow.serve import Authenticator, create_app, mint_ticket, verify_ticket
+from winslow.access.backends import TicketBackend
+from winslow.serve.auth import CredentialMode, LoopbackMode
 from winslow.serve.mcp import BearerTokenVerifier
 from winslow.session import Session, SessionRegistry
 from winslow.protocol.frames import RequestFrame
@@ -29,7 +30,13 @@ from winslow.protocol.frames import (
     SubscribeFrame,
 )
 
-from harness import bare_orchestrator, build_workflow, scratch_state_store
+from harness import (
+    bare_orchestrator,
+    build_workflow,
+    credential_authenticator,
+    loopback_authenticator,
+    scratch_state_store,
+)
 
 SECRET = "test-secret-of-thirty-two-bytes-or-more"
 AUDIENCE = "https://etl-host"
@@ -44,13 +51,13 @@ def claims_of(token):
 
 
 def tickets_only():
-    return Credentials(chain=(TicketCredential(SECRET, AUDIENCE),))
+    return credential_authenticator(TicketBackend(SECRET, AUDIENCE))
 
 
-def client(registry=None, credentials=None, hello_timeout=0.2):
+def client(registry=None, authenticator=None, hello_timeout=0.2):
     app = create_app(
         registry or SessionRegistry(),
-        credentials or tickets_only(),
+        authenticator or tickets_only(),
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         hello_timeout=hello_timeout,
@@ -80,28 +87,30 @@ def test_a_ticket_reaches_hello_ok():
         assert ws.receive_json() == {
             "type": HelloOkFrame.type,
             "user": "can",
-            "env": settings.env,
-            "env_color": settings.ENV_COLOR,
+            "env": settings.ENV,
+            "service": settings.SERVICE_NAME,
+            "env_color": settings.env_color(),
             "scopes": list(wire_scopes(ALL)),
             "credential": "ticket",
             "expires_at": float(claims_of(minted)["exp"]),
+            "credential_id": claims_of(minted)["jti"],
         }
 
 
 @pytest.mark.parametrize(
-    "credentials, kind, user, credential",
+    "authenticator, kind, user, credential",
     [
         (None, "ticket", "can", "ticket"),
-        (Credentials(require_credential=False), None, "local", "local"),
+        (loopback_authenticator(), None, "local", "local"),
     ],
     ids=["ticket", "local"],
 )
-def test_every_credential_reaches_hello_ok(credentials, kind, user, credential):
+def test_every_credential_reaches_hello_ok(authenticator, kind, user, credential):
     """Each credential kind reaches hello_ok under its user and kind. A
     credential without an expiry of its own gets the bounded one."""
     fields = {"token": ticket()} if kind == "ticket" else {}
     before = time.time()
-    with client(credentials=credentials).websocket_connect("/ws") as ws:
+    with client(authenticator=authenticator).websocket_connect("/ws") as ws:
         hello(ws, **fields)
         frame = ws.receive_json()
     assert frame["user"] == user
@@ -118,8 +127,8 @@ def test_a_garbage_ticket_refuses_on_both_channels():
 
 
 def test_a_ticket_on_a_server_without_a_secret_names_the_accepted_kinds():
-    bare = Credentials(require_credential=True)
-    with client(credentials=bare).websocket_connect("/ws") as ws:
+    bare = credential_authenticator()
+    with client(authenticator=bare).websocket_connect("/ws") as ws:
         hello(ws, token=ticket())
         expect_refusal(ws, 4401, "this server accepts no credential")
 
@@ -139,7 +148,7 @@ def test_a_wrong_token_refuses():
 def test_a_non_hello_first_message_refuses():
     with client().websocket_connect("/ws") as ws:
         ws.send_json({"type": SubscribeFrame.type})
-        expect_refusal(ws, 4400, "must be a hello")
+        expect_refusal(ws, 4400, "must be the connection request")
 
 
 def test_a_hello_with_a_wrong_field_type_refuses_as_malformed():
@@ -162,19 +171,19 @@ def test_a_binary_first_message_refuses():
 
 def test_silence_refuses_on_the_hello_timeout():
     with client(hello_timeout=0.05).websocket_connect("/ws") as ws:
-        expect_refusal(ws, 4408, "no hello within")
+        expect_refusal(ws, 4408, "no connection request within")
 
 
 def test_a_loopback_bind_needs_no_credential():
-    credentials = Credentials(require_credential=False)
-    with client(credentials=credentials).websocket_connect("/ws") as ws:
+    authenticator = loopback_authenticator()
+    with client(authenticator=authenticator).websocket_connect("/ws") as ws:
         hello(ws)
         assert ws.receive_json()["user"] == "local"
 
 
 def test_a_loopback_bind_keeps_the_origin_rule():
-    credentials = Credentials(require_credential=False)
-    with client(credentials=credentials).websocket_connect(
+    authenticator = loopback_authenticator()
+    with client(authenticator=authenticator).websocket_connect(
         "/ws", headers={"Origin": "http://evil.example"}
     ) as ws:
         hello(ws)
@@ -222,10 +231,11 @@ def test_the_sessions_read_lists_the_registered_sessions(e2e_repo):
 
 def test_a_ticket_round_trips_with_its_scopes():
     minted = ticket(scopes=("etl:run_task", "reports:view_task"))
-    context = verify_ticket(SECRET, minted, AUDIENCE)
-    assert (context.user, context.credential) == ("can", "ticket")
-    assert context.scopes == expand(("etl:run_task", "reports:view_task"))
-    assert context.expires_at == float(claims_of(minted)["exp"])
+    identity = verify_ticket(SECRET, minted, AUDIENCE)
+    assert (identity.user, identity.kind) == ("can", "ticket")
+    assert identity.scopes == expand(("etl:run_task", "reports:view_task"))
+    assert identity.expires_at == float(claims_of(minted)["exp"])
+    assert identity.credential_id == claims_of(minted)["jti"]
     assert set(claims_of(minted)) == {"sub", "scope", "aud", "iat", "exp", "jti"}
 
 
@@ -366,8 +376,8 @@ def test_mint_applies_the_rules_of_the_verifier():
 
 def test_a_scope_list_verifies_like_the_string():
     listed = with_claim(ticket(), "scope", ["etl:run_task", "reports:view_task"])
-    context = verify_ticket(SECRET, listed, AUDIENCE)
-    assert context.scopes == expand(("etl:run_task", "reports:view_task"))
+    identity = verify_ticket(SECRET, listed, AUDIENCE)
+    assert identity.scopes == expand(("etl:run_task", "reports:view_task"))
 
 
 def test_a_ticket_from_a_clock_thirty_seconds_ahead_passes_on_the_leeway():
@@ -381,32 +391,66 @@ def test_a_ticket_from_a_clock_thirty_seconds_ahead_passes_on_the_leeway():
 
 def test_a_ticket_builds_the_same_context_on_both_doors():
     minted = ticket(scopes=("etl:check_task",))
-    credentials = tickets_only()
-    by_token = credentials.verify_hello(HelloFrame(token=minted))
-    access_token = asyncio.run(BearerTokenVerifier(credentials).verify_token(minted))
-    by_header = credentials.mcp_context(access_token)
+    authenticator = tickets_only()
+    by_token = authenticator.verify_hello(HelloFrame(token=minted))
+    access_token = asyncio.run(
+        BearerTokenVerifier(authenticator.mode).verify_token(minted)
+    )
+    by_header = authenticator.mcp_context(access_token)
     assert by_token == by_header
     assert by_token.scopes == expand(("etl:check_task",))
     assert by_token.expires_at == float(claims_of(minted)["exp"])
 
 
 def test_the_ticket_kind_refuses_a_secret_without_a_public_url_or_too_short():
-    with pytest.raises(MisconfigurationError, match="WINSLOW_PUBLIC_URL"):
-        TicketCredential(SECRET, None)
+    with pytest.raises(MisconfigurationError, match="SERVE_PUBLIC_URL"):
+        TicketBackend(SECRET, None)
     with pytest.raises(MisconfigurationError, match="shorter than 32 bytes"):
-        TicketCredential("short", AUDIENCE)
+        TicketBackend("short", AUDIENCE)
 
 
-def test_a_ticket_secret_without_a_public_url_or_too_short_refuses_startup(monkeypatch):
-    monkeypatch.setattr(settings, "SERVE_TICKET_SECRET", SECRET)
-    monkeypatch.setattr(settings, "PUBLIC_URL", None)
-    with pytest.raises(MisconfigurationError, match="WINSLOW_PUBLIC_URL"):
-        Credentials.from_env("0.0.0.0")
-    monkeypatch.setattr(settings, "PUBLIC_URL", AUDIENCE)
-    assert Credentials.from_env("0.0.0.0").accepted == "per-user token, ticket"
-    monkeypatch.setattr(settings, "SERVE_TICKET_SECRET", "short")
+def test_a_listed_ticket_backend_without_its_settings_refuses_startup(monkeypatch):
+    monkeypatch.setattr(
+        settings,
+        "AUTH_BACKENDS",
+        [
+            "winslow.access.backends.TokenBackend",
+            "winslow.access.backends.TicketBackend",
+        ],
+    )
+    monkeypatch.setattr(settings, "AUTH_TICKET_SECRET", None)
+    monkeypatch.setattr(settings, "SERVE_PUBLIC_URL", AUDIENCE)
+    with pytest.raises(
+        MisconfigurationError, match="AUTH_TICKET_SECRET and SERVE_PUBLIC_URL"
+    ):
+        Authenticator.from_settings("0.0.0.0")
+    monkeypatch.setattr(settings, "AUTH_TICKET_SECRET", SECRET)
+    monkeypatch.setattr(settings, "SERVE_PUBLIC_URL", None)
+    with pytest.raises(
+        MisconfigurationError, match="AUTH_TICKET_SECRET and SERVE_PUBLIC_URL"
+    ):
+        Authenticator.from_settings("0.0.0.0")
+    monkeypatch.setattr(settings, "SERVE_PUBLIC_URL", AUDIENCE)
+    assert Authenticator.from_settings("0.0.0.0").mode.chain.accepted == "token, ticket"
+    monkeypatch.setattr(settings, "AUTH_TICKET_SECRET", "short")
     with pytest.raises(MisconfigurationError, match="shorter than 32 bytes"):
-        Credentials.from_env("0.0.0.0")
+        Authenticator.from_settings("0.0.0.0")
+
+
+def test_the_default_chain_holds_the_token_backend_alone():
+    assert Authenticator.from_settings("0.0.0.0").mode.chain.accepted == "token"
+
+
+def test_a_loopback_bind_outside_the_local_env_requires_a_credential(monkeypatch):
+    """A deployment sets ENV, so its proxy behind a loopback bind gets credential
+    mode on both doors (see LoopbackMode)."""
+    assert isinstance(Authenticator.from_settings("127.0.0.1").mode, LoopbackMode)
+    monkeypatch.setattr(settings, "ENV", "prod")
+    authenticator = Authenticator.from_settings("127.0.0.1")
+    assert isinstance(authenticator.mode, CredentialMode)
+    assert authenticator.mode.checks_bearer
+    with pytest.raises(CredentialRefused, match="no credential was sent"):
+        authenticator.verify_hello(HelloFrame(token=None))
 
 
 def test_the_cli_parses_the_serve_subcommand():

@@ -29,7 +29,7 @@ class ReactiveDict:
     def set(self, item, value, origin=Origin.RUN) -> None:
         """Write, and stamp the origin of the write on the event. A seed
         write names itself, so the persistence subscriber can return at once
-        (see SessionPersistenceAdapter)."""
+        (see SessionPersistenceSubscriber)."""
         key = self._key(item)
         with self._lock:
             # A redundant write is dropped completely. Observers must not see

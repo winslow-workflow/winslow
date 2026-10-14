@@ -10,12 +10,13 @@ from contextlib import contextmanager
 
 import pytest
 from starlette.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
-from winslow.access import FilePolicyStore, FileTokenStore
+from winslow.access.file import FilePolicyStore, FileTokenStore
 from winslow.access.cli import token_create, token_revoke
 from winslow.constants import Mode
 from winslow.exceptions import CredentialRefused
-from winslow.permissions import CredentialKind, Permission
+from winslow.access.permissions import CredentialKind, Permission
 from winslow.protocol.codec import CODEC
 from winslow.protocol.frames import (
     ActionFrame,
@@ -24,12 +25,18 @@ from winslow.protocol.frames import (
     HelloFrame,
     HelloOkFrame,
 )
-from winslow.serve import Credentials, create_app
-from winslow.serve.auth import TokenCredential
+from winslow.serve import create_app
+from winslow.access.backends import BackendChain, TokenBackend
 from winslow.serve.mcp import BearerTokenVerifier
 from winslow.session import Session, SessionRegistry
 
-from harness import bare_orchestrator, build_workflow, by_name, scratch_state_store
+from harness import (
+    bare_orchestrator,
+    build_workflow,
+    by_name,
+    credential_authenticator,
+    scratch_state_store,
+)
 from test_access import POLICY
 from test_serve_mcp import call_tools, mcp_app
 
@@ -43,10 +50,10 @@ def stores(tmp_path):
     return FilePolicyStore(path), FileTokenStore(tmp_path / "tokens")
 
 
-def credentials(tmp_path, **overrides):
+def authenticator(tmp_path, **overrides):
     policy, tokens = stores(tmp_path)
-    chain = (TokenCredential(tokens, policy),)
-    return Credentials(**{"chain": chain, **overrides}), tokens
+    backend = TokenBackend(tokens=tokens, policy=policy)
+    return credential_authenticator(backend, **overrides), tokens
 
 
 def live(e2e_repo, name="my-workflow"):
@@ -69,34 +76,35 @@ def hello(app, **fields):
 
 
 def test_a_per_user_token_carries_the_scopes_of_its_user(tmp_path):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     token = token_create(tokens, "lucas")
-    context = policy.verify_bearer(token)
+    context = policy.mode.chain.context(token)
     assert (context.user, context.credential) == ("lucas", "token")
+    assert context.credential_id == tokens.list("lucas")[0].token_id
     assert context.allows("etl", Permission.CHECK_TASK)
     assert not context.allows("etl", Permission.RUN_TASK)
     assert context.expires_at is None
 
 
 def test_an_unknown_token_and_an_expired_one_refuse(tmp_path):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     with pytest.raises(CredentialRefused, match=UNKNOWN_TOKEN):
-        policy.verify_bearer("wsl_nope")
+        policy.mode.chain.context("wsl_nope")
     token = token_create(tokens, "can", expires="1s", now=time.time() - 5)
     with pytest.raises(CredentialRefused, match="token expired - ask for a new one"):
-        policy.verify_bearer(token)
+        policy.mode.chain.context(token)
 
 
 def test_a_token_of_no_known_shape_names_the_accepted_kinds(tmp_path):
-    policy, _ = credentials(tmp_path)
-    with pytest.raises(CredentialRefused, match="accepts per-user token$"):
-        policy.verify_bearer("x")
+    policy, _ = authenticator(tmp_path)
+    with pytest.raises(CredentialRefused, match="accepts token$"):
+        policy.mode.chain.context("x")
     with pytest.raises(CredentialRefused, match="accepts no credential$"):
-        Credentials().verify_bearer("x")
+        BackendChain(()).context("x")
 
 
 def test_the_websocket_door_caps_every_context_at_max_connection(tmp_path):
-    policy, tokens = credentials(tmp_path, max_connection=60)
+    policy, tokens = authenticator(tmp_path, max_connection=60)
     before = time.time()
     context = policy.verify_hello(
         HelloFrame(token=token_create(tokens, "can", expires="90d"))
@@ -113,7 +121,7 @@ def test_the_websocket_door_caps_every_context_at_max_connection(tmp_path):
 def test_a_permission_change_reaches_the_next_hello(tmp_path, e2e_repo):
     """The policy reloads on its modification time; a live context keeps the
     scopes of its hello (see until_expiry for the bound)."""
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     workflow, session, registry = live(e2e_repo)
     token = token_create(tokens, "lucas")
     app = create_app(
@@ -139,8 +147,22 @@ def test_a_permission_change_reaches_the_next_hello(tmp_path, e2e_repo):
         assert "etl:run_task" in hello_ok["scopes"]
 
 
+def test_the_hello_ok_names_the_credential_id(tmp_path, e2e_repo):
+    policy, tokens = authenticator(tmp_path)
+    _, _, registry = live(e2e_repo)
+    token = token_create(tokens, "lucas")
+    app = create_app(
+        registry,
+        policy,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+    )
+    with hello(app, token=token) as (_, hello_ok):
+        assert hello_ok["credential_id"] == tokens.list("lucas")[0].token_id
+
+
 def test_a_revoked_token_refuses_the_next_hello_and_the_others_pass(tmp_path, e2e_repo):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     _, _, registry = live(e2e_repo)
     first, second = token_create(tokens, "lucas"), token_create(tokens, "lucas")
     app = create_app(
@@ -161,7 +183,7 @@ def test_a_revoked_token_refuses_the_next_hello_and_the_others_pass(tmp_path, e2
 
 
 def test_an_expired_token_refuses_the_hello(tmp_path, e2e_repo):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     _, _, registry = live(e2e_repo)
     token = token_create(tokens, "lucas", expires="1s", now=time.time() - 5)
     app = create_app(
@@ -176,7 +198,7 @@ def test_an_expired_token_refuses_the_hello(tmp_path, e2e_repo):
 
 
 def test_a_scoped_token_refuses_a_run_on_both_doors(tmp_path, e2e_repo):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     workflow, session, registry = live(e2e_repo)
     alpha = by_name(workflow)["Alpha"]
     # my-workflow is the scope name; lucas holds etl alone, ci-bot holds nothing here.
@@ -220,13 +242,56 @@ def test_a_scoped_token_refuses_a_run_on_both_doors(tmp_path, e2e_repo):
     assert "lucas lacks my-workflow:run_task" in ack["reason"]
 
 
+class Broken(TokenBackend):
+    """A backend whose identify raises what a network or a packaging problem
+    raises, outside the CredentialRefused contract."""
+
+    name = "broken"
+
+    def identify(self, token):
+        raise OSError("issuer unreachable")
+
+
+def test_a_broken_backend_refuses_on_both_doors_and_logs_once(
+    tmp_path, e2e_repo, caplog
+):
+    policy, tokens = stores(tmp_path)
+    backend = Broken(tokens=tokens, policy=policy)
+    authenticator = credential_authenticator(backend)
+    token = token_create(tokens, "lucas")
+    workflow, session, registry = live(e2e_repo)
+    app = create_app(
+        registry,
+        authenticator,
+        orchestrator=bare_orchestrator(),
+        state_store=scratch_state_store(),
+    )
+    with caplog.at_level(logging.ERROR, logger="winslow.access.backends"):
+        with TestClient(app).websocket_connect("/ws") as ws:
+            ws.send_json({"type": HelloFrame.type, "token": token})
+            error = ws.receive_json()
+            assert error["type"] == "hello_error"
+            assert (
+                "the broken backend failed - the server log has the reason"
+                in error["reason"]
+            )
+            with pytest.raises(WebSocketDisconnect) as exc:
+                ws.receive_json()
+            assert exc.value.code == 4401
+        verifier = BearerTokenVerifier(authenticator.mode)
+        assert asyncio.run(verifier.verify_token(token)) is None
+    failures = [r for r in caplog.records if "broken backend failed" in r.getMessage()]
+    assert len(failures) == 2
+    assert all("issuer unreachable" in r.exc_text for r in failures)
+
+
 # --- open mode ---------------------------------------------------------------------
 
 
 def test_the_mcp_door_reads_the_stores_once_per_request(tmp_path):
-    policy, tokens = credentials(tmp_path)
+    policy, tokens = authenticator(tmp_path)
     token = token_create(tokens, "lucas", expires="90d")
-    access_token = asyncio.run(BearerTokenVerifier(policy).verify_token(token))
+    access_token = asyncio.run(BearerTokenVerifier(policy.mode).verify_token(token))
     token_revoke(tokens, user="lucas")
     context = policy.mcp_context(access_token)
     assert (context.user, context.credential) == ("lucas", "token")
@@ -237,8 +302,18 @@ def test_the_mcp_door_reads_the_stores_once_per_request(tmp_path):
     assert isinstance(context.expires_at, float)
 
 
+def test_open_mode_keeps_the_user_and_the_id_of_a_known_token(tmp_path):
+    policy, tokens = authenticator(tmp_path, open=True)
+    token = token_create(tokens, "lucas")
+    context = policy.verify_hello(HelloFrame(token=token))
+    assert (context.user, context.credential) == ("lucas", "token")
+    assert context.credential_id == tokens.list("lucas")[0].token_id
+    # Open mode widens the scopes of a token: lucas holds no run_task in the policy.
+    assert context.allows("etl", Permission.RUN_TASK)
+
+
 def test_open_mode_passes_every_hello_and_names_a_known_token(tmp_path, e2e_repo):
-    policy, tokens = credentials(tmp_path, open_mode=True)
+    policy, tokens = authenticator(tmp_path, open=True)
     workflow, session, registry = live(e2e_repo)
     token = token_create(tokens, "lucas")
     app = create_app(
@@ -274,26 +349,26 @@ def test_open_mode_passes_every_hello_and_names_a_known_token(tmp_path, e2e_repo
 
 
 def test_describe_names_the_stores_the_credentials_and_the_warnings(tmp_path):
-    policy, _ = credentials(tmp_path)
+    policy, _ = authenticator(tmp_path)
     levels = [level for level, _ in policy.describe("0.0.0.0:8866")]
     lines = "\n".join(line for _, line in policy.describe("0.0.0.0:8866"))
     assert levels == [logging.INFO, logging.INFO]
-    assert "FilePolicyStore" in lines and "per-user token" in lines
+    assert "FilePolicyStore" in lines and "token" in lines
 
-    opened, _ = credentials(tmp_path, open_mode=True)
+    opened, _ = authenticator(tmp_path, open=True)
     assert opened.describe("0.0.0.0:8866")[-1][0] == logging.WARNING
     assert "open mode" in opened.describe("0.0.0.0:8866")[-1][1]
 
 
 def test_describe_warns_about_a_policy_entry_that_grants_everything(tmp_path):
-    # The credentials helper writes POLICY itself, so the admins group joins after it.
+    # The authenticator helper writes POLICY itself, so the admins group joins after it.
     admins = POLICY + '\n[groups.admins]\nscopes = ["*:*"]\n'
-    policy, _ = credentials(tmp_path)
+    policy, _ = authenticator(tmp_path)
     (tmp_path / "policy.toml").write_text(admins)
     (warning,) = [
         line for level, line in policy.describe("b") if level == logging.WARNING
     ]
     assert warning == "auth: group 'admins' grants every permission on every workflow"
-    opened, _ = credentials(tmp_path, open_mode=True)
+    opened, _ = authenticator(tmp_path, open=True)
     (tmp_path / "policy.toml").write_text(admins)
     assert "admins" not in "\n".join(line for _, line in opened.describe("b"))

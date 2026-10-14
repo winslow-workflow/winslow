@@ -3,14 +3,14 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Optional
 
-from winslow.permissions import PermissionContext
+from winslow.access.permissions import PermissionContext
 
 
 @dataclass(frozen=True)
 class BatchOptions:
     """The four batch options. The workflow holds the session baseline,
     seeded from the CLI; a client sends its own values with each submit (see
-    RunTasks.options). Each batch snapshots the options it runs with, so
+    SessionClient.run_tasks). Each batch snapshots the options it runs with, so
     history shows them per batch."""
 
     dry_run: bool
@@ -124,7 +124,7 @@ def scoped_log_context(context: LogContext):
         _log_context.reset(token)
 
 
-# The permission context behind the current request (see winslow.permissions).
+# The permission context behind the current request (see winslow.access.permissions).
 # The edge sets it once per action or read (see Connection, McpEndpoint). A
 # thread started for that work copies the context, so every record and log line
 # carries the same user. A local client sets nothing, and its records carry None.

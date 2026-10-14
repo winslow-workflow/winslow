@@ -10,15 +10,22 @@ from pathlib import Path
 
 from winslow.constants import Mode
 from winslow.orchestrator import Orchestrator, OrchestratorConfig
-from winslow.permissions import CredentialKind
-from winslow.serve.auth import Credentials, TicketCredential, mint_ticket
+from winslow.access.permissions import CredentialKind
+from winslow.access.backends import AuthBackend, BackendChain, Identity, TicketBackend
+from winslow.serve.auth import (
+    Authenticator,
+    CredentialMode,
+    LoopbackMode,
+    OpenMode,
+    mint_ticket,
+)
 from winslow.session import Session
 from winslow.state import FileStateStore
 from winslow.task.status import TaskStatus as S
 from winslow.util import _SCOPE_NS
 
 # The credential of the serve tests: a ticket for can with every permission,
-# on a Credentials that accepts tickets alone.
+# on a Authenticator that accepts tickets alone.
 TICKET_SECRET = "test-secret-of-thirty-two-bytes-or-more"
 AUDIENCE = "https://etl-host"
 
@@ -27,33 +34,53 @@ def mint(user="can", scopes=("*:*",), ttl=900):
     return mint_ticket(TICKET_SECRET, user, scopes, AUDIENCE, ttl=ttl)
 
 
-def serve_credentials(**overrides):
-    chain = (TicketCredential(TICKET_SECRET, AUDIENCE),)
-    return Credentials(**{"chain": chain, **overrides})
+def credential_authenticator(*backends, open=False, **overrides):
+    """An authenticator in credential mode over the backends, or in open mode
+    over the same chain with open=True."""
+    chain = BackendChain(backends)
+    return Authenticator(
+        OpenMode(chain) if open else CredentialMode(chain), **overrides
+    )
 
 
-class FixedCredential:
-    """A credential kind that hands every token one fixed context, on both
-    doors."""
+def loopback_authenticator(**overrides):
+    return Authenticator(LoopbackMode(), **overrides)
+
+
+def serve_authenticator(**overrides):
+    return credential_authenticator(TicketBackend(TICKET_SECRET, AUDIENCE), **overrides)
+
+
+def identity_of(context):
+    """The Identity a backend answers for a context, the scopes carried."""
+    return Identity(
+        context.user,
+        context.credential,
+        context.credential_id,
+        context.expires_at,
+        scopes=context.scopes,
+    )
+
+
+class FixedCredential(AuthBackend):
+    """A backend that hands every token one fixed context, on both doors."""
 
     kind = CredentialKind.TICKET
     name = "fixed"
 
     def __init__(self, context):
+        super().__init__()
         self.context = context
 
     def accepts(self, token):
         return True
 
-    def verify(self, token):
-        return self.context
-
-    def startup_lines(self):
-        return ()
+    def identify(self, token):
+        return identity_of(self.context)
 
 
-def fixed_credentials(context):
-    return Credentials(chain=(FixedCredential(context),))
+def fixed_authenticator(context):
+    return credential_authenticator(FixedCredential(context))
 
 
 TOKEN = mint()
@@ -274,6 +301,12 @@ def start_gated_batch(workflow, tasks):
     batch = workflow.runner.submit_run(workflow.tasks)
     wait_for_status(workflow, tasks["Gated"], S.RUNNING)
     return gate, batch
+
+
+def started(ack):
+    """The SessionInfo of an accepted session start (see SessionAck)."""
+    assert ack.accepted, ack.reason
+    return ack.session
 
 
 def by_name(workflow):

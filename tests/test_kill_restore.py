@@ -35,7 +35,8 @@ def test_a_killed_session_restores_in_a_fresh_process(e2e_repo, tmp_path):
     state_dir = tmp_path / "state"
     env = {
         **os.environ,
-        "WINSLOW_STATE_DIR": str(state_dir),
+        "WINSLOW_SETTINGS_MODULE": "settings_state_dir",
+        "WINSLOW_TEST_STATE_DIR": str(state_dir),
         "PYTHONPATH": os.pathsep.join(p for p in sys.path if p),
     }
     # stderr goes to a file: an undrained pipe deadlocks the victim once it

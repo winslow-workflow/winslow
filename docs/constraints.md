@@ -140,6 +140,6 @@ Run it headless with `winslow run --mode headless --workflow backup`. Each varia
 | The default, in the `local` environment | Snapshot, upload and verify complete. Replicate is skipped, and prune does not exist. |
 | `--maintenance` | Upload is blocked by its runnability constraint, and verify is blocked behind it. |
 | `--offline` | The shared store rule blocks the upload run, and verify is blocked behind it. Snapshot completes. |
-| `WINSLOW_ENV=prod` | Every task completes, and prune appears in the graph. |
+| `ENV = "prod"` in the settings module | Every task completes, and prune appears in the graph. |
 
 Each task writes a marker into the `state` directory. Delete the directory to run the flow again.

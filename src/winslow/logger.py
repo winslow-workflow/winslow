@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from logging.handlers import QueueHandler, QueueListener
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.util import safe_repr
 
 
@@ -41,11 +41,15 @@ def run_logger_name(session_id):
 # each record back to its task.
 TASK_LOGGER_NAME = f"{RUNS_LOGGER_NAME}.task"
 
-INTERACTIVE_FORMATTER = logging.Formatter(
-    settings.LOG_FORMAT, datefmt=settings.LOG_DATEFMT
-)
-if settings.LOG_UTC:
-    INTERACTIVE_FORMATTER.converter = time.gmtime
+
+def interactive_formatter():
+    """The timestamped formatter of the console and the session backlog,
+    from the log settings at the time of the call."""
+    formatter = logging.Formatter(settings.LOG_FORMAT, datefmt=settings.LOG_DATEFMT)
+    if settings.LOG_UTC:
+        formatter.converter = time.gmtime
+    return formatter
+
 
 INLINE_FORMATTER = logging.Formatter("%(levelname)s - %(message)s")
 
@@ -72,7 +76,7 @@ def _console_handler():
             handler.setFormatter(formatter)
             return handler
     handler = logging.StreamHandler()
-    handler.setFormatter(INTERACTIVE_FORMATTER)
+    handler.setFormatter(interactive_formatter())
     return handler
 
 
@@ -92,7 +96,7 @@ class InteractiveLogHandler(logging.Handler):
     def __init__(self, log_method=None, formatter=None):
         super().__init__()
         self.log_method = log_method
-        self.formatter = formatter or INTERACTIVE_FORMATTER
+        self.formatter = formatter or interactive_formatter()
 
     def emit(self, record):
         if self.log_method:
@@ -109,8 +113,8 @@ class SessionLogBuffer(logging.Handler):
     def __init__(self, maxlen=200):
         super().__init__()
         # The backlog feeds the same view as the live session log lane, so
-        # both use the timestamped format (see INTERACTIVE_FORMATTER).
-        self.setFormatter(INTERACTIVE_FORMATTER)
+        # both use the timestamped format (see interactive_formatter).
+        self.setFormatter(interactive_formatter())
         self.lines = collections.deque(maxlen=maxlen)
 
     def emit(self, record):
@@ -146,6 +150,7 @@ class ContextStampFilter(logging.Filter):
         permissions = current_permissions()
         record.user = permissions.user if permissions else None
         record.credential = permissions.credential if permissions else None
+        record.credential_id = permissions.credential_id if permissions else None
         return True
 
 
@@ -301,11 +306,12 @@ class StructuredFormatter(logging.Formatter):
             "batch_uuid": getattr(record, "batch_uuid", None),
             "user": getattr(record, "user", None),
             "credential": getattr(record, "credential", None),
+            "credential_id": getattr(record, "credential_id", None),
             "message": record.getMessage(),
             "traceback": self._traceback(record),
         }
         # The fields of an audit line travel as data beside the message (see
-        # winslow.authz.audit).
+        # winslow.access.authz.audit).
         audit = getattr(record, "audit", None)
         if audit is not None:
             payload["audit"] = audit

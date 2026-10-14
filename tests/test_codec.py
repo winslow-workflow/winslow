@@ -43,14 +43,14 @@ def test_decode_fills_declared_defaults():
 
 
 def test_decode_raises_with_a_directional_message_on_a_missing_field():
-    with pytest.raises(ValidationError, match="session_id"):
-        CODEC.decode(ActionFrame, {"type": ActionFrame.type, "action": "run_tasks"})
+    with pytest.raises(ValidationError, match="action"):
+        CODEC.decode(ActionFrame, {"type": ActionFrame.type, "session_id": "s-1"})
 
 
 def test_report_renders_one_error_as_path_and_message():
     with pytest.raises(ValidationError) as exc:
-        CODEC.decode(ActionFrame, {"action": "run_tasks"})
-    assert report(exc.value) == "session_id: Field required"
+        CODEC.decode(ActionFrame, {"session_id": "s-1"})
+    assert report(exc.value) == "action: Field required"
 
 
 def test_report_joins_every_error_on_one_line():

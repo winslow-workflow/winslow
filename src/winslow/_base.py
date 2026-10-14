@@ -4,7 +4,7 @@ import sys
 from functools import cached_property
 from argparse import Namespace
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.util import camel_to_kebab
 from winslow.logger import LOGGER
 from winslow.exceptions import MisconfigurationError
@@ -54,7 +54,7 @@ class _Base:
 
     @property
     def env(self) -> str:
-        return settings.env
+        return settings.ENV
 
     @classmethod
     def get_module_path(cls):

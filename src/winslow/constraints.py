@@ -33,7 +33,7 @@ class for the lifecycle of the hook is also rejected.
 
 from enum import Enum, auto
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.exceptions import MisconfigurationError
 from winslow.util import to_tuple
 
@@ -88,7 +88,7 @@ class _ConstraintBase(metaclass=_ConstraintMeta):
 
     @property
     def env(self):
-        return settings.env
+        return settings.ENV
 
 
 class Constraint(_ConstraintBase):

@@ -9,7 +9,7 @@ from winslow.ui.actions import ACTIVE_BATCH_STATUSES
 from winslow.ui.widgets.common import GuardedButton
 from winslow.ui.formatting import format_status_summary, format_elapsed
 from winslow.ui.reads import port_read
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 SUMMARY_REFRESH_INTERVAL = 2
 

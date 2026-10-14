@@ -50,6 +50,7 @@ export const useConnectionStore = defineStore('connection', () => {
 
   const state = ref<WireState>('idle')
   const user = ref<string | null>(null)
+  const service = ref<string | null>(null)
   const env = ref<string | null>(null)
   const envColor = ref<string | null>(null)
   const scopes = ref<string[]>([])
@@ -62,6 +63,7 @@ export const useConnectionStore = defineStore('connection', () => {
     const previous = state.value
     state.value = w.state
     user.value = w.user
+    service.value = w.service
     env.value = w.env
     envColor.value = w.envColor
     scopes.value = [...w.scopes]
@@ -135,6 +137,7 @@ export const useConnectionStore = defineStore('connection', () => {
     app,
     state,
     user,
+    service,
     env,
     envColor,
     scopes,

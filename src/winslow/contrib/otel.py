@@ -1,8 +1,8 @@
 """Error reporting to OpenTelemetry through the telemetry hook.
 
-With an OTLP traces endpoint set, the orchestrator activates
-OpenTelemetryConfiguration for each run; subclass it in a telemetry.py
-file to customize. A host application that owns its tracer provider calls
+The orchestrator activates OpenTelemetryConfiguration when the TELEMETRY
+setting lists it, with OTEL_TRACES_ENDPOINT set. A subclass listed in its
+place customizes it. A host application that owns its tracer provider calls
 setup_opentelemetry instead. Each error becomes one short ERROR span.
 Requires the [otel] extra (see docs/telemetry.md).
 """
@@ -16,8 +16,7 @@ except ImportError:
         "Install the extra: pip install winslow[otel]"
     ) from None
 
-from winslow import settings
-from winslow.settings import config
+from winslow.conf import settings
 from winslow.exceptions import MisconfigurationError
 from winslow.telemetry import (
     TelemetryConfiguration,
@@ -89,7 +88,7 @@ class OpenTelemetryHandler(TelemetryHandler):
         # rejects None and would log a warning per span instead.
         attributes = {
             key: value
-            for key, value in (attributes | {"winslow.env": settings.env}).items()
+            for key, value in (attributes | {"winslow.env": settings.ENV}).items()
             if value is not None
         }
         span = self._tracer.start_span(name, attributes=attributes)
@@ -99,21 +98,20 @@ class OpenTelemetryHandler(TelemetryHandler):
 
 
 class OpenTelemetryConfiguration(TelemetryConfiguration):
-    """The built-in OpenTelemetry backend: active when an OTLP traces
-    endpoint is configured. Override get_tracer_provider or get_handler."""
+    """The built-in OpenTelemetry backend, listed in TELEMETRY: it exports
+    to OTEL_TRACES_ENDPOINT. Override get_tracer_provider or get_handler."""
 
     def __init__(self):
         self._provider = None
 
     def get_tracer_provider(self):
-        """Build the provider for the configured endpoint, or return None
-        to stay inactive."""
-        endpoint = config("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", default=None)
+        """Build the provider for the configured endpoint."""
+        endpoint = settings.OTEL_TRACES_ENDPOINT
         if endpoint is None:
-            base = config("OTEL_EXPORTER_OTLP_ENDPOINT", default=None)
-            if base is None:
-                return None
-            endpoint = base.rstrip("/") + "/v1/traces"
+            raise MisconfigurationError(
+                "TELEMETRY lists the OpenTelemetry backend - set OTEL_TRACES_ENDPOINT "
+                "in the settings module."
+            )
 
         # Import lazily: the handler needs the API only.
         try:
@@ -134,7 +132,7 @@ class OpenTelemetryConfiguration(TelemetryConfiguration):
         # the default atexit hook would shut the provider down twice.
         provider = TracerProvider(
             resource=Resource.create(
-                {"service.name": config("OTEL_SERVICE_NAME", default="winslow")}
+                {"service.name": settings.OTEL_SERVICE_NAME or settings.SERVICE_NAME}
             ),
             shutdown_on_exit=False,
         )
@@ -146,13 +144,14 @@ class OpenTelemetryConfiguration(TelemetryConfiguration):
         return provider
 
     def get_handler(self, orchestrator_config):
-        # A host application may have registered through setup_opentelemetry
-        # already; a second handler would export every span twice.
+        # A host application that registered through setup_opentelemetry does
+        # not list the configuration: a second handler would export every span twice.
         if get_registered_handler(OpenTelemetryHandler) is not None:
-            return None
+            raise MisconfigurationError(
+                "the OpenTelemetry handler is registered already, through "
+                "setup_opentelemetry - remove OpenTelemetryConfiguration from TELEMETRY."
+            )
         self._provider = self.get_tracer_provider()
-        if self._provider is None:
-            return None
         return OpenTelemetryHandler(tracer_provider=self._provider)
 
     def shutdown(self):

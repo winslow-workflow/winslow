@@ -132,13 +132,15 @@ export class Wire {
   credentialUrl: string | null
   state: WireState = 'idle'
   user: string | null = null
+  service: string | null = null
   env: string | null = null
   envColor: string | null = null
   // The expanded permission set of the live connection. Empty before the
   // hello and after a drop, so a page disables its controls by default (see allows).
   scopes: string[] = []
-  // The kind of credential behind the connection (see HelloOkFrame.credential).
+  // The kind and the id of the credential behind the connection (see HelloOkFrame).
   credentialKind: string | null = null
+  credentialId: string | null = null
   expiresAt: number | null = null
   refusal: Refusal | null = null
   // The close code of the last drop, for the notice a page shows (see PLANNED_CLOSES).
@@ -194,7 +196,7 @@ export class Wire {
     this.open()
   }
 
-  // Membership alone: the server expands the implications (see winslow.permissions).
+  // Membership alone: the server expands the implications (see winslow.access.permissions).
   allows(scopeName: string | null, permission: string): boolean {
     if (scopeName === null) return false
     return this.scopes.includes(`${scopeName}:${permission}`) || this.scopes.includes(`*:${permission}`)
@@ -219,7 +221,7 @@ export class Wire {
     this.helloRefusal = null
     const openTimer = setTimeout(() => {
       if (generation === this.generation && this.helloPending) {
-        socket.close(4000, 'no hello_ok within the open timeout')
+        socket.close(4000, 'no answer within the open timeout')
       }
     }, OPEN_TIMEOUT)
     socket.onopen = () => {
@@ -253,6 +255,7 @@ export class Wire {
     if (PLANNED_CLOSES.has(code)) this.delay = 0
     this.scopes = []
     this.credentialKind = null
+    this.credentialId = null
     this.expiresAt = null
     this.failPending(new ConnectionDown())
     if (this.closing) {
@@ -266,7 +269,8 @@ export class Wire {
       return
     }
     if (REFUSAL_CODES.has(code)) {
-      this.refusal = this.helloRefusal ?? { code, reason, detail: null }
+      // The hello_error carries the reason and the detail, the close the code.
+      this.refusal = { ...(this.helloRefusal ?? { reason, detail: null }), code }
       if (code === CREDENTIAL_REFUSED && this.credentialUrl) {
         void this.refreshCredentialAndReconnect()
         return
@@ -368,9 +372,11 @@ export class Wire {
   }
 
   // One action. A transport failure answers a refused ack, like the handler.
-  async action(sessionId: string, action: string, fields: Record<string, unknown>): Promise<Ack> {
+  // An app action, a session start, names no session.
+  async action(sessionId: string | null, action: string, fields: Record<string, unknown>): Promise<Ack> {
     const requestId = this.nextId()
-    const frame: ActionFrame = { type: 'action', session_id: sessionId, action, request_id: requestId, fields }
+    const frame: ActionFrame = { type: 'action', action, request_id: requestId, fields }
+    if (sessionId !== null) frame.session_id = sessionId
     let reply: ReplyFrame
     try {
       reply = await this.exchange(requestId, frame)
@@ -533,10 +539,12 @@ export class Wire {
       this.helloPending = false
       this.everConnected = true
       this.user = frame.user
+      this.service = frame.service
       this.env = frame.env
       this.envColor = frame.env_color
       this.scopes = frame.scopes
       this.credentialKind = frame.credential
+      this.credentialId = frame.credential_id ?? null
       this.expiresAt = frame.expires_at
       this.refusal = null
       this.delay = RECONNECT_DELAY

@@ -13,18 +13,10 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import AnyHttpUrl
 
 from winslow._meta import _tagged
-from winslow.actions import (
-    Action,
-    CheckTasks,
-    ClearCacheEntries,
-    EndSession,
-    LoadCacheEntries,
-    RunTasks,
-    StopBatch,
-)
 from winslow.client.base import AppClient, SessionClient
+from winslow.conf import settings
 from winslow.exceptions import CredentialRefused, RequestError
-from winslow.permissions import PermissionContext
+from winslow.access.permissions import PermissionContext
 from winslow.protocol.codec import CODEC
 from winslow.task.context import scoped_permissions
 
@@ -38,17 +30,17 @@ class WinslowAccessToken(AccessToken):
 
 
 class BearerTokenVerifier(TokenVerifier):
-    """The bearer token of one MCP request, through the same chain the
-    websocket hello runs (see Credentials.verify_bearer). The token carries
-    the whole context, so the tool call reads the stores once (see
-    Credentials.mcp_context)."""
+    """The bearer token of one MCP request, through the same mode rule the
+    websocket connection request runs (see CredentialMode.get_context). The
+    token carries the whole context, so the tool call reads the stores once
+    (see Authenticator.mcp_context)."""
 
-    def __init__(self, credentials):
-        self._credentials = credentials
+    def __init__(self, mode):
+        self.mode = mode
 
     async def verify_token(self, token):
         try:
-            context = await asyncio.to_thread(self._credentials.verify_bearer, token)
+            context = await asyncio.to_thread(self.mode.get_context, token)
         except CredentialRefused:
             return None
         return WinslowAccessToken(
@@ -75,10 +67,13 @@ class McpEndpoint:
     def __init__(self, serve_app, base_url):
         self.serve_app = serve_app
         self._base_url = base_url
+        # The environment is in the identity of the server, so an agent with
+        # several deployments tells them apart by name.
         self.server = MCPServer(
-            name="winslow",
+            name=f"{settings.SERVICE_NAME}-{settings.ENV}",
             instructions=(
-                "The live winslow sessions of this server. list_sessions and "
+                f"The live sessions of {settings.SERVICE_NAME} in the {settings.ENV} "
+                "environment. list_sessions and "
                 "descriptors show what runs and what can run; the read tools "
                 "serve snapshots, history, logs and caches; the action tools "
                 "answer with an ack: accepted, or refused with the reason."
@@ -88,17 +83,25 @@ class McpEndpoint:
         self._register_tools()
 
     def _auth_settings(self, base_url):
-        credentials = self.serve_app.credentials
-        if not credentials.mode.checks_bearer:
+        authenticator = self.serve_app.authenticator
+        if not authenticator.mode.checks_bearer:
             return {}
-        # AuthSettings requires both URLs. The serve base URL fills both, and the
-        # resource metadata the SDK serves stays unused until OAuth exists.
-        # TODO: step 8 puts WINSLOW_PUBLIC_URL here, the resource identifier.
+        # The resource metadata names the server an agent logs in at: the
+        # issuer of the first listed backend that has one, else this server,
+        # which issues nothing. The backends check the audience of a ticket
+        # and an OIDC token themselves (SERVE_PUBLIC_URL), so the SDK does not
+        # compare the resource.
+        chain = authenticator.mode.chain
+        issuer = next(
+            (b.authorization_server for b in chain.backends if b.authorization_server),
+            base_url,
+        )
         return {
-            "token_verifier": BearerTokenVerifier(credentials),
+            "token_verifier": BearerTokenVerifier(authenticator.mode),
             "auth": AuthSettings(
-                issuer_url=AnyHttpUrl(base_url),
+                issuer_url=AnyHttpUrl(issuer),
                 resource_server_url=AnyHttpUrl(f"{base_url}/mcp"),
+                validate_token_resource=False,
             ),
         }
 
@@ -125,15 +128,15 @@ class McpEndpoint:
             entry.handler.close()
 
     def _permissions(self):
-        """The PermissionContext of the request (see Credentials.mcp_context)."""
-        return self.serve_app.credentials.mcp_context(get_access_token())
+        """The PermissionContext of the request (see Authenticator.mcp_context)."""
+        return self.serve_app.authenticator.mcp_context(get_access_token())
 
-    async def _submit(self, session_id, action):
+    async def _submit(self, action, session_id=None):
         """The ack of the action as a dict (see ServeApp.submit). An unknown
         session id answers the refused ack shape, so an agent reads it as data."""
         try:
             with scoped_permissions(self._permissions()):
-                ack = await self.serve_app.submit(session_id, action)
+                ack = await self.serve_app.submit(action, session_id)
         except RequestError as exc:
             return {"accepted": False, "reason": str(exc)}
         return CODEC.dump(ack)
@@ -167,8 +170,7 @@ class McpEndpoint:
         carries the batch options of this submit, for example
         {"force_run": true} (see batch_options for the baseline)."""
         return await self._submit(
-            session_id,
-            Action.build(RunTasks.name, dict(keys=keys, options=options)),
+            SessionClient.run_tasks.build(dict(keys=keys, options=options)), session_id
         )
 
     @tool
@@ -178,22 +180,22 @@ class McpEndpoint:
         """Submit a check batch for the given task identity keys. options
         works as in run_tasks."""
         return await self._submit(
+            SessionClient.check_tasks.build(dict(keys=keys, options=options)),
             session_id,
-            Action.build(CheckTasks.name, dict(keys=keys, options=options)),
         )
 
     @tool
     async def stop_batch(self, session_id: str, batch_uuid: str) -> dict:
         """Request a stop of one live batch."""
         return await self._submit(
-            session_id, Action.build(StopBatch.name, dict(batch_uuid=batch_uuid))
+            SessionClient.stop_batch.build(dict(batch_uuid=batch_uuid)), session_id
         )
 
     @tool
     async def end_session(self, session_id: str, force: bool = False) -> dict:
         """End the session. force stops its running batches first."""
         return await self._submit(
-            session_id, Action.build(EndSession.name, dict(force=force))
+            SessionClient.end_session.build(dict(force=force)), session_id
         )
 
     @tool
@@ -201,7 +203,7 @@ class McpEndpoint:
         """Load the given cache entries. Each entry is a
         [cache_name, entry_name] pair (see caches)."""
         return await self._submit(
-            session_id, Action.build(LoadCacheEntries.name, dict(entries=entries))
+            SessionClient.load_cache_entries.build(dict(entries=entries)), session_id
         )
 
     @tool
@@ -209,7 +211,7 @@ class McpEndpoint:
         """Clear the given cache entries. entries works as in
         load_cache_entries."""
         return await self._submit(
-            session_id, Action.build(ClearCacheEntries.name, dict(entries=entries))
+            SessionClient.clear_cache_entries.build(dict(entries=entries)), session_id
         )
 
     @tool
@@ -234,13 +236,21 @@ class McpEndpoint:
     async def start_session(
         self, workflow: str, overrides: dict | None = None, values: dict | None = None
     ) -> dict:
-        """Create one live session of the named workflow."""
-        return await self._read(AppClient.create_session, workflow, overrides, values)
+        """Create one live session of the named workflow. The ack carries its
+        SessionInfo under `session`, or a refusal with the reason."""
+        return await self._submit(
+            AppClient.create_session.build(
+                dict(workflow=workflow, overrides=overrides, values=values)
+            )
+        )
 
     @tool
     async def restore_session(self, session_id: str) -> dict:
-        """Rebuild one dead session from its open manifest (see manifests)."""
-        return await self._read(AppClient.restore_session, session_id)
+        """Rebuild one dead session from its open manifest (see manifests).
+        The ack carries its SessionInfo under `session`."""
+        return await self._submit(
+            AppClient.restore_session.build(dict(session_id=session_id))
+        )
 
     @tool
     async def snapshot(self, session_id: str) -> dict:

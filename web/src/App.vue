@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted } from 'vue'
+import { onMounted, watchEffect } from 'vue'
 
 import ConnectionBar from '@/components/common/ConnectionBar.vue'
 import NoticeHost from '@/components/common/NoticeHost.vue'
@@ -13,6 +13,13 @@ useSessionsStore()
 
 onMounted(() => {
   connection.connect()
+})
+
+// The tab names the deployment once the hello says which one this is.
+watchEffect(() => {
+  if (connection.service) {
+    document.title = connection.env ? `${connection.service} ${connection.env}` : connection.service
+  }
 })
 </script>
 

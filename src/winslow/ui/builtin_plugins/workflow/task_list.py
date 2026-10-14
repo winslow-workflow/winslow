@@ -21,7 +21,7 @@ from winslow.ui.widgets.common import (
 )
 
 from winslow.ui.actions import TaskActionEnum
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 
 # The UI hides the action buttons, and does not disable them, for a status that a

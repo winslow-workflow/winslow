@@ -67,6 +67,8 @@ export interface BatchInfo {
   completed_at: number | null
   error: string | null
   user: string | null
+  credential: string | null
+  credential_id: string | null
 }
 
 export interface SessionSnapshot {
@@ -139,6 +141,8 @@ export interface BatchOutcome {
   options: Record<string, unknown> | null
   tasks: Record<string, TaskOutcome>
   user: string | null
+  credential: string | null
+  credential_id: string | null
 }
 
 export interface PhaseInfo {
@@ -266,7 +270,10 @@ export interface Ack {
   accepted: boolean
   reason: string | null
   batch_uuid?: string | null
+  // A session start: the SessionInfo of the live session, or the traceback of a refusal.
+  session?: SessionInfo | null
+  detail?: string | null
 }
 
-// The batch option toggles a client sends with every submit (see RunTasks.options).
+// The batch option toggles a client sends with every submit (see SessionClient.run_tasks).
 export type BatchOptions = Record<string, boolean>

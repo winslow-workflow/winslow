@@ -1,6 +1,6 @@
-"""Two plugins sharing a name (hence a qualified name) - discovering this
-package registers both and forces the name-clash PluginError. Kept out of the
-main my_plugins package so it only bites the clash test."""
+"""Two plugins sharing a name - registering this package registers both and
+forces the name-clash PluginError. Kept out of the main my_plugins package so
+it only bites the clash test."""
 
 from textual.widgets import Label
 

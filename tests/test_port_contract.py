@@ -8,19 +8,12 @@ import asyncio
 import json
 import threading
 import time
-from dataclasses import asdict
 
 import pytest
 
-from winslow.actions import (
-    Ack,
-    BatchAck,
-    ClearCacheEntries,
-    EndSession,
-    LoadCacheEntries,
-    RunTasks,
-)
+from winslow.actions import Ack, BatchAck
 from winslow.client import LocalAppClient
+from winslow.client.base import AppClient, SessionClient
 from winslow.client.websocket import RemoteAppClient
 from winslow.protocol.codec import CODEC
 from winslow.exceptions import RequestError
@@ -41,7 +34,7 @@ from winslow.session import SessionRegistry
 from test_client_websocket import TOKEN, ServedProcess
 from test_serve_actions import serve_orchestrator
 
-from harness import serve_credentials
+from harness import serve_authenticator, started
 from harness import bare_orchestrator, scratch_state_store
 
 
@@ -149,6 +142,14 @@ class McpSessionPort:
     """The SessionClient reads and actions over the MCP tools, decoding back
     into the model DTOs the way the wire client decodes frames."""
 
+    # The action declarations of the port bind to submit, like a transport.
+    run_tasks = SessionClient.run_tasks
+    check_tasks = SessionClient.check_tasks
+    stop_batch = SessionClient.stop_batch
+    end_session = SessionClient.end_session
+    load_cache_entries = SessionClient.load_cache_entries
+    clear_cache_entries = SessionClient.clear_cache_entries
+
     def __init__(self, bridge, session_id):
         self._bridge = bridge
         self.session_id = session_id
@@ -208,10 +209,9 @@ class McpSessionPort:
     def session_params(self):
         return CODEC.decode(SessionParams, self._call("session_params"))
 
-    def submit(self, action):
+    def submit(self, spec, *args, **kwargs):
         result = self._bridge.call(
-            type(action).name,
-            {"session_id": self.session_id, **asdict(action)},
+            spec.name, {"session_id": self.session_id, **spec.bind(args, kwargs)}
         )
         if "batch_uuid" in result:
             return BatchAck(
@@ -244,18 +244,17 @@ class McpAppPort:
         row = _refuses(self._bridge.call("host_stats", {}))
         return CODEC.decode(HostStats, row)
 
-    def create_session(self, workflow, overrides=None, values=None):
-        row = _refuses(
-            self._bridge.call(
-                "start_session",
-                {"workflow": workflow, "overrides": overrides, "values": values},
-            )
-        )
-        return CODEC.decode(SessionInfo, row)
+    # The two app actions bind to submit, like a transport. The MCP tool of
+    # create_session is start_session.
+    create_session = AppClient.create_session
+    restore_session = AppClient.restore_session
+    TOOLS = {"create_session": "start_session"}
 
-    def restore_session(self, session_id):
-        row = _refuses(self._bridge.call("restore_session", {"session_id": session_id}))
-        return CODEC.decode(SessionInfo, row)
+    def submit(self, spec, *args, **kwargs):
+        result = self._bridge.call(
+            self.TOOLS.get(spec.name, spec.name), spec.bind(args, kwargs)
+        )
+        return CODEC.decode(spec.ack, result)
 
     def session(self, session_id):
         return McpSessionPort(self._bridge, session_id)
@@ -272,7 +271,7 @@ class McpServedProcess(ServedProcess):
 
         self.app = create_app(
             registry,
-            serve_credentials(),
+            serve_authenticator(),
             hello_timeout=2.0,
             orchestrator=orchestrator or bare_orchestrator(),
             state_store=state_store or scratch_state_store(),
@@ -324,7 +323,7 @@ def finished_batch(lane, batch_uuid):
 
 
 def test_a_created_session_lists_and_snapshots(port):
-    row = port.create_session("my-workflow")
+    row = started(port.create_session("my-workflow"))
     assert row.status == "ACTIVE"
     assert row.session_id in {r.session_id for r in port.sessions()}
     snapshot = port.session(row.session_id).snapshot()
@@ -333,16 +332,17 @@ def test_a_created_session_lists_and_snapshots(port):
 
 
 def test_an_unknown_workflow_refuses_with_its_name(port):
-    with pytest.raises(RequestError, match="no-such-workflow"):
-        port.create_session("no-such-workflow")
+    refused = port.create_session("no-such-workflow")
+    assert refused.accepted is False
+    assert "no-such-workflow" in refused.reason
 
 
 def test_a_run_completes_and_serves_its_records(port):
-    row = port.create_session("my-workflow")
+    row = started(port.create_session("my-workflow"))
     lane = port.session(row.session_id)
     key = next(info.key for info in lane.roster() if info.key.startswith("alpha"))
 
-    ack = lane.submit(RunTasks(keys=(key,)))
+    ack = lane.run_tasks(keys=(key,))
     assert ack.accepted, ack.reason
     batch = finished_batch(lane, ack.batch_uuid)
 
@@ -354,7 +354,7 @@ def test_a_run_completes_and_serves_its_records(port):
 
 
 def test_the_task_surface_serves_detail_and_filter(port):
-    row = port.create_session("my-workflow")
+    row = started(port.create_session("my-workflow"))
     lane = port.session(row.session_id)
     key = next(info.key for info in lane.roster() if info.key.startswith("alpha"))
     assert lane.task_detail(key).key == key
@@ -364,7 +364,7 @@ def test_the_task_surface_serves_detail_and_filter(port):
 
 
 def test_the_cache_surface_loads_and_clears(port):
-    row = port.create_session("my-cache")
+    row = started(port.create_session("my-cache"))
     lane = port.session(row.session_id)
     (card,) = [c for c in lane.caches() if c.name == "weather"]
     assert set(card.entries) == {
@@ -373,7 +373,7 @@ def test_the_cache_surface_loads_and_clears(port):
         "forecast",
     }
 
-    ack = lane.submit(LoadCacheEntries(entries=(("weather", "forecast"),)))
+    ack = lane.load_cache_entries(entries=(("weather", "forecast"),))
     assert ack.accepted, ack.reason
     wait_for(
         lambda: lane.cache_value("weather", "forecast").state == "warm",
@@ -381,7 +381,7 @@ def test_the_cache_surface_loads_and_clears(port):
     )
     assert "ATHENS" in lane.cache_value("weather", "forecast").rendered
 
-    ack = lane.submit(ClearCacheEntries(entries=(("weather", "forecast"),)))
+    ack = lane.clear_cache_entries(entries=(("weather", "forecast"),))
     assert ack.accepted, ack.reason
     wait_for(
         lambda: lane.cache_value("weather", "forecast").state == "cold",
@@ -390,9 +390,9 @@ def test_the_cache_surface_loads_and_clears(port):
 
 
 def test_an_ended_session_refuses_the_live_surface(port):
-    row = port.create_session("my-workflow")
+    row = started(port.create_session("my-workflow"))
     lane = port.session(row.session_id)
-    ack = lane.submit(EndSession())
+    ack = lane.end_session()
     assert ack.accepted, ack.reason
     wait_for(
         lambda: (
@@ -403,7 +403,7 @@ def test_an_ended_session_refuses_the_live_surface(port):
         ),
         "the session never ended",
     )
-    refused = lane.submit(RunTasks(keys=("anything",)))
+    refused = lane.run_tasks(keys=("anything",))
     assert refused.accepted is False
     assert "has ended" in refused.reason
     with pytest.raises(RequestError, match="has ended"):
@@ -412,8 +412,8 @@ def test_an_ended_session_refuses_the_live_surface(port):
 
 def test_restore_refuses_an_unknown_manifest(port):
     assert port.manifests() == ()
-    with pytest.raises(RequestError, match="no open manifest"):
-        port.restore_session("gone")
+    refused = port.restore_session("gone")
+    assert "no open manifest" in refused.reason
 
 
 def test_host_stats_describe_the_serving_host(port):

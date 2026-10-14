@@ -299,8 +299,11 @@ class BatchInfo:
     completed_at: float | None
     # The message of the framework error that aborted the batch, or None.
     error: str | None = None
-    # The user that submitted the batch, or None for a local run.
+    # The user that submitted the batch and the kind and id of its credential.
+    # None for a local run.
     user: str | None = None
+    credential: str | None = None
+    credential_id: str | None = None
 
     @classmethod
     def from_batch(cls, batch, tasks):
@@ -334,6 +337,8 @@ class BatchInfo:
             ),
             error=batch.error,
             user=batch.user,
+            credential=batch.credential,
+            credential_id=batch.credential_id,
         )
 
 
@@ -372,8 +377,11 @@ class BatchOutcome:
     # The batch option snapshot, without the uuid (see BatchInfo.options).
     options: dict | None
     tasks: dict[str, TaskOutcome]  # keyed by identity key
-    # The user that submitted the batch, or None for a local run.
+    # The user that submitted the batch and the kind and id of its credential.
+    # None for a local run.
     user: str | None = None
+    credential: str | None = None
+    credential_id: str | None = None
 
     @classmethod
     def from_batch(cls, batch, store):
@@ -388,6 +396,8 @@ class BatchOutcome:
             ),
             options=_batch_options(batch),
             user=batch.user,
+            credential=batch.credential,
+            credential_id=batch.credential_id,
             tasks=(
                 {
                     key: TaskOutcome.from_record(status, store.get_record(key))
@@ -832,9 +842,11 @@ class HostStats:
 
 @dataclass(frozen=True)
 class EnvInfo:
-    """The environment name of the process that runs the sessions and its
-    header color, a CSS color (see winslow.settings.ENV_COLORS)."""
+    """The service name and the environment name of the process that runs
+    the sessions, and the header color, a CSS color (see
+    winslow.conf.defaults.ENV_COLORS)."""
 
+    service: str
     name: str
     color: str
 

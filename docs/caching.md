@@ -233,13 +233,11 @@ starts warm from the files. Each entry lives at
 `<cache root>/<namespace>/<cache-name>/<entry>.json`: open the file to inspect a value, delete
 it to drop one.
 
-Set the cache root with the `WINSLOW_CACHE_DIR` setting. The default is `.winslow/cache`,
-relative to the working directory - set an absolute path so every entry point of the project
-shares one cache. Export the value, or put it in a `.env` file: the search for the file starts in
-the working directory and walks up.
+Set the cache root with the `CACHE_DIR` setting. The default is `.winslow/cache`, relative to the
+working directory - set an absolute path so every entry point of the project shares one cache:
 
-```ini title=".env"
-WINSLOW_CACHE_DIR=/srv/etl/winslow-cache
+```python title="etl/settings.py"
+CACHE_DIR = "/srv/etl/winslow-cache"
 ```
 
 !!! warning "For `JsonFileStorage`, the values must fit the JSON types"

@@ -9,7 +9,6 @@ from textual.widget import Widget
 from textual.widgets import Button, Input, Label, Select
 from textual.containers import Horizontal, VerticalScroll
 
-from winslow.actions import ClearCacheEntries, LoadCacheEntries
 from winslow.cache import GLOBAL_SCOPE, WORKFLOW_SCOPE
 from winslow.model import EntryState
 from winslow.ui.css import package_css
@@ -20,7 +19,7 @@ from winslow.ui.modals.cache_value import CacheEntryValue
 from winslow.ui.widgets.common import GuardedButton, TaskRowBase
 from winslow.ui.widgets.common.logs import InlineLog
 from winslow.ui.workflow_events import CacheUpdated, SessionEnded
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 _CSS = package_css(__package__, "_pane_header.tcss", "caches.tcss")
 
@@ -378,9 +377,13 @@ class CachesPane(SearchFlowMixin, Widget):
             case CacheAction.VIEW:
                 self.app.push_screen(CacheEntryValue(self.client, *pair))
             case CacheAction.LOAD:
-                self.screen.submit_action(LoadCacheEntries(entries=(pair,)))
+                self.screen.submit_action(
+                    self.client.load_cache_entries, entries=(pair,)
+                )
             case CacheAction.CLEAR:
-                self.screen.submit_action(ClearCacheEntries(entries=(pair,)))
+                self.screen.submit_action(
+                    self.client.clear_cache_entries, entries=(pair,)
+                )
 
     def _visible_pairs(self):
         return tuple(
@@ -395,7 +398,7 @@ class CachesPane(SearchFlowMixin, Widget):
         if not pairs:
             self.notify("No cache entries are visible - nothing to load")
             return
-        ack = self.screen.submit_action(LoadCacheEntries(entries=pairs))
+        ack = self.screen.submit_action(self.client.load_cache_entries, entries=pairs)
         if ack.accepted:
             self.notify(
                 f"Loading {len(pairs)} cache entr{'y' if len(pairs) == 1 else 'ies'}"
@@ -407,7 +410,7 @@ class CachesPane(SearchFlowMixin, Widget):
         if not pairs:
             self.notify("No cache entries are visible - nothing to clear")
             return
-        ack = self.screen.submit_action(ClearCacheEntries(entries=pairs))
+        ack = self.screen.submit_action(self.client.clear_cache_entries, entries=pairs)
         if ack.accepted:
             self.notify(
                 f"Clearing {len(pairs)} cache entr{'y' if len(pairs) == 1 else 'ies'}"

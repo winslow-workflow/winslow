@@ -252,8 +252,8 @@ def test_session_log_backlog_serves_lines_logged_before_any_subscribe(
     orchestrator = serve_orchestrator(e2e_repo)
     registry = SessionRegistry()
     with connect(registry, orchestrator=orchestrator, state_store=state_store) as ws:
-        created = request(ws, "r-51", "create_session", workflow="my-workflow")
-        session = registry.get(created["result"]["session_id"])
+        created = action(ws, "r-51", None, "create_session", workflow="my-workflow")
+        session = registry.get(created["session"]["session_id"])
         session.workflow.logger.warning("logged before anyone subscribed")
 
         ws.send_json({"type": SubscribeFrame.type, "session_id": session.session_id})
@@ -356,7 +356,7 @@ def test_workflow_option_initial_prefills_from_cli_args(e2e_repo):
         assert client["initial"] == "acme"
 
 
-# --- create_session error detail -------------------------------------------------
+# --- create_session refusal detail -----------------------------------------------
 
 
 def test_create_session_error_carries_a_traceback_detail(e2e_repo, state_store):
@@ -364,17 +364,10 @@ def test_create_session_error_carries_a_traceback_detail(e2e_repo, state_store):
     with connect(
         SessionRegistry(), orchestrator=orchestrator, state_store=state_store
     ) as ws:
-        ws.send_json(
-            {
-                "type": RequestFrame.type,
-                "request_id": "r-28",
-                "kind": "create_session",
-                "workflow": "my-identified",
-            }
-        )
-        error = frames_until(ws, ErrorFrame)
-        assert "requires client" in error["reason"]
-        assert "Traceback" in error["detail"]
+        refused = action(ws, "r-28", None, "create_session", workflow="my-identified")
+        assert refused["accepted"] is False
+        assert "requires client" in refused["reason"]
+        assert "Traceback" in refused["detail"]
 
 
 # --- task_detail parity: workflow.task_info fills checked_at ---------------------
@@ -412,7 +405,12 @@ def test_a_malformed_action_frame_answers_an_error_and_the_connection_survives(
     workflow, session, registry = registered(e2e_repo)
     with connect(registry) as ws:
         ws.send_json(
-            {"type": ActionFrame.type, "request_id": "r-31", "action": "run_tasks"}
+            {
+                "type": ActionFrame.type,
+                "request_id": "r-31",
+                "action": "run_tasks",
+                "fields": "not a dict",
+            }
         )
         error = frames_until(ws, ErrorFrame)
         assert error["request_id"] == "r-31"

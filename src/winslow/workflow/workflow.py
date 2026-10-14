@@ -26,7 +26,7 @@ from winslow.bus import SessionBus
 from winslow.events import Origin, SessionEndedEvent, TaskStatusEvent
 from winslow.state import (
     SessionManifest,
-    SessionPersistenceAdapter,
+    SessionPersistenceSubscriber,
     StaleSweeper,
     is_trusted,
 )
@@ -44,7 +44,7 @@ class Workflow(_ConfigBase):
     # initializes each of them.
     auto_init = False
 
-    # The scope name of the permissions on this workflow (see winslow.permissions).
+    # The scope name of the permissions on this workflow (see winslow.access.permissions).
     # None resolves to the workflow name. A base class sets it once for a family
     # and the subclasses inherit it.
     permission_scope = None
@@ -109,7 +109,7 @@ class Workflow(_ConfigBase):
         # The Session does not exist at construction time. It is created after
         # the workflow init and attaches itself here.
         self._session = None
-        # The workflow owns its persistence adapter and stale sweeper. None
+        # The workflow owns its persistence subscriber and stale sweeper. None
         # until init_state attaches them; archive_state detaches them.
         self.persistence_listener = None
         self.stale_sweeper = None
@@ -429,11 +429,11 @@ class Workflow(_ConfigBase):
             # A second registration doubles the writes.
             return
         session = self._session
-        adapter = sweeper = None
+        subscriber = sweeper = None
         try:
-            adapter = SessionPersistenceAdapter(state_store, session.session_id)
-            adapter.attach(self)
-            self.persistence_listener = adapter
+            subscriber = SessionPersistenceSubscriber(state_store, session.session_id)
+            subscriber.attach(self)
+            self.persistence_listener = subscriber
             sweeper = StaleSweeper(self)
             self.bus.subscribe(TaskStatusEvent, sweeper.on_task_status)
             self.stale_sweeper = sweeper
@@ -455,9 +455,9 @@ class Workflow(_ConfigBase):
             # A persistence failure must not break the session start: the
             # session degrades to a run without state. The locals include a
             # subscriber whose registration failed.
-            if adapter is not None:
-                adapter.detach(self)
-                adapter.close()
+            if subscriber is not None:
+                subscriber.detach(self)
+                subscriber.close()
             if sweeper is not None:
                 self.bus.unsubscribe(TaskStatusEvent, sweeper.on_task_status)
                 sweeper.close()
@@ -472,7 +472,7 @@ class Workflow(_ConfigBase):
     def load_snapshot(self, key):
         """The latest snapshot of the key, or None. The listener overlays the
         writes of this session on the initial state, so the read stays in
-        memory (see SessionPersistenceAdapter.get)."""
+        memory (see SessionPersistenceSubscriber.get)."""
         listener = self.persistence_listener
         return listener.get(key) if listener is not None else None
 
@@ -508,7 +508,7 @@ class Workflow(_ConfigBase):
                 status = TaskStatus.STALE
             # An ordinary store write, so the subscribers see a normal
             # event. The SEED origin keeps checked_at where the probe
-            # left it (see SessionPersistenceAdapter).
+            # left it (see SessionPersistenceSubscriber).
             self.runner.set_status(task, status, None, origin=Origin.SEED)
 
     def archive_state(self):

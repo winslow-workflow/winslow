@@ -44,11 +44,12 @@ class Codec:
         tuple becomes a list, an enum becomes its value, a scalar passes."""
         return _adapter(object).dump_python(value, mode="json")
 
-    def decode(self, dto_class, payload):
-        """One instance of dto_class from a JSON dict or JSON text."""
+    def decode(self, dto_class, payload, context=None):
+        """One instance of dto_class from a JSON dict or JSON text. context
+        reaches the validators of the class as ValidationInfo.context."""
         if isinstance(payload, (str, bytes)):
-            return _adapter(dto_class).validate_json(payload)
-        return _adapter(dto_class).validate_python(payload)
+            return _adapter(dto_class).validate_json(payload, context=context)
+        return _adapter(dto_class).validate_python(payload, context=context)
 
 
 CODEC = Codec()

@@ -1,21 +1,17 @@
-"""The `winslow auth` commands over the two stores: tokens for the people
-and service accounts that present no other credential, and two reads of the
-policy an operator checks a file with. Every command works the same over
-every registered backend."""
+"""The `winslow auth` commands: the credential file of the person for
+login, logout and status, and the listed token backend for the tokens of
+the people and service accounts that present no other credential, and for
+two reads of the policy an operator checks (see winslow.access.backends)."""
 
 import functools
-import getpass
 import sys
 from dataclasses import dataclass
 import time
 from datetime import datetime
 
-from winslow.access.credentials import (
-    CredentialEntry,
-    checked_login_url,
-    credential_key,
-)
-from winslow.access.policy import checked_name, scopes_for
+from winslow.access.backends import Identity, backend_classes, token_backend
+from winslow.access.credentials import checked_login_url, credential_key
+from winslow.access.policy import checked_name
 from winslow.access.tokens import (
     TokenRecord,
     expired,
@@ -24,8 +20,7 @@ from winslow.access.tokens import (
     token_hash,
 )
 from winslow.exceptions import MisconfigurationError
-from winslow.permissions import (
-    CredentialKind,
+from winslow.access.permissions import (
     Permission,
     PermissionContext,
     wire_scopes,
@@ -79,25 +74,26 @@ def token_rows(tokens, user=None, now=None):
     )
 
 
-def show(policy_store, tokens, user):
-    """The groups, the expanded scopes and the token count of a user."""
-    policy = policy_store.load()
-    entry = policy.users.get(user)
+def user_scopes(backend, user):
+    """The scopes a token of the user holds under the backend."""
+    return backend.scopes_for(Identity(user, backend.kind))
+
+
+def show(backend, user):
+    """The expanded scopes and the token count of a user."""
     return {
         "user": user,
-        "groups": list(entry.groups) if entry else [],
-        "scopes": list(wire_scopes(scopes_for(policy, user))),
-        "tokens": len(tokens.list(user)),
+        "scopes": list(wire_scopes(user_scopes(backend, user))),
+        "tokens": len(backend.tokens.list(user)),
     }
 
 
-def check(policy_store, user, scope_name, permission):
+def check(backend, user, scope_name, permission):
     """Whether the user holds the permission on the scope name, with the
     reason a server would give."""
     permission = Permission(permission)
-    context = PermissionContext(
-        user, scopes_for(policy_store.load(), user), CredentialKind.TOKEN
-    )
+    identity = Identity(user, backend.kind)
+    context = PermissionContext.of(identity, backend.scopes_for(identity))
     reason = context.check(scope_name, (permission,))
     if reason is None:
         return True, f"{user} holds {scope_name}:{permission}"
@@ -111,27 +107,16 @@ def _render(value):
     return str(value)
 
 
-@dataclass(frozen=True)
-class Stores:
-    """The stores a `winslow auth` command runs over: the two of the server
-    side, and the credential file of the person (see CredentialFile)."""
-
-    policy: object
-    tokens: object
-    credentials: object
-
-
-def _create(args, stores, out, err):
-    out(token_create(stores.tokens, args.user, args.expires))
-    if args.user not in stores.policy.load().users:
-        err(
-            f"{args.user} has no policy entry - the token grants nothing until one exists."
-        )
+def _create(args, credentials, out, err):
+    backend = token_backend()
+    out(token_create(backend.tokens, args.user, args.expires))
+    if not user_scopes(backend, args.user):
+        err(f"{args.user} holds no scope - the token grants nothing until one exists.")
     return 0
 
 
-def _list(args, stores, out, err):
-    rows = token_rows(stores.tokens, args.user)
+def _list(args, credentials, out, err):
+    rows = token_rows(token_backend().tokens, args.user)
     if not rows:
         out("no tokens")
     for row in rows:
@@ -139,62 +124,67 @@ def _list(args, stores, out, err):
     return 0
 
 
-def _revoke(args, stores, out, err):
-    count = token_revoke(stores.tokens, args.token_id, args.user)
+def _revoke(args, credentials, out, err):
+    count = token_revoke(token_backend().tokens, args.token_id, args.user)
     out(f"revoked {count} token{'s' if count != 1 else ''}")
     return 0 if count else 1
 
 
-def _show(args, stores, out, err):
-    for key, value in show(stores.policy, stores.tokens, args.user).items():
+def _show(args, credentials, out, err):
+    for key, value in show(token_backend(), args.user).items():
         out(f"{key}: {_render(value)}")
     return 0
 
 
-def _check(args, stores, out, err):
-    allowed, reason = check(stores.policy, args.user, args.scope, args.permission)
+def _check(args, credentials, out, err):
+    allowed, reason = check(token_backend(), args.user, args.scope, args.permission)
     out(reason)
     return 0 if allowed else 1
 
 
-def _read_token(args):
-    """The token of a login: one line of stdin with --with-token, so a script
-    keeps it out of the process list, else a prompt without echo."""
-    if args.with_token:
-        return sys.stdin.readline().strip()
-    return getpass.getpass(f"Token for {credential_key(args.url)}: ").strip()
+def _backend_class(kind):
+    """The listed backend class `kind` names, the first listed when None."""
+    classes = backend_classes()
+    if kind is None:
+        return classes[0]
+    by_name = {cls.name: cls for cls in classes}
+    if kind not in by_name:
+        raise MisconfigurationError(
+            f"{kind!r} names no listed auth backend - AUTH_BACKENDS "
+            f"lists {', '.join(by_name) or 'nothing'}."
+        )
+    return by_name[kind]
 
 
-def _login(args, stores, out, err):
+def _login(args, credentials, out, err):
     try:
         checked_login_url(args.url, insecure=args.insecure)
+        entry = _backend_class(args.kind).login(
+            credential_key(args.url), args.with_token
+        )
     except MisconfigurationError as exc:
         err(str(exc))
         return 1
-    token = _read_token(args)
-    if not token:
-        err("no token given - nothing stored.")
-        return 1
-    stores.credentials.set(args.url, CredentialEntry(token=token))
+    credentials.set(args.url, entry)
     out(f"stored the credential for {credential_key(args.url)}")
     return 0
 
 
-def _logout(args, stores, out, err):
+def _logout(args, credentials, out, err):
     key = credential_key(args.url)
-    if stores.credentials.delete(args.url):
+    if credentials.delete(args.url):
         out(f"removed the credential for {key}")
         return 0
     out(f"no credential stored for {key}")
     return 1
 
 
-def _status(args, stores, out, err):
-    entries = stores.credentials.entries()
+def _status(args, credentials, out, err):
+    entries = credentials.entries()
     if not entries:
         out("no credentials stored")
     for key, entry in entries:
-        out(f"{key}  {entry.user or '-'}  {entry.kind}")
+        out(f"{key}  {entry.user or '-'}  {entry.kind.value}")
     return 0
 
 
@@ -247,7 +237,11 @@ COMMANDS = (
             (("url",), {}),
             (
                 ("--with-token",),
-                {"action": "store_true", "help": "Read the token from stdin."},
+                {"action": "store_true", "help": "Read the credential from stdin."},
+            ),
+            (
+                ("--kind",),
+                {"default": None, "help": "The backend: token, ticket, or one listed."},
             ),
             (
                 ("--insecure",),
@@ -264,7 +258,7 @@ COMMANDS = (
     AuthCommand(("status",), "The stored credentials.", _status),
     AuthCommand(
         ("show",),
-        "The groups, scopes and token count of a user.",
+        "The scopes and token count of a user.",
         _show,
         arguments=((("user",), {}),),
     ),
@@ -305,8 +299,9 @@ def add_parser(subparsers):
     return auth
 
 
-def run(args, stores, out, err=None):
-    """Run the parsed `winslow auth` command. Return the exit code. out
-    prints an answer, err a note beside it, so a captured token stays one line."""
+def run(args, credentials, out, err=None):
+    """Run the parsed `winslow auth` command over the credential file of the
+    person (see CredentialFile). Return the exit code. out prints an answer,
+    err a note beside it, so a captured token stays one line."""
     err = err or functools.partial(print, file=sys.stderr)
-    return args.handler(args, stores, out, err)
+    return args.handler(args, credentials, out, err)

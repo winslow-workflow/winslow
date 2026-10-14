@@ -1,19 +1,18 @@
-"""The inbound action path of a session. A presentation layer translates
-user input into one action dataclass and submits it to the ActionHandler of
-the session. Action fields are values only: identity keys, scalars (the
-payload rule, see winslow.events)."""
+"""The inbound action path of a session. A client submits one Action
+declaration of the port (see winslow.client.base.SessionClient) and the
+ActionHandler of the session answers with an ack. Action fields are values
+only: identity keys, scalars (the payload rule, see winslow.events)."""
 
 import contextvars
 import threading
 from dataclasses import asdict, dataclass, fields
 
-from winslow._meta import _tagged, handles
 from winslow.cache import declared_entries
-from winslow import authz
-from winslow.authz import requires
-from winslow.permissions import Permission
+from winslow.access import authz
+from winslow.access.permissions import Permission
 from winslow.runner.execution import ExecutionAction
 from winslow.exceptions import SessionEndingError
+from winslow.model import SessionInfo
 from winslow.task.context import BatchOptions
 from winslow.util import execute_in_threads
 
@@ -35,115 +34,72 @@ class BatchAck(Ack):
     batch_uuid: str | None = None
 
 
-class Action:
-    """The base of every action. name is the wire name (see ActionFrame). The
-    actions register by name at class creation (see build). ack_class is the
-    answer the action gets, and audit_keys the size the audit line carries."""
+@dataclass(frozen=True)
+class SessionAck(Ack):
+    """The answer to a session start or restore (see AppActionHandler). An
+    accepted one carries the SessionInfo of the live session. A refusal from
+    the init code of the workflow carries its traceback in detail, for the
+    error modal of a client."""
 
-    name = None
-    by_name = {}
-    ack_class = Ack
+    session: SessionInfo | None = None
+    detail: str | None = None
 
-    @property
-    def audit_keys(self):
-        return None
 
-    def __init_subclass__(cls, **kwargs):
-        super().__init_subclass__(**kwargs)
-        # A base with no name is an action kind and stays unregistered (see Lane).
-        if cls.name is not None:
-            Action.by_name[cls.name] = cls
+class BaseActionHandler:
+    """The guarded submit both handlers share (see ActionHandler,
+    AppActionHandler). submit answers an ack and writes the audit line. A
+    raise inside it is a bug of the handler: submit_guarded turns it into a
+    refused ack with its own audit line, so no exception crosses a door."""
 
-    @classmethod
-    def build(cls, name, payload):
-        """The action instance of one wire name and its field dict (see
-        ActionFrame). The codec validates the payload against the dataclass."""
-        # The codec needs pydantic, which only the serve and connect extras install.
-        from winslow.protocol.codec import CODEC, ValidationError, report
+    # The logger of the handler and how a refusal names its log.
+    logger = None
+    log_name = "the log"
 
-        action_class = cls.by_name.get(name)
-        if action_class is None:
-            raise ValueError(
-                f"{name!r} names no action. The actions are {sorted(cls.by_name)}."
-            )
+    def _audit_fields(self, action):
+        """The (scope name, session id) of the audit line of a guarded raise."""
+        raise NotImplementedError
+
+    def submit(self, action):
+        raise NotImplementedError
+
+    def submit_guarded(self, action):
+        """submit for a wire transport: an unexpected raise becomes a refused
+        ack with the traceback in the log. The TUI calls submit and keeps
+        the real traceback."""
         try:
-            return CODEC.decode(action_class, payload or {})
-        except ValidationError as exc:
-            raise ValueError(
-                f"bad fields for {name} - {report(exc)}. The fields of {name} are "
-                f"{[f.name for f in fields(action_class)]}."
-            ) from None
+            return self.submit(action)
+        except Exception:
+            spec = action.spec
+            self.logger.error(f"{spec.name} failed inside the handler.", exc_info=True)
+            reason = (
+                f"{spec.name} failed inside the handler - {self.log_name} has the "
+                f"traceback."
+            )
+            scope_name, session_id = self._audit_fields(action)
+            authz.audit(
+                spec.name, scope_name, session_id, False, reason, spec.count(action)
+            )
+            return spec.refused(reason)
 
 
-class BatchAction(Action):
-    """An action that submits a batch over keys and answers with a BatchAck."""
-
-    ack_class = BatchAck
-
-    @property
-    def audit_keys(self):
-        return len(self.keys)
-
-
-@dataclass(frozen=True)
-class RunTasks(BatchAction):
-    """options carries the batch options of this submit: {name: bool},
-    over the session baseline. They are client view state, so each client
-    sends its own with every batch (see BatchOptions)."""
-
-    name = "run_tasks"
-    keys: tuple
-    options: dict | None = None
-
-
-@dataclass(frozen=True)
-class CheckTasks(BatchAction):
-    """The check form of RunTasks; options works the same."""
-
-    name = "check_tasks"
-    keys: tuple
-    options: dict | None = None
-
-
-@dataclass(frozen=True)
-class StopBatch(Action):
-    name = "stop_batch"
-    batch_uuid: str
-
-
-@dataclass(frozen=True)
-class EndSession(Action):
-    name = "end_session"
-    force: bool = False
-
-
-@dataclass(frozen=True)
-class LoadCacheEntries(Action):
-    """Bulk-only, like RunTasks: a single selection sends a one-pair list.
-    Each pair is (cache_name, entry_name)."""
-
-    name = "load_cache_entries"
-    entries: tuple
-
-
-@dataclass(frozen=True)
-class ClearCacheEntries(Action):
-    """Bulk-only, like LoadCacheEntries. "Clear" is the action verb on the
-    wire; the handler calls cache.invalidate internally."""
-
-    name = "clear_cache_entries"
-    entries: tuple
-
-
-class ActionHandler:
+class ActionHandler(BaseActionHandler):
     """One per session: the inbound half of the session boundary (the bus is
     the outbound half, see SessionBus). The handler accepts one action,
     resolves its values to live objects, gates it, delegates it to the runner
     or the session, and answers with an ack. It refuses with an ack, never
     with an exception: a transport forwards the reason as-is."""
 
+    log_name = "the session log"
+
     def __init__(self, session):
         self.session = session
+
+    @property
+    def logger(self):
+        return self.session.workflow.logger
+
+    def _audit_fields(self, action):
+        return self.session.permission_scope, self.session.session_id
 
     @property
     def _workflow(self):
@@ -158,62 +114,40 @@ class ActionHandler:
         return self.session.permission_scope
 
     def submit(self, action):
-        """The one entry point: dispatch on the action class."""
-        method = self._methods.get(type(action))
-        if method is None:
-            return Ack(
-                accepted=False,
-                reason=f"{type(action).__name__} names no action of this session. "
-                f"The actions are {sorted(k.__name__ for k in self._methods)}.",
-            )
-        if self.session.has_ended:
-            return self._refuse(
-                action, f"{self.session.session_id} has ended and accepts no action."
-            )
-        # The permission check of the handler, from the marker its decorator
-        # leaves (see authz.requires). The refusal is an ack like every other.
+        """The one entry point: the value of one Action declaration
+        dispatches to the method of its name (see Action.__call__). An ended
+        session and a missing permission refuse through the ack, and every
+        outcome leaves one audit line."""
+        spec = action.spec
         scope_name = self.session.permission_scope
-        reason = authz.check(method.requires, scope_name)
-        ack = self._refuse(action, reason) if reason else method(self, action)
+        reason = self._ended_reason() or authz.check(spec.requires, scope_name)
+        ack = (
+            self._refuse(action, reason) if reason else getattr(self, spec.name)(action)
+        )
         authz.audit(
-            action.name,
+            spec.name,
             scope_name,
             self.session.session_id,
             ack.accepted,
             ack.reason,
-            action.audit_keys,
+            spec.count(action),
         )
         return ack
 
-    def submit_guarded(self, action):
-        """submit for a wire transport: an unexpected raise becomes a refused
-        ack with the traceback in the session log, so no exception crosses the
-        wire boundary. The TUI calls submit and keeps the real traceback."""
-        try:
-            return self.submit(action)
-        except Exception:
-            self._workflow.logger.error(
-                f"{type(action).__name__} failed inside the session.", exc_info=True
-            )
-            return self._refuse(
-                action,
-                f"{type(action).__name__} failed inside the session - "
-                f"the session log has the traceback.",
-            )
+    def _ended_reason(self):
+        if not self.session.has_ended:
+            return None
+        return f"{self.session.session_id} has ended and accepts no action."
 
     @classmethod
     def _refuse(cls, action, reason):
-        return action.ack_class(accepted=False, reason=reason)
+        return action.spec.refused(reason)
 
-    @handles(RunTasks)
-    @requires(Permission.RUN_TASK)
     def run_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_run_single, self._runner.submit_run
         )
 
-    @handles(CheckTasks)
-    @requires(Permission.CHECK_TASK)
     def check_tasks(self, action):
         return self._submit_batch(
             action, self._runner.submit_check_single, self._runner.submit_check
@@ -239,7 +173,7 @@ class ActionHandler:
             # A wire client can repeat a key; a batch runs each task once.
             dupes = sorted({key for key in keys if action.keys.count(key) > 1})
             self._workflow.logger.warning(
-                f"{type(action).__name__} repeats {dupes}; each task enters the batch once."
+                f"{action.spec.name} repeats {dupes}; each task enters the batch once."
             )
         options, reason = self._batch_options_for(action)
         if reason is not None:
@@ -267,8 +201,6 @@ class ActionHandler:
             )
         return BatchAck(accepted=True, batch_uuid=batch.uuid)
 
-    @handles(StopBatch)
-    @requires(Permission.CHECK_TASK, Permission.RUN_TASK)
     def stop_batch(self, action):
         batch = self._runner.get_batch(action.batch_uuid)
         if batch is None:
@@ -287,8 +219,6 @@ class ActionHandler:
         batch.request_stop()
         return Ack(accepted=True)
 
-    @handles(EndSession)
-    @requires(Permission.END_WORKFLOW, Permission.CHECK_TASK)
     def end_session(self, action):
         # A settled session, every task passing or skipped, ends on check_task
         # too: the work is done and nothing is lost.
@@ -358,19 +288,8 @@ class ActionHandler:
         ).start()
         return Ack(accepted=True)
 
-    @handles(LoadCacheEntries)
-    @requires(Permission.RUN_TASK)
     def load_cache_entries(self, action):
         return self._cache_entries_action(action, self._load_cache_entry)
 
-    @handles(ClearCacheEntries)
-    @requires(Permission.RUN_TASK)
     def clear_cache_entries(self, action):
         return self._cache_entries_action(action, self._clear_cache_entry)
-
-
-# The dispatch table of submit: action class -> method, from every method
-# @handles marks. Adding an action means one dataclass and one marked method.
-ActionHandler._methods = {
-    method.handles: method for method in _tagged(ActionHandler, "handles")
-}

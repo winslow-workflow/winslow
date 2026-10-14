@@ -15,6 +15,7 @@ vi.mock('@/protocol/wire', async (importOriginal) => {
     credential: string | null
     state = 'idle'
     user: string | null = null
+    service = null
     env = null
     envColor = null
     scopes: string[] = []

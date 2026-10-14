@@ -2,7 +2,7 @@
 carried by a PermissionContext. expand is the only place the implication
 table lives, so a client tests membership and holds no table (see
 winslow.serve.auth for the credential checks that build a context, and
-winslow.authz for what each action and read requires)."""
+winslow.access.authz for what each action and read requires)."""
 
 import time
 from dataclasses import dataclass, replace
@@ -87,13 +87,35 @@ ALL = expand({f"{ANY}:{ANY}"})
 
 
 class CredentialKind(StrEnum):
-    """The kinds of credential a context comes from (see winslow.serve.auth).
-    LOCAL is the in-process caller and the loopback bind, OPEN the open mode."""
+    """The kinds of credential a context comes from (see winslow.serve.auth)."""
 
+    # The in-process caller and every hello on a loopback bind: user `local`,
+    # every permission, no expiry, no credential id.
     LOCAL = "local"
+    # A hello without a credential in open mode: user `anonymous`, every
+    # permission. A known token in open mode keeps its own user and id.
     OPEN = "open"
+    # A per-user `wsl_` token the token store knows: the scopes of its user in
+    # the policy, the token id as credential_id, the expiry of the record.
     TOKEN = "token"
+    # A signed JWT a front application mints: the scopes of its claims, `jti`
+    # as credential_id, `exp` as the expiry, capped at one socket lifetime.
     TICKET = "ticket"
+    # An access token of an OpenID Connect issuer (see winslow.contrib.oidc).
+    OIDC = "oidc"
+
+
+@dataclass(frozen=True)
+class Identity:
+    """Who presented a credential (see AuthBackend.identify). groups are the
+    names the credential asserts. scopes is the set a ticket carries itself."""
+
+    user: str
+    kind: CredentialKind
+    credential_id: str | None = None
+    expires_at: float | None = None
+    groups: tuple | None = None
+    scopes: frozenset | None = None
 
 
 @dataclass(frozen=True)
@@ -101,13 +123,27 @@ class PermissionContext:
     """Who a request comes from and what it may do. scopes is the expanded
     set (see expand). credential names the kind of credential. expires_at is
     the expiry of the credential, an epoch second, or None for a credential
-    without one."""
+    without one. credential_id is the handle of the credential: the token id
+    of a per-user token, the jti of a ticket. It names no secret."""
 
     user: str | None
     scopes: frozenset
     # None for a context with no credential: the wire client before its hello.
     credential: CredentialKind | None
     expires_at: float | None = None
+    credential_id: str | None = None
+
+    @classmethod
+    def of(cls, identity, scopes):
+        """The context of an Identity a backend answered, with the scopes
+        it grants (see winslow.access.backends.AuthBackend)."""
+        return cls(
+            user=identity.user,
+            scopes=scopes,
+            credential=identity.kind,
+            expires_at=identity.expires_at,
+            credential_id=identity.credential_id,
+        )
 
     def allows(self, scope_name, permission):
         return (
@@ -139,9 +175,15 @@ class PermissionContext:
         return replace(self, expires_at=bound)
 
     @classmethod
-    def full(cls, user, credential, expires_at=None):
+    def full(cls, user, credential, expires_at=None, credential_id=None):
         """A context that holds every permission on every scope name."""
-        return cls(user=user, scopes=ALL, credential=credential, expires_at=expires_at)
+        return cls(
+            user=user,
+            scopes=ALL,
+            credential=credential,
+            expires_at=expires_at,
+            credential_id=credential_id,
+        )
 
 
 # The context of the local caller and the loopback bind, and the context of a

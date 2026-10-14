@@ -36,7 +36,7 @@ def test_companion_resolves_masters_to_their_detail(make_registry):
     import winslow.ui.builtin_plugins.workflow as builtin
 
     registry = make_registry()
-    registry.discover(builtin)
+    registry.register_package(builtin)
 
     assert registry.companion(TasksPanePlugin) is TaskOverviewPlugin
     assert registry.companion(HistoryPlugin) is TaskOverviewPlugin
@@ -57,7 +57,7 @@ def test_any_tabbed_respects_should_render(make_registry):
     from winslow.ui.plugin import Slots
 
     registry = make_registry()
-    registry.discover(builtin)
+    registry.register_package(builtin)
 
     with_caches = _context(("session",))
     without_caches = _context(())

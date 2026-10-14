@@ -24,9 +24,8 @@ def _tagged(cls, marker):
 
 
 class handles:
-    """Mark a method as the handler of one class: a frame class on a Connection,
-    an action class on an ActionHandler. _tagged collects the marked methods
-    into the dispatch table of the owner."""
+    """Mark a method as the handler of one frame class on a Connection.
+    _tagged collects the marked methods into the dispatch table of the owner."""
 
     def __init__(self, key):
         self.key = key

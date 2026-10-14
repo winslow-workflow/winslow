@@ -7,7 +7,7 @@ import tomllib
 from pathlib import Path
 from types import MappingProxyType
 
-from winslow import settings
+from winslow.conf import settings
 from winslow.access.policy import EMPTY, Policy
 from winslow.access.tokens import TokenRecord
 from winslow.logger import LOGGER
@@ -81,7 +81,7 @@ class FilePolicyStore(FileSnapshot):
     noun = "policy"
 
     def __init__(self, path=None):
-        super().__init__(path or settings.POLICY_FILE)
+        super().__init__(path or settings.AUTH_POLICY_FILE)
 
     def parse(self, text):
         return Policy.from_mapping(tomllib.loads(text))
@@ -97,7 +97,7 @@ class FileTokenStore(FileSnapshot):
     noun = "tokens"
 
     def __init__(self, path=None):
-        super().__init__(path or settings.TOKENS_FILE)
+        super().__init__(path or settings.AUTH_TOKENS_FILE)
 
     def parse(self, text):
         """The records by hash. A line that is not a record, such as the tail

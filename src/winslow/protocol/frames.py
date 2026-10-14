@@ -1,9 +1,9 @@
 """The wire envelope base with its JSON round trip, then the frames."""
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
-from winslow.permissions import CredentialKind
+from winslow.access.permissions import CredentialKind
 from winslow.protocol.codec import CODEC
 
 
@@ -93,12 +93,14 @@ class RequestFrame(Frame):
 
 @dataclass(frozen=True, kw_only=True)
 class ActionFrame(Frame):
-    """The fields fill the action dataclass (see Action.build)."""
+    """The fields fill the value of the named action (see Action.build).
+    session_id names the session of a session action; an app action, a
+    session start, carries none."""
 
-    session_id: str
+    session_id: str | None = None
     action: str
     request_id: str | None = None
-    fields: dict = field(default_factory=dict)
+    fields: dict | None = None
 
 
 # Server to client: the handshake and the control replies.
@@ -106,18 +108,20 @@ class ActionFrame(Frame):
 
 @dataclass(frozen=True, kw_only=True)
 class HelloOkFrame(Frame):
-    """user, scopes, credential and expires_at mirror the PermissionContext of the
-    connection: the identity, the expanded permission set, the credential
-    kind and the expiry of the credential (see winslow.permissions). env and
-    env_color describe the process behind the socket, for the header of a
-    client (see winslow.settings)."""
+    """user, scopes, credential, credential_id and expires_at mirror the
+    PermissionContext of the connection: the identity, the expanded permission
+    set, the kind, the id and the expiry of the credential (see
+    winslow.access.permissions). service, env and env_color describe the
+    process behind the socket, for the header of a client (see winslow.conf)."""
 
     user: str
+    service: str
     env: str
     env_color: str
     scopes: tuple[str, ...]
     credential: CredentialKind
     expires_at: float | None
+    credential_id: str | None = None
 
 
 @dataclass(frozen=True, kw_only=True)

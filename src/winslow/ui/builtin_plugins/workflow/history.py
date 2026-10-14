@@ -19,7 +19,6 @@ from textual.widgets import (
 )
 from textual.containers import Horizontal, Vertical, VerticalScroll
 
-from winslow.actions import StopBatch
 from winslow.task.status import PROBLEMATIC_STATUSES, PASSING_STATUSES, TaskStatus
 from winslow.ui.css import package_css
 from winslow.ui.plugin import UIPlugin, RenderContext, Slots
@@ -41,7 +40,7 @@ from winslow.ui.workflow_events import (
     ExecutionStatusChanged,
     TaskLogUpdated,
 )
-from winslow.permissions import Permission
+from winslow.access.permissions import Permission
 
 _CSS = package_css(__package__, "_pane_header.tcss", "history.tcss")
 
@@ -76,8 +75,11 @@ class BatchView:
     # (identity key, TaskOutcome or None) per task. An event view starts
     # with no outcomes; the completion refresh fills them (see HistoryPane).
     entries: tuple
-    # The user that submitted the batch, or None for a local run.
+    # The user that submitted the batch and the kind and id of its credential.
+    # None for a local run.
     user: str | None = None
+    credential: str | None = None
+    credential_id: str | None = None
 
     @classmethod
     def from_history_row(cls, row):
@@ -90,6 +92,8 @@ class BatchView:
             options=row.options,
             entries=tuple(row.tasks.items()),
             user=row.user,
+            credential=row.credential,
+            credential_id=row.credential_id,
         )
 
     @classmethod
@@ -103,7 +107,19 @@ class BatchView:
             options=info.options,
             entries=tuple((key, None) for key in info.tasks),
             user=info.user,
+            credential=info.credential,
+            credential_id=info.credential_id,
         )
+
+    @property
+    def submitter(self):
+        """The user with the credential that named them: `can (token 9f86d081)`.
+        The user alone when the credential has no id."""
+        if not self.user:
+            return None
+        if not self.credential_id:
+            return self.user
+        return f"{self.user} ({self.credential} {self.credential_id})"
 
 
 class RecordRow(TaskRowBase):
@@ -250,8 +266,8 @@ class BatchCard(Widget):
         ts = datetime.fromtimestamp(view.created_at).strftime("%H:%M:%S")
         short_uuid = str(view.uuid)[:8]
         self._title_prefix = f" {view.action}  ·  {ts}  ·  {short_uuid}"
-        if view.user:
-            self._title_prefix += f"  ·  {view.user}"
+        if view.submitter:
+            self._title_prefix += f"  ·  {view.submitter}"
 
         options = view.options or {}
         pills = [(label, cls) for attr, label, cls in _FLAG_PILLS if options.get(attr)]
@@ -298,7 +314,9 @@ class BatchCard(Widget):
     def request_stop(self):
         # The workflow screen owns the session client; the card reaches the
         # action handler through it. The acceptance means "stop requested".
-        ack = self.screen.submit_action(StopBatch(batch_uuid=self.view.uuid))
+        ack = self.screen.submit_action(
+            self.screen.client.stop_batch, batch_uuid=self.view.uuid
+        )
         if ack.accepted:
             self.query_one(StopButton).active = False
 

@@ -11,16 +11,17 @@ Persistence is on by default. Three things are yours to decide: [where the state
 
 ## Where the state lives
 
-The state directory is `.winslow/state` under the working directory. Move it with one setting:
+The state directory is `.winslow/state` under the working directory. Move it with one setting in
+the [settings module](settings.md):
 
-```bash
-export WINSLOW_STATE_DIR=/var/lib/winslow/state
+```python title="etl/settings.py"
+STATE_DIR = "/var/lib/winslow/state"
 ```
 
 `open/` holds the live sessions. A session that ends moves to `ended/` and a session that fails
 moves to `error/`. Restore reads `open/` only, so the archives grow without a cost at startup. A
-deployment that wants the records in a database registers [another backend](#another-backend) and
-selects it with `WINSLOW_STATE_BACKEND`.
+deployment that wants the records in a database names [another backend](#another-backend) in
+`STATE_STORE`.
 
 ## Trust a verified success: check_ttl
 
@@ -72,7 +73,7 @@ restored session runs it already. A terminal that connects sees the sessions in 
 adopts a new session on its next poll (see [Serve and connect](serve.md)).
 
 A headless run is its own complete lifecycle and writes no session state. The per-session log
-files under `WINSLOW_LOG_DIR` are the complete log stream in every mode.
+files under `LOG_DIR` are the complete log stream in every mode.
 
 ## How it works
 
@@ -131,11 +132,11 @@ a state volume leaves the decisions unchanged.
 
 ### Another backend
 
-A package registers a backend the way telemetry backends register. The backend is constructed once
-per process with the orchestrator config, and the workflow identity arrives in the records:
+The settings module names a backend in `STATE_STORE`. The backend is constructed once per process
+with the orchestrator config, and the workflow identity arrives in the records:
 
 ```python
-from winslow.state import STATE_BACKENDS, StateStore
+from winslow.state import StateStore
 
 
 class DatabaseStateStore(StateStore):
@@ -146,11 +147,10 @@ class DatabaseStateStore(StateStore):
     ...
 
 
-STATE_BACKENDS.register("database", DatabaseStateStore)
 ```
 
-```bash
-export WINSLOW_STATE_BACKEND=database
+```python title="etl/settings.py"
+STATE_STORE = "etl.state.DatabaseStateStore"
 ```
 
 The natural database mapping is one row per record, with a status column where the file backend

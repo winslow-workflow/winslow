@@ -137,8 +137,9 @@ The terminal UI presents the same options as a form. Fill the form in, then star
 
 !!! info "The environment"
 
-    Winslow reads the environment name from the `WINSLOW_ENV` variable, and the default value is `local`. A task
-    and a workflow both read the value from `self.env`.
+    The environment name is the `ENV` setting, `local` by default. A [settings module](settings.md)
+    sets it, from an environment variable or as a constant. A task and a workflow both read the
+    value from `self.env`.
 
 ## Trust model
 
@@ -153,7 +154,6 @@ modules for the orchestrator discovery. Winslow ignores a directory whose name s
 underscore. These imports happen before the first prompt.
 
 A serve credential grants the same on the serving host: a connected terminal or agent starts sessions, which
-runs the project code there. Plugin autodiscovery is also opt-out. An installed package that exposes a
-winslow entry point loads at startup. The [plugin guide](plugins.md) shows how to constrain the discovery. The
+runs the project code there. A plugin loads only when the [settings module](settings.md) lists it. The
 [security policy](https://github.com/winslow-workflow/winslow/blob/main/SECURITY.md) describes the full
 trust model and the report process for a vulnerability.

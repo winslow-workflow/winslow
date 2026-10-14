@@ -4,7 +4,7 @@ A UI plugin extends the terminal UI without a fork. The UI is a set of named slo
 a plugin that fills one slot. The built-in panes use the same mechanism, so a third-party plugin can sit
 next to them, come before them, or replace one of them.
 
-A UI plugin ships in a plugin package with an entry point in the `winslow.tui_plugins` group (see
+A UI plugin is a class the settings module lists in `TUI_PLUGINS` (see
 [How Winslow finds a plugin](plugins.md#how-winslow-finds-a-plugin)).
 
 ## Write a UI plugin
@@ -87,7 +87,7 @@ class StatusBoard(Widget):
 
 A pane that needs more than its messages carry reads through the client, for example
 `context.client.task_detail(task_key)` for the full capture of one task, or
-`context.client.submit(RunTasks(keys=(key,)))` for an action. Every client method takes values and
+`context.client.run_tasks(keys=(key,))` for an action. Every client method takes values and
 returns values, so the same pane renders a local session and a remote one. This pane lists the
 roster, follows the status messages, and runs the highlighted task through the client:
 
@@ -96,7 +96,6 @@ from textual import on
 from textual.containers import Vertical
 from textual.widgets import Button, Label, ListItem, ListView
 
-from winslow.actions import RunTasks
 from winslow.ui.plugin import Slots, UIPlugin
 from winslow.ui.workflow_events import TaskStatusChanged
 
@@ -126,7 +125,7 @@ class Runner(Vertical):
     @on(Button.Pressed, "#run")
     def run_highlighted(self):
         info = self.roster[self.query_one(ListView).index]
-        ack = self.client.submit(RunTasks(keys=(info.key,)))
+        ack = self.client.run_tasks(keys=(info.key,))
         if not ack.accepted:
             self.notify(ack.reason, severity="warning")
 
@@ -192,9 +191,9 @@ that order.
 
 ## Replace a built-in plugin
 
-The `replace` argument evicts another plugin and takes its place. The target is the qualified plugin name
-(see [The name of a plugin](plugins.md#the-name-of-a-plugin)). A built-in plugin has the prefix `builtin`.
-This example puts a mood face on the system resources pane, and keeps the built-in stat widgets:
+The `replace` argument evicts another plugin and takes its place. The target is the plugin name
+(see [The name of a plugin](plugins.md#the-name-of-a-plugin)). This example puts a mood face on the
+system resources pane, and keeps the built-in stat widgets:
 
 ```python title="examples/winslow-sample-tui-plugin/winslow_sample_tui_plugin/mood.py"
 --8<-- "examples/winslow-sample-tui-plugin/winslow_sample_tui_plugin/mood.py"
@@ -219,10 +218,13 @@ winslow-sample-tui-plugin/
 
 [Download this example](https://github.com/winslow-workflow/winslow/tree/main/examples/winslow-sample-tui-plugin)
 
-The `pyproject.toml` declares the entry points:
+The [settings module](settings.md) of the project lists the two classes:
 
-```toml title="examples/winslow-sample-tui-plugin/pyproject.toml"
---8<-- "examples/winslow-sample-tui-plugin/pyproject.toml"
+```python title="settings.py of the workflow project"
+TUI_PLUGINS = [
+    "winslow_sample_tui_plugin.dashboard.SampleDashboardPlugin",
+    "winslow_sample_tui_plugin.mood.ResourcesMoodPlugin",
+]
 ```
 
 Install the package into the workflow project. An editable install keeps a local plugin live while

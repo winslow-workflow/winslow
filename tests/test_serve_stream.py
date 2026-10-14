@@ -39,7 +39,7 @@ from winslow.protocol.frames import (
     UnsubscribeFrame,
 )
 
-from harness import TOKEN, serve_credentials
+from harness import TOKEN, serve_authenticator
 from harness import (
     bare_orchestrator,
     build_workflow,
@@ -58,10 +58,10 @@ def live_session(e2e_repo, mode=Mode.TUI):
 
 @contextmanager
 def connect(registry, qsize=10_000):
-    credentials = serve_credentials()
+    authenticator = serve_authenticator()
     app = create_app(
         registry,
-        credentials,
+        authenticator,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         hello_timeout=1.0,
@@ -244,10 +244,10 @@ def test_the_bridge_retires_when_its_session_ends(e2e_repo):
     workflow, session = live_session(e2e_repo)
     registry = SessionRegistry()
     registry.register(session)
-    credentials = serve_credentials()
+    authenticator = serve_authenticator()
     serve_app = ServeApp(
         registry,
-        credentials,
+        authenticator,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         hello_timeout=1.0,
@@ -279,10 +279,10 @@ def test_a_session_unsubscribe_releases_its_task_log_listeners(e2e_repo):
     alpha = by_name(workflow)["Alpha"]
     registry = SessionRegistry()
     registry.register(session)
-    credentials = serve_credentials()
+    authenticator = serve_authenticator()
     serve_app = ServeApp(
         registry,
-        credentials,
+        authenticator,
         orchestrator=bare_orchestrator(),
         state_store=scratch_state_store(),
         hello_timeout=1.0,

@@ -10,7 +10,7 @@ from winslow.orchestrator import Orchestrator, OrchestratorConfig
 from winslow.session import Session, SessionRegistry
 from winslow.state import StaleSweeper
 
-from harness import build_workflow
+from harness import build_workflow, started
 
 
 def persisted_session(e2e_repo, state_store, **state_kwargs):
@@ -164,7 +164,7 @@ def test_serve_startup_restores_the_open_manifests(e2e_repo, state_store):
     dead = LocalAppClient(
         SessionRegistry(), orchestrator=orchestrator, state_store=state_store
     )
-    row = dead.create_session("my-workflow")
+    row = started(dead.create_session("my-workflow"))
 
     registry = SessionRegistry()
     orchestrator._restore_sessions(registry, state_store)
@@ -183,7 +183,7 @@ def test_a_restored_session_satisfies_auto_init(e2e_repo, state_store, monkeypat
     dead = LocalAppClient(
         SessionRegistry(), orchestrator=orchestrator, state_store=state_store
     )
-    row = dead.create_session("my-workflow")
+    row = started(dead.create_session("my-workflow"))
 
     registry = SessionRegistry()
     orchestrator._restore_sessions(registry, state_store)

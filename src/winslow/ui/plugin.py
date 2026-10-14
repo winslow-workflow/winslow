@@ -1,7 +1,7 @@
 import logging
 from dataclasses import dataclass
 
-from winslow.autodiscovery import Registerable, BaseRegistry
+from winslow.plugins import BaseRegistry, Registerable
 from winslow.exceptions import PluginError
 from winslow.util import to_tuple
 
@@ -119,67 +119,49 @@ class UIPlugin(Registerable):
 
 
 class UIPluginRegistry(BaseRegistry):
-    _config_key = "tui_plugins"
-    _entry_point_group = "winslow.tui_plugins"
+    """The plugins of one screen: the built-ins of its package, then the
+    TUI_PLUGINS of the project. A plugin names the one it replaces by name."""
+
     _base_class = UIPlugin
+    _setting = "TUI_PLUGINS"
 
     def __init__(self):
-        super().__init__()
         self._plugins = []
-        self._sources = {}
-
-    def _qname(self, cls):
-        return cls._qualified_name(self._sources.get(cls, "builtin"))
 
     def _is_candidate(self, cls):
         return cls.slot is not None
 
-    def _register(self, cls, source):
-        # A replace plugin with autoload=False would remove its target and put
-        # nothing in its place.
-        if cls.replace and not cls._should_load(source, self._enabled):
-            qname = cls._qualified_name(source)
-            raise PluginError(
-                f"Plugin {qname} declares replace={cls.replace!r} but has autoload=False "
-                f"and is not in enabled_tui_plugins - the target would be evicted with nothing replacing it"
-            )
-        super()._register(cls, source)
-
-    def _do_register(self, cls, source):
-        self._sources[cls] = source
-        qname = self._qname(cls)
-
+    def _do_register(self, cls):
+        name = cls.get_name()
         if cls.replace:
             target = next(
-                (p for p in self._plugins if self._qname(p) == cls.replace), None
+                (p for p in self._plugins if p.get_name() == cls.replace), None
             )
             if target is None:
                 # A miss in an empty slot means that this registry is not scoped
-                # for this plugin.
+                # for this plugin: the target belongs to the other screen.
                 if any(p.slot == cls.slot for p in self._plugins):
                     logger.warning(
-                        f"Plugin {qname} declared replace={cls.replace!r} but no matching plugin was found"
+                        f"Plugin {name} declared replace={cls.replace!r} but no matching plugin was found"
                     )
                 return
-            elif target.slot != cls.slot:
+            if target.slot != cls.slot:
                 raise PluginError(
-                    f"Plugin {qname} cannot replace {cls.replace!r}: "
+                    f"Plugin {name} cannot replace {cls.replace!r}: "
                     f"slot mismatch ({cls.slot.id!r} vs {target.slot.id!r})"
                 )
-            else:
-                self._plugins.remove(target)
-                logger.info(f"Plugin {self._qname(target)} replaced by {qname}")
+            self._plugins.remove(target)
+            logger.info(f"Plugin {target.get_name()} replaced by {name}")
 
-        for existing in self._plugins:
-            if self._qname(existing) == qname:
-                raise PluginError(f"Plugin name clash: {qname} already registered")
+        if any(existing.get_name() == name for existing in self._plugins):
+            raise PluginError(f"Plugin name clash: {name} already registered")
 
         self._plugins.append(cls)
         self._plugins.sort(key=lambda p: (p.priority, p.get_name()))
 
-    def register(self, cls, source="builtin"):
+    def register(self, cls):
         """The public API to register a plugin directly."""
-        self._register(cls, source)
+        self._register(cls)
 
     def for_slot(self, slot):
         return [p for p in self._plugins if p.slot is not None and p.slot.id == slot.id]

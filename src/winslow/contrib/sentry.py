@@ -1,9 +1,9 @@
 """Error reporting to Sentry through the telemetry hook.
 
-With SENTRY_DSN set, the orchestrator activates SentryConfiguration for
-each run; subclass it in a telemetry.py file to customize. A host
-application that owns its process calls setup_sentry instead. Requires
-the [sentry] extra (see docs/telemetry.md).
+The orchestrator activates SentryConfiguration when the TELEMETRY setting
+lists it, with SENTRY_DSN set. A subclass listed in its place customizes it.
+A host application that owns its process calls setup_sentry instead.
+Requires the [sentry] extra (see docs/telemetry.md).
 """
 
 try:
@@ -17,8 +17,8 @@ import logging
 
 from sentry_sdk.integrations.logging import LoggingIntegration
 
-from winslow import settings
-from winslow.settings import config
+from winslow.conf import settings
+from winslow.exceptions import MisconfigurationError
 from winslow.telemetry import (
     TelemetryConfiguration,
     TelemetryHandler,
@@ -103,27 +103,34 @@ def _init_sdk_if_needed(dsn, init_kwargs):
     defaults = {
         "send_default_pii": False,
         "integrations": [LoggingIntegration(level=logging.INFO, event_level=None)],
-        # Passed explicitly: the SDK reads os.environ only, so a value from
-        # a .env file would otherwise be lost.
-        "environment": config("SENTRY_ENVIRONMENT", default=settings.env),
+        # Passed explicitly: the SDK reads os.environ only, and the values
+        # come from the settings.
+        "environment": settings.SENTRY_ENVIRONMENT or settings.ENV,
         # A None release keeps the SDK detection (git, CI values).
-        "release": config("SENTRY_RELEASE", default=None),
+        "release": settings.SENTRY_RELEASE,
     }
     sentry_sdk.init(dsn=dsn, **(defaults | init_kwargs))
 
 
 class SentryConfiguration(TelemetryConfiguration):
-    """The built-in Sentry backend: active when SENTRY_DSN is set or a host
-    client is active. Override get_handler to customize."""
+    """The built-in Sentry backend, listed in TELEMETRY: it reports through
+    SENTRY_DSN, or through the active client of a host application. Override
+    get_handler to customize."""
 
     def get_handler(self, orchestrator_config):
-        # A host application may have registered through setup_sentry
-        # already; a second handler would report every error twice.
+        # A host application that registered through setup_sentry does not
+        # list the configuration: a second handler would report every error twice.
         if get_registered_handler(SentryTelemetryHandler) is not None:
-            return None
-        dsn = config("SENTRY_DSN", default=None)
+            raise MisconfigurationError(
+                "the Sentry handler is registered already, through setup_sentry - "
+                "remove SentryConfiguration from TELEMETRY."
+            )
+        dsn = settings.SENTRY_DSN
         if dsn is None and not sentry_sdk.get_client().is_active():
-            return None
+            raise MisconfigurationError(
+                "TELEMETRY lists the Sentry backend - set SENTRY_DSN in the settings "
+                "module, or initialize the SDK before the run."
+            )
         _init_sdk_if_needed(dsn, {})
         return SentryTelemetryHandler()
 

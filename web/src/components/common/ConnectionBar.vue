@@ -25,7 +25,7 @@ const stateVariant = computed(() => {
     class="navbar navbar-expand bg-body-tertiary env-bar px-3 py-1"
     :style="{ '--ws-env-color': connection.envColor ?? undefined }"
   >
-    <RouterLink class="navbar-brand fw-bold" to="/">winslow</RouterLink>
+    <RouterLink class="navbar-brand fw-bold" to="/">{{ connection.service ?? 'winslow' }}</RouterLink>
     <span v-if="connection.env" class="env-badge me-3">{{ connection.env }}</span>
     <ul class="navbar-nav me-auto">
       <li class="nav-item">

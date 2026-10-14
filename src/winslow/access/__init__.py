@@ -1,48 +1,6 @@
-"""Access control storage: the policy of who holds which scopes, the tokens
-people and service accounts present, and the two ports a backend implements
-(see docs/serve.md)."""
-
-from .file import FilePolicyStore, FileTokenStore
-from .policy import (
-    EMPTY,
-    Group,
-    Name,
-    Policy,
-    User,
-    checked_name,
-    policy_warnings,
-    scopes_for,
-)
-from .ports import PolicyStore, TokenStore
-from .registry import POLICY_BACKENDS, TOKEN_BACKENDS
-from .tokens import (
-    TOKEN_PREFIX,
-    TokenRecord,
-    expired,
-    new_token,
-    parse_duration,
-    token_hash,
-)
-
-__all__ = [
-    "EMPTY",
-    "FilePolicyStore",
-    "FileTokenStore",
-    "Group",
-    "Name",
-    "POLICY_BACKENDS",
-    "Policy",
-    "PolicyStore",
-    "TOKEN_BACKENDS",
-    "TOKEN_PREFIX",
-    "TokenRecord",
-    "TokenStore",
-    "User",
-    "checked_name",
-    "expired",
-    "new_token",
-    "parse_duration",
-    "policy_warnings",
-    "scopes_for",
-    "token_hash",
-]
+"""Access control: the permission model (permissions), the check at the call
+(authz), the policy of who holds which scopes, the tokens people and service
+accounts present, the credential file of a person and the `winslow auth` CLI
+(see docs/serve.md). The package imports nothing, so the core modules reach
+permissions and authz without the serve extra. Import a submodule by name.
+"""

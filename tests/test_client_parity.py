@@ -17,7 +17,6 @@ from dataclasses import fields, is_dataclass
 from enum import Enum
 from functools import partial
 
-from winslow.actions import EndSession, LoadCacheEntries, RunTasks, StopBatch
 from winslow.client import LocalAppClient
 from winslow.client.websocket import RemoteAppClient
 from winslow.events import (
@@ -37,7 +36,7 @@ from winslow.task.status import TaskStatus
 from test_client_websocket import TOKEN, ServedProcess, registered, wait_for
 from test_serve_actions import serve_orchestrator
 
-from harness import bare_orchestrator, scratch_state_store
+from harness import bare_orchestrator, scratch_state_store, started
 
 TOPICS = (
     TaskStatusEvent,
@@ -64,9 +63,9 @@ TIME_KEYS = frozenset(
     }
 )
 
-# The user fields of the DTOs: the in-process client stamps None, the wire
-# client the hello user, by design (see winslow.task.context.current_user).
-USER_KEYS = frozenset({"user", "ended_by", "written_by"})
+# The user and credential fields of the DTOs: the in-process client stamps
+# None, the wire client the hello context, by design (see PermissionContext).
+USER_KEYS = frozenset({"user", "ended_by", "written_by", "credential", "credential_id"})
 
 LOG_TIMESTAMP = re.compile(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} UTC")
 BATCH_UUID = re.compile(r"[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}")
@@ -221,7 +220,7 @@ def drive_scenario(app, registry, monkeypatch):
     recorder = StreamRecorder()
     recorder.read("descriptors", app.descriptors())
     recorder.read("manifests", app.manifests())
-    row = app.create_session("my-cache")
+    row = started(app.create_session("my-cache"))
     recorder.read("create_row", row)
     recorder.read("session_rows", app.sessions())
     client = app.session(row.session_id)
@@ -240,7 +239,7 @@ def drive_scenario(app, registry, monkeypatch):
     recorder.read("task_log_backlog", recorder.subscribe(client, refresh_key))
 
     # Run tasks: the three parameterized city tasks in one batch.
-    run_ack = client.submit(RunTasks(keys=city_keys))
+    run_ack = client.run_tasks(keys=city_keys)
     assert run_ack.accepted, run_ack.reason
     recorder.read("run_ack", run_ack)
     recorder.wait_batch_completed(run_ack.batch_uuid)
@@ -248,7 +247,7 @@ def drive_scenario(app, registry, monkeypatch):
 
     # Cache loads: warm the lazy entry through the port action.
     recorder.read("cache_value_cold", client.cache_value("weather", "forecast"))
-    load_ack = client.submit(LoadCacheEntries(entries=(("weather", "forecast"),)))
+    load_ack = client.load_cache_entries(entries=(("weather", "forecast"),))
     assert load_ack.accepted, load_ack.reason
     recorder.read("load_ack", load_ack)
     wait_for(
@@ -265,14 +264,12 @@ def drive_scenario(app, registry, monkeypatch):
     # Stop: the gate holds the fourth task RUNNING until the stop lands.
     gate = threading.Event()
     workflow.target[("gate",)] = gate
-    gated_ack = client.submit(RunTasks(keys=(refresh_key,)))
+    gated_ack = client.run_tasks(keys=(refresh_key,))
     assert gated_ack.accepted, gated_ack.reason
     recorder.read("gated_run_ack", gated_ack)
     recorder.wait_running(refresh_key, gated_ack.batch_uuid)
-    recorder.read("stop_ack", client.submit(StopBatch(batch_uuid=gated_ack.batch_uuid)))
-    recorder.read(
-        "stop_unknown_ack", client.submit(StopBatch(batch_uuid="no-such-batch"))
-    )
+    recorder.read("stop_ack", client.stop_batch(batch_uuid=gated_ack.batch_uuid))
+    recorder.read("stop_unknown_ack", client.stop_batch(batch_uuid="no-such-batch"))
     gate.set()
     recorder.wait_batch_completed(gated_ack.batch_uuid)
 
@@ -302,7 +299,7 @@ def drive_scenario(app, registry, monkeypatch):
 
     # End, then the ended-session surface: the reads that survive, and the
     # refusals of the released state.
-    end_ack = client.submit(EndSession())
+    end_ack = client.end_session()
     assert end_ack.accepted, end_ack.reason
     recorder.read("end_ack", end_ack)
     recorder.wait_ended()
@@ -328,7 +325,7 @@ def drive_scenario(app, registry, monkeypatch):
     recorder.gist_refusal(
         "cache_value_after_end", lambda: client.cache_value("weather", "forecast")
     )
-    recorder.read("run_after_end_ack", client.submit(RunTasks(keys=(refresh_key,))))
+    recorder.read("run_after_end_ack", client.run_tasks(keys=(refresh_key,)))
 
     recorder.names = {
         row.session_id: "<session>",

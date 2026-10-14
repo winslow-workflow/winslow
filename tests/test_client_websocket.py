@@ -10,8 +10,8 @@ import time
 import pytest
 import uvicorn
 
-from winslow import settings
-from winslow.actions import BatchAck, EndSession, LoadCacheEntries, RunTasks, StopBatch
+from winslow.conf import settings
+from winslow.actions import BatchAck
 from winslow.client.local import LocalSessionClient
 from winslow.client.websocket import (
     LaneState,
@@ -31,7 +31,8 @@ from winslow.events import (
     TaskStatusEvent,
 )
 from winslow.exceptions import MisconfigurationError, RequestError
-from winslow.permissions import Permission
+from winslow.access.backends import GivenCredential
+from winslow.access.permissions import CredentialKind, Permission
 from winslow.model import (
     EnvInfo,
     BatchInfo,
@@ -48,8 +49,9 @@ from winslow.session import Session, SessionRegistry
 from winslow.task.status import TaskStatus
 from winslow.protocol.lanes import TaskStatusLane
 
-from harness import TOKEN, serve_credentials
+from harness import TOKEN, serve_authenticator
 from harness import (
+    started,
     bare_orchestrator,
     build_workflow,
     by_name,
@@ -64,10 +66,12 @@ class ServedProcess:
     """One uvicorn process in a thread, the way `winslow serve` runs it,
     with a stop and a same-port restart for the reconnect tests."""
 
-    def __init__(self, registry, orchestrator=None, state_store=None, credentials=None):
+    def __init__(
+        self, registry, orchestrator=None, state_store=None, authenticator=None
+    ):
         self.app = create_app(
             registry,
-            credentials or serve_credentials(),
+            authenticator or serve_authenticator(),
             hello_timeout=2.0,
             orchestrator=orchestrator or bare_orchestrator(),
             state_store=state_store or scratch_state_store(),
@@ -125,7 +129,9 @@ def served(e2e_repo):
 def test_the_environment_comes_from_the_hello(served):
     _, _, client = served
     environment = client.environment()
-    assert environment == EnvInfo(name=settings.env, color=settings.ENV_COLOR)
+    assert environment == EnvInfo(
+        service=settings.SERVICE_NAME, name=settings.ENV, color=settings.env_color()
+    )
 
 
 def wait_for(predicate, message, timeout=10.0):
@@ -138,7 +144,7 @@ def wait_for(predicate, message, timeout=10.0):
 
 
 def run_to_completion(workflow, client, task):
-    ack = client.submit(RunTasks(keys=(task.identity_key,)))
+    ack = client.run_tasks(keys=(task.identity_key,))
     assert ack.accepted, ack.reason
     workflow.runner.get_batch(ack.batch_uuid).wait()
     return ack
@@ -201,7 +207,7 @@ def test_a_run_streams_the_model_events(served):
     remote.subscribe(LogLineEvent, lines.append)
     remote.subscribe(BatchCompletedEvent, lambda e: (completed.append(e), done.set()))
 
-    ack = remote.submit(RunTasks(keys=(alpha.identity_key,)))
+    ack = remote.run_tasks(keys=(alpha.identity_key,))
     assert isinstance(ack, BatchAck) and ack.accepted
     assert done.wait(10), "no batch_completed event over the wire"
 
@@ -293,7 +299,7 @@ def test_cache_reads_actions_and_the_update_lane(e2e_repo):
         }
 
         assert remote.cache_value("weather", "forecast").state == "cold"
-        ack = remote.submit(LoadCacheEntries(entries=(("weather", "forecast"),)))
+        ack = remote.load_cache_entries(entries=(("weather", "forecast"),))
         assert ack.accepted, ack.reason
         wait_for(
             lambda: remote.cache_value("weather", "forecast").state == "warm",
@@ -315,17 +321,9 @@ def test_cache_reads_actions_and_the_update_lane(e2e_repo):
 def test_a_refused_action_answers_a_refused_ack(served):
     workflow, session, client = served
     remote = client.session(session.session_id)
-    ack = remote.submit(StopBatch(batch_uuid="no-such-batch"))
+    ack = remote.stop_batch(batch_uuid="no-such-batch")
     assert ack.accepted is False
     assert "no-such-batch" in ack.reason
-
-
-def test_an_unknown_action_class_answers_a_refused_ack(served):
-    workflow, session, client = served
-    remote = client.session(session.session_id)
-    ack = remote.submit(object())
-    assert ack.accepted is False
-    assert "names no action" in ack.reason
 
 
 def test_end_session_emits_the_event_and_keeps_the_ended_reads(served):
@@ -335,7 +333,7 @@ def test_end_session_emits_the_event_and_keeps_the_ended_reads(served):
     remote.subscribe(SessionEndedEvent, lambda e: ended.set())
     time.sleep(0.3)
 
-    ack = remote.submit(EndSession())
+    ack = remote.end_session()
     assert ack.accepted
     assert ended.wait(10), "no session_ended event over the wire"
     wait_for(lambda: remote.snapshot().status == "ENDED", "the session never ENDED")
@@ -358,7 +356,7 @@ def test_create_session_over_the_wire(e2e_repo, state_store):
         descriptors = client.descriptors()
         assert "my-workflow" in {d.workflow for d in descriptors.workflows}
 
-        row = client.create_session("my-workflow")
+        row = started(client.create_session("my-workflow"))
         assert row.status == "ACTIVE"
         assert row.session_id in registry
 
@@ -368,7 +366,7 @@ def test_create_session_over_the_wire(e2e_repo, state_store):
         # A dead process leaves an open manifest; restore rebuilds the session.
         registry.remove(row.session_id)
         (manifest,) = [m for m in client.manifests() if m.session_id == row.session_id]
-        restored = client.restore_session(manifest.session_id)
+        restored = started(client.restore_session(manifest.session_id))
         assert restored.session_id == row.session_id
         assert row.session_id in registry
     finally:
@@ -384,9 +382,9 @@ def test_create_session_error_carries_the_server_traceback(e2e_repo, state_store
     ).start()
     client = RemoteAppClient(process.url, token=TOKEN).connect()
     try:
-        with pytest.raises(RequestError) as excinfo:
-            client.create_session("no-such-workflow")
-        assert "Traceback" in excinfo.value.detail
+        refused = client.create_session("no-such-workflow")
+        assert refused.accepted is False
+        assert "Traceback" in refused.detail
     finally:
         client.close()
         process.stop()
@@ -471,7 +469,7 @@ def test_a_reconnect_resubscribes_and_heals_the_subscribers(e2e_repo):
 
         # The lane is live again: a run streams to completion.
         alpha = by_name(workflow)["Alpha"]
-        ack = remote.submit(RunTasks(keys=(alpha.identity_key,)))
+        ack = remote.run_tasks(keys=(alpha.identity_key,))
         assert ack.accepted, ack.reason
         assert done.wait(10), "no batch_completed after the reconnect"
         wait_for_status(workflow, alpha, TaskStatus.COMPLETED)
@@ -664,7 +662,7 @@ def test_a_recovery_snapshot_of_an_ended_session_emits_the_end():
 def test_a_frame_of_no_lane_is_logged_with_its_contents(caplog):
     """A frame that carries a session_id but names no lane must not vanish
     into the lane: the router logs it, fields included."""
-    wire = Wire("ws://host:1")
+    wire = Wire("ws://host:1", GivenCredential())
     wire.session_lane("s-1")
     with caplog.at_level("WARNING", logger="winslow"):
         wire._route(SubscribeFrame(session_id="s-1", request_id="r-9"))
@@ -721,9 +719,9 @@ def test_a_stored_credential_connects_and_remembers_the_user(e2e_repo, tmp_path)
     workflow, session, registry = registered(e2e_repo)
     process = ServedProcess(registry).start()
     store = CredentialFile(tmp_path / "credentials.toml")
-    store.set(process.url, CredentialEntry(token=TOKEN))
+    store.set(process.url, CredentialEntry(token=TOKEN, kind=CredentialKind.TICKET))
     try:
-        token = credential_for(process.url, store, None)
+        token = credential_for(process.url, store)
         client = RemoteAppClient(process.url, token=token).connect()
         try:
             remember_user(store, process.url, client.wire.hello)
@@ -742,3 +740,41 @@ def test_no_credential_at_all_names_the_login_command(e2e_repo):
             RemoteAppClient(process.url).connect()
     finally:
         process.stop()
+
+
+def test_connect_sends_the_stored_credential_and_remembers_the_user(
+    e2e_repo, tmp_path, monkeypatch
+):
+    """The connect command end to end up to the app: the credential file is
+    the one source of the token, and the hello user lands in the file."""
+    import winslow.ui
+    from winslow.access.credentials import CredentialEntry, CredentialFile
+    from winslow.orchestrator import Command, Orchestrator, OrchestratorConfig
+
+    workflow, session, registry = registered(e2e_repo)
+    process = ServedProcess(registry).start()
+    path = tmp_path / "credentials.toml"
+    CredentialFile(path).set(
+        process.url, CredentialEntry(token=TOKEN, kind=CredentialKind.TICKET)
+    )
+    monkeypatch.setattr(settings, "CREDENTIALS_FILE", str(path))
+    seen = []
+
+    class FakeApp:
+        def __init__(self, client, logger, owns_sessions):
+            seen.append(client.wire.hello.user)
+
+        def run(self):
+            return None
+
+    monkeypatch.setattr(winslow.ui, "Winslow", FakeApp)
+    config, unknown = Orchestrator.get_base_parser().parse_known_args(
+        ["connect", process.url], namespace=OrchestratorConfig()
+    )
+    assert config.action is Command.CONNECT
+    try:
+        Orchestrator(config, directory=e2e_repo, unknown_args=unknown).start()
+    finally:
+        process.stop()
+    assert seen == ["can"]
+    assert CredentialFile(path).get(process.url).user == "can"

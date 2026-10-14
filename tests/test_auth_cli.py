@@ -1,11 +1,10 @@
-"""`winslow auth`: the token commands over a store, the two policy reads, and
-the parser that routes them."""
+"""`winslow auth`: the token commands over the listed token backend, the two
+policy reads, and the parser that routes them."""
 
 import pytest
 
-from winslow.access import FilePolicyStore, FileTokenStore
+from winslow.access.backends import token_backend
 from winslow.access.cli import (
-    Stores,
     check,
     run,
     show,
@@ -14,20 +13,22 @@ from winslow.access.cli import (
     token_rows,
 )
 from winslow.access.credentials import CredentialFile
+from winslow.conf import settings
 from winslow.exceptions import MisconfigurationError
 from winslow.orchestrator import Command, Orchestrator, OrchestratorConfig
 
 from test_access import POLICY
 
 
-def stores(tmp_path):
+@pytest.fixture
+def auth(tmp_path, monkeypatch):
+    """The policy file and the token file the default backend reads, and the
+    credential file `run` takes: (credential file, token backend)."""
     path = tmp_path / "policy.toml"
     path.write_text(POLICY)
-    return Stores(
-        policy=FilePolicyStore(path),
-        tokens=FileTokenStore(tmp_path / "tokens"),
-        credentials=CredentialFile(tmp_path / "credentials.toml"),
-    )
+    monkeypatch.setattr(settings, "AUTH_POLICY_FILE", str(path))
+    monkeypatch.setattr(settings, "AUTH_TOKENS_FILE", str(tmp_path / "tokens"))
+    return CredentialFile(tmp_path / "credentials.toml"), token_backend()
 
 
 def parse(*argv):
@@ -39,9 +40,9 @@ def parse(*argv):
     return config
 
 
-def test_create_prints_the_token_once_and_stores_the_hash(tmp_path):
-    s = stores(tmp_path)
-    tokens = s.tokens
+def test_create_prints_the_token_once_and_stores_the_hash(tmp_path, auth):
+    s, backend = auth
+    tokens = backend.tokens
     out = []
     assert run(parse("token", "create", "can"), s, out.append) == 0
     (token,) = out
@@ -51,29 +52,27 @@ def test_create_prints_the_token_once_and_stores_the_hash(tmp_path):
     assert token not in (tmp_path / "tokens").read_text()
 
 
-def test_create_notes_a_user_without_a_policy_entry_beside_the_token(tmp_path):
-    s = stores(tmp_path)
+def test_create_notes_a_user_without_a_scope_beside_the_token(auth):
+    s, _ = auth
     out, err = [], []
     assert run(parse("token", "create", "nobody"), s, out.append, err.append) == 0
     assert out[0].startswith("wsl_") and len(out) == 1
-    assert err == [
-        "nobody has no policy entry - the token grants nothing until one exists."
-    ]
+    assert err == ["nobody holds no scope - the token grants nothing until one exists."]
     out, err = [], []
     run(parse("token", "create", "can"), s, out.append, err.append)
     assert err == []
 
 
-def test_create_refuses_a_name_with_a_space(tmp_path):
-    tokens = stores(tmp_path).tokens
+def test_create_refuses_a_name_with_a_space(auth):
+    tokens = auth[1].tokens
     with pytest.raises(MisconfigurationError, match="'ci bot' is not a name"):
         token_create(tokens, "ci bot")
     assert tokens.list() == ()
 
 
-def test_create_with_an_end_date_and_list(tmp_path):
-    s = stores(tmp_path)
-    tokens = s.tokens
+def test_create_with_an_end_date_and_list(auth):
+    s, backend = auth
+    tokens = backend.tokens
     token_create(tokens, "ci-bot", expires="90d", now=0.0)
     ((token_id, user, created, expires, state),) = token_rows(tokens, now=1.0)
     assert (user, state) == ("ci-bot", "live")
@@ -84,9 +83,9 @@ def test_create_with_an_end_date_and_list(tmp_path):
     assert out[0].startswith(token_id)
 
 
-def test_revoke_by_id_and_by_user(tmp_path):
-    s = stores(tmp_path)
-    tokens = s.tokens
+def test_revoke_by_id_and_by_user(auth):
+    s, backend = auth
+    tokens = backend.tokens
     token_create(tokens, "can")
     token_create(tokens, "can")
     token_create(tokens, "ci-bot")
@@ -108,21 +107,19 @@ def test_revoke_needs_exactly_one_target(argv, capsys):
     assert "(--token-id TOKEN_ID | --user USER)" in capsys.readouterr().err
 
 
-def test_show_and_check_read_the_policy(tmp_path):
-    s = stores(tmp_path)
-    policy, tokens = s.policy, s.tokens
-    token_create(tokens, "lucas")
-    assert show(policy, tokens, "lucas") == {
+def test_show_and_check_read_the_policy(auth):
+    s, backend = auth
+    token_create(backend.tokens, "lucas")
+    assert show(backend, "lucas") == {
         "user": "lucas",
-        "groups": ["etl-checkers"],
         "scopes": ["etl:check_task", "etl:start_workflow", "etl:view_task"],
         "tokens": 1,
     }
-    assert check(policy, "lucas", "etl", "check_task") == (
+    assert check(backend, "lucas", "etl", "check_task") == (
         True,
         "lucas holds etl:check_task",
     )
-    allowed, reason = check(policy, "lucas", "etl", "run_task")
+    allowed, reason = check(backend, "lucas", "etl", "run_task")
     assert allowed is False
     assert (
         reason

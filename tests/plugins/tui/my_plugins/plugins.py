@@ -1,9 +1,8 @@
-"""Custom UI plugins for the discovery/registrability e2e tests. Stands in for
-an installed `winslow.tui_plugins` dist (and doubles as a builtin package for the
-discover() path). create_widget returns a plain Label so the tests never depend
-on real builtin widgets.
+"""Custom UI plugins for the registration tests: the built-in path walks the
+package, the settings path lists the classes. create_widget returns a plain
+Label so the tests never depend on real builtin widgets.
 
-Defined in a submodule (not the package __init__) because _iter_package_modules
+Defined in a submodule (not the package __init__) because register_package
 walks submodules only."""
 
 from textual.widgets import Label
@@ -40,13 +39,12 @@ class NoSlotPlugin(UIPlugin):
         return Label("noslot")
 
 
-class OptInPlugin(UIPlugin):
-    """autoload=False -> absent unless enabled_tui_plugins opts it in."""
+class LogsPlugin(UIPlugin):
+    """A plugin of another slot, for the listing tests."""
 
-    name = "optin"
+    name = "logs"
     slot = Slots.WORKFLOW_LOGS
-    label = "Opt In"
-    autoload = False
+    label = "Logs"
 
     def create_widget(self, context):
-        return Label("optin")
+        return Label("logs")

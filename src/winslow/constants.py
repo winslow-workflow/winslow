@@ -28,3 +28,8 @@ class Mode(Enum):
 
 # The hosts of a loopback bind: every process on the machine reaches it.
 LOOPBACK_HOSTS = ("127.0.0.1", "::1", "localhost")
+# The default ENV. A loopback bind in this env passes every connection
+# (see winslow.serve.auth.LoopbackMode).
+LOCAL_ENV = "local"
+# A bind on every interface: the page answers under every name of the host.
+ANY_HOSTS = ("0.0.0.0", "::")

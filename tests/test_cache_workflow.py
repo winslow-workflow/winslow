@@ -18,7 +18,8 @@ from winslow.cache import (
     set_global_cache_registry,
     stray_workflow_caches,
 )
-from winslow import ConfigOption, Workflow, settings
+from winslow import ConfigOption, Workflow
+from winslow.conf import settings
 from winslow.constants import Mode
 from winslow.exceptions import InitializationError
 from winslow.logger import TASK_LOGGER_NAME
