@@ -4,9 +4,9 @@ policy reads, and the parser that routes them."""
 import pytest
 
 from winslow.access.backends import token_backend
-from winslow.access.cli import (
+from winslow.access.cli import run
+from winslow.access.commands import (
     check,
-    run,
     show,
     token_create,
     token_revoke,

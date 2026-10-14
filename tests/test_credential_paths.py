@@ -5,7 +5,7 @@ the user, the kind and the id of the credential."""
 import jwt
 
 from winslow.access.backends import TokenBackend
-from winslow.access.cli import token_create
+from winslow.access.commands import token_create
 from winslow.access.permissions import ALL
 from winslow.client.websocket import RemoteAppClient
 

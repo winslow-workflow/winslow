@@ -755,7 +755,14 @@ class Orchestrator(_ConfigBase):
 
     def _handle_auth(self):
         from winslow.access import cli
-        from winslow.access.credentials import CredentialFile
+
+        try:
+            from winslow.access.credentials import CredentialFile
+        except ImportError as e:
+            raise MisconfigurationError(
+                "The auth commands require the connect or the serve extra - "
+                "install with: pip install 'winslow[connect]'"
+            ) from e
 
         # False exits with 1 and no further message, the way a failed run does
         # (see cli.main): the command already printed its answer.

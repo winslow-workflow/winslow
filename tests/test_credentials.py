@@ -13,7 +13,7 @@ from starlette.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from winslow.access.file import FilePolicyStore, FileTokenStore
-from winslow.access.cli import token_create, token_revoke
+from winslow.access.commands import token_create, token_revoke
 from winslow.constants import Mode
 from winslow.exceptions import CredentialRefused
 from winslow.access.permissions import CredentialKind, Permission

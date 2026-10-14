@@ -22,7 +22,7 @@ from winslow.access.tokens import (
     parse_duration,
     token_hash,
 )
-from winslow.access.cli import token_create, token_revoke
+from winslow.access.commands import token_create, token_revoke
 from winslow.exceptions import CredentialRefused, MisconfigurationError
 from winslow.access.permissions import Permission, Scope, wire_scopes
 from winslow.protocol.frames import HelloFrame
