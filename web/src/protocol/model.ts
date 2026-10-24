@@ -259,6 +259,8 @@ export interface WorkflowDescriptor {
   options: OptionInfo[]
   auto_init: boolean
   permission_scope: string
+  // The listed workflow whose directory holds this one, null at the top level.
+  parent: string | null
 }
 
 export interface Descriptors {

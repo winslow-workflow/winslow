@@ -27,10 +27,11 @@ EXECUTION_RECORD_LOG_BUFFER_SIZE = 1000
 # it with snapshot_size_bytes (see BaseCache).
 CACHE_SNAPSHOT_SIZE_BYTES = 32 * 1024
 
-# The directories are relative to the CWD.
-STATE_DIR = ".winslow/state"
-CACHE_DIR = ".winslow/cache"
-LOG_DIR = ".winslow/logs"
+# The directories are relative to the CWD. {env} resolves to ENV, so each
+# environment keeps its own sessions, caches and logs (see winslow.conf.load).
+STATE_DIR = ".winslow/{env}/state"
+CACHE_DIR = ".winslow/{env}/cache"
+LOG_DIR = ".winslow/{env}/logs"
 
 LOG_FORMAT = "%(asctime)s - %(levelname)s - %(message)s"
 LOG_DATEFMT = "%Y-%m-%d %H:%M:%S UTC"

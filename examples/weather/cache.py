@@ -43,5 +43,5 @@ class Stations(GlobalCache):
 
     # --8<-- [end:declare]
     # The file tier keeps the registry warm: a second run reads
-    # .winslow/cache/ and skips the slow load.
+    # .winslow/local/cache/ and skips the slow load.
     storage_class = compose(MemoryStorage, JsonFileStorage)

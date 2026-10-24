@@ -103,7 +103,8 @@ class EnvAllowed(ClassConstraint):
 ```
 
 A dropped class produces no instance, and the UI does not show it. The log records each drop with a
-"Skipping initialization" line.
+"Skipping initialization" line. A constraint that raises `TaskSkip` adds its message to the line (see
+[Drop an instance before creation](parameterization.md#drop-an-instance-before-creation)).
 
 ## Select the constraints at runtime
 

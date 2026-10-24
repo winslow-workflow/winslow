@@ -66,7 +66,11 @@ class _Base:
 
     @property
     def module_directory(self):
-        return os.path.dirname(self.abspath)
+        return self.get_module_directory()
+
+    @classmethod
+    def get_module_directory(cls):
+        return os.path.dirname(os.path.abspath(sys.modules[cls.__module__].__file__))
 
     @cached_property
     def instance_name(self):

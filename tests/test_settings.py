@@ -255,3 +255,19 @@ def test_the_auth_commands_import_without_the_serve_extra():
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True
     )
     assert out.stdout.strip() == "ok"
+
+
+def test_the_directories_resolve_the_env_placeholder(forget):
+    name = module(
+        "env_directories_settings",
+        ENV="prod",
+        CACHE_DIR="/srv/{env}/cache",
+        LOG_DIR="/var/log/winslow",
+    )
+    forget.append(name)
+
+    names = load(name).names
+
+    assert names["STATE_DIR"] == ".winslow/prod/state"
+    assert names["CACHE_DIR"] == "/srv/prod/cache"
+    assert names["LOG_DIR"] == "/var/log/winslow"

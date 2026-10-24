@@ -33,11 +33,12 @@ AUTH_MAX_CONNECTION = 3600
 AUTH_OPEN = False
 
 # The files of the two file stores and the directories, relative to the CWD.
+# {env} in a directory resolves to ENV.
 AUTH_POLICY_FILE = ".winslow/policy.toml"
 AUTH_TOKENS_FILE = ".winslow/tokens"
-STATE_DIR = ".winslow/state"
-CACHE_DIR = ".winslow/cache"
-LOG_DIR = ".winslow/logs"
+STATE_DIR = ".winslow/{env}/state"
+CACHE_DIR = ".winslow/{env}/cache"
+LOG_DIR = ".winslow/{env}/logs"
 
 # The client side: None is the XDG config path.
 CREDENTIALS_FILE = None

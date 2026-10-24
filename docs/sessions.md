@@ -11,12 +11,17 @@ Persistence is on by default. Three things are yours to decide: [where the state
 
 ## Where the state lives
 
-The state directory is `.winslow/state` under the working directory. Move it with one setting in
-the [settings module](settings.md):
+The state directory is `.winslow/<env>/state` under the working directory: `.winslow/local/state`
+for the default `ENV`. Each environment keeps its own sessions. Move the directory with one setting
+in the [settings module](settings.md), where `{env}` resolves to `ENV`:
 
 ```python title="etl/settings.py"
-STATE_DIR = "/var/lib/winslow/state"
+STATE_DIR = "/var/lib/winslow/{env}/state"
 ```
+
+A session records the environment it runs in. A process lists and restores the sessions of its own
+environment, so a session of `dev` stays in a `dev` process, also when two environments share one
+directory.
 
 `open/` holds the live sessions. A session that ends moves to `ended/` and a session that fails
 moves to `error/`. Restore reads `open/` only, so the archives grow without a cost at startup. A
@@ -81,7 +86,7 @@ files under `LOG_DIR` are the complete log stream in every mode.
 
 One directory per session, written through the state store:
 
-- **The manifest**: the workflow name, the origin of the run, and the effective workflow values,
+- **The manifest**: the workflow name, the environment, the origin of the run, and the effective workflow values,
   every declared option resolved from the form and the command line. It rebuilds the session in a
   process started with other arguments.
 - **Status snapshots**: one file per task, named by the task identity key, with the latest terminal
@@ -93,7 +98,7 @@ One directory per session, written through the state store:
   captured at the close.
 
 ```
-.winslow/state/
+.winslow/local/state/
 ├── open/
 │   └── etl-20260819T091502-a1b2c3d4/
 │       ├── manifest.json

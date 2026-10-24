@@ -221,12 +221,14 @@ class Graph(_Base):
             result = task_kls._evaluate_should_be_initialized(
                 workflow_config=self.workflow_config, parameters=parameters
             )
-        except TaskSkip:
+            reason = ""
+        except TaskSkip as e:
             result = False
+            reason = f" Reason: {e}." if str(e) else ""
 
         if not result:
             suffix = f" Parameters: {parameters}." if parameters is not None else ""
-            self.logger.info(f"Skipping initialization: {task_kls}.{suffix}")
+            self.logger.info(f"Skipping initialization: {task_kls}.{suffix}{reason}")
         return result
 
     def initialize_task(self, task_kls, parameters=None):

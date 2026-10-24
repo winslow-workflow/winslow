@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [Unreleased]
+
+### Added
+
+- Nested workflows as a tree. `WorkflowDescriptor.parent` names the nearest
+  listed workflow whose directory holds the directory of the workflow, `None`
+  at the top level. The dashboard of the web UI lists a child indented under
+  its parent, siblings in name order.
+- `scopes` on an auth backend: the scopes a login at its authorization server
+  asks for. The MCP resource metadata lists the scopes of the backend that
+  names the authorization server, so an agent requests the same ones.
+- `env` on the session manifest, the `ENV` of the process that started the
+  session. A process lists and restores the sessions of its own environment
+  alone, and a restore request for a session of another environment is
+  refused with the environment to restore it from. A manifest without the
+  stamp counts for every environment.
+- The initialization log names the reason of a skipped task: the message of
+  the `TaskSkip` its constraint raised.
+
+### Changed
+
+- The directories are scoped by environment: `STATE_DIR`, `CACHE_DIR` and
+  `LOG_DIR` default to `.winslow/{env}/state`, `.winslow/{env}/cache` and
+  `.winslow/{env}/logs`, where `{env}` resolves to `ENV` (`local` without
+  one), so one checkout keeps the sessions, caches and logs of each
+  environment apart. A settings module that sets a directory without `{env}`
+  keeps it as is.
+
+### Fixed
+
+- An unselected optional choice on the web start form, sent as null, passes
+  validation.
+
 ## [0.7.0] — 2026-10-14
 
 ### Added

@@ -22,6 +22,7 @@ from winslow.exceptions import (
     EligibilityError,
 )
 from winslow.conf import import_string, settings
+from winslow.state import belongs_to_env
 from winslow.logger import (
     LOGGER,
     setup_run_logging,
@@ -720,6 +721,16 @@ class Orchestrator(_ConfigBase):
         from winslow.client import LocalAppClient
 
         port = LocalAppClient(registry, orchestrator=self, state_store=state_store)
+        foreign = [
+            m
+            for m in state_store.list_open_manifests()
+            if not belongs_to_env(m, settings.ENV)
+        ]
+        for manifest in foreign:
+            self.logger.warning(
+                f"restore: leaving out {manifest.session_id}, a session of the "
+                f"{manifest.env} environment - this process runs {settings.ENV}."
+            )
         for manifest in port.manifests():
             self.logger.info(f"restore: rebuilding {manifest.session_id}")
             try:

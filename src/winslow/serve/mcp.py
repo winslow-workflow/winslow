@@ -35,8 +35,12 @@ class BearerTokenVerifier(TokenVerifier):
     token carries the whole context, so the tool call reads the stores once
     (see Authenticator.mcp_context)."""
 
-    def __init__(self, mode):
+    def __init__(self, mode, scopes=()):
         self.mode = mode
+        # The scopes the resource metadata lists. The SDK checks them against
+        # the required scopes of the metadata, and a credential carries no
+        # scope claim of its own, so every accepted token gets the whole list.
+        self.scopes = list(scopes)
 
     async def verify_token(self, token):
         try:
@@ -46,7 +50,7 @@ class BearerTokenVerifier(TokenVerifier):
         return WinslowAccessToken(
             token=token,
             client_id=context.user,
-            scopes=[],
+            scopes=self.scopes,
             expires_at=None if context.expires_at is None else int(context.expires_at),
             context=context,
         )
@@ -92,16 +96,16 @@ class McpEndpoint:
         # and an OIDC token themselves (SERVE_PUBLIC_URL), so the SDK does not
         # compare the resource.
         chain = authenticator.mode.chain
-        issuer = next(
-            (b.authorization_server for b in chain.backends if b.authorization_server),
-            base_url,
-        )
+        issuing = next((b for b in chain.backends if b.authorization_server), None)
+        issuer = issuing.authorization_server if issuing else base_url
+        scopes = list(issuing.scopes) if issuing else []
         return {
-            "token_verifier": BearerTokenVerifier(authenticator.mode),
+            "token_verifier": BearerTokenVerifier(authenticator.mode, scopes),
             "auth": AuthSettings(
                 issuer_url=AnyHttpUrl(issuer),
                 resource_server_url=AnyHttpUrl(f"{base_url}/mcp"),
                 validate_token_resource=False,
+                required_scopes=scopes or None,
             ),
         }
 

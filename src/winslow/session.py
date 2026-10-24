@@ -8,8 +8,10 @@ import traceback
 
 from winslow.access import authz
 from winslow.actions import ActionHandler, BaseActionHandler, SessionAck
+from winslow.conf import settings
 from winslow.exceptions import RequestError, SessionEndingError
 from winslow.model import SessionInfo
+from winslow.state import belongs_to_env
 from winslow.logger import (
     LOGGER,
     SessionLogBuffer,
@@ -294,6 +296,9 @@ def validate_values(
     work runs. Return (values, overrides), each string value parsed through
     its declared option type. The CLI base satisfies a required option the
     caller did not send."""
+    # A null value is an unset form field: the base or the default decides it.
+    values = {name: value for name, value in values.items() if value is not None}
+    overrides = {name: value for name, value in overrides.items() if value is not None}
     known_values = workflow_kls.config_meta
     known_overrides = orchestrator.config_meta
     for name in values:
@@ -550,6 +555,11 @@ class AppActionHandler(BaseActionHandler):
         )
         if manifest is None:
             reason = f"{action.session_id!r} names no open manifest to restore."
+        elif not belongs_to_env(manifest, settings.ENV):
+            reason = (
+                f"the session ran in the {manifest.env} environment, and this process "
+                f"runs {settings.ENV} - restore it from a {manifest.env} process."
+            )
         elif manifest.workflow_class not in self.orchestrator.workflow_registry.names:
             reason = (
                 f"the manifest names workflow {manifest.workflow_class!r}, "

@@ -568,6 +568,8 @@ An agent sends its credential as a bearer header, the example below shows the sh
 OIDC backend listed, the protected resource metadata of the endpoint names the issuer as
 the authorization server, so an agent that speaks OAuth, Claude Code among them, logs in there by
 itself: it registers with the issuer, opens the browser once, and sends the token it is given.
+The metadata lists the `scopes` of that backend, so the agent asks the issuer for the same ones
+`winslow auth login` asks for.
 
 | group | tools |
 |---|---|

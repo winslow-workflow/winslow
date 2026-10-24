@@ -233,11 +233,12 @@ starts warm from the files. Each entry lives at
 `<cache root>/<namespace>/<cache-name>/<entry>.json`: open the file to inspect a value, delete
 it to drop one.
 
-Set the cache root with the `CACHE_DIR` setting. The default is `.winslow/cache`, relative to the
-working directory - set an absolute path so every entry point of the project shares one cache:
+Set the cache root with the `CACHE_DIR` setting. The default is `.winslow/{env}/cache`, relative to
+the working directory, and `{env}` resolves to `ENV`, so each environment keeps its own values. Set
+an absolute path so every entry point of the project shares one cache:
 
 ```python title="etl/settings.py"
-CACHE_DIR = "/srv/etl/winslow-cache"
+CACHE_DIR = "/srv/etl/winslow-cache/{env}"
 ```
 
 !!! warning "For `JsonFileStorage`, the values must fit the JSON types"
@@ -275,8 +276,8 @@ class Etl(Workflow):
 ```
 
 ```console
-$ winslow run --workflow etl --region eu   # .winslow/cache/workflows/etl-eu-3f9a1c2b/
-$ winslow run --workflow etl --region us   # .winslow/cache/workflows/etl-us-9d01f7a2/
+$ winslow run --workflow etl --region eu   # .winslow/local/cache/workflows/etl-eu-3f9a1c2b/
+$ winslow run --workflow etl --region us   # .winslow/local/cache/workflows/etl-us-9d01f7a2/
 ```
 
 !!! info "How is the directory name generated?"
@@ -346,5 +347,5 @@ $ winslow run --mode headless --workflow weather   # ~2s: stations reads its fil
 ```
 
 Both runs write `state/summary.txt`. The second one skips the 2s station registry: the global
-cache warm-starts from `.winslow/cache/global/stations/codes.json`. The forecast loaders run
+cache warm-starts from `.winslow/local/cache/global/stations/codes.json`. The forecast loaders run
 again, because a new session builds fresh `WorkflowCache` instances.

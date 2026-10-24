@@ -74,7 +74,7 @@ The values:
 | `ENV` | `"local"` | the environment name, `self.env` on a task and a workflow |
 | `SERVICE_NAME` | `"winslow"` | the name of the deployment, in the MCP server name and the headers |
 | `ENV_COLORS` | [the color table](serve.md#the-environment-color) | the header color per environment name |
-| `STATE_DIR`, `CACHE_DIR`, `LOG_DIR` | under `.winslow/` | the directories, relative to the working directory |
+| `STATE_DIR`, `CACHE_DIR`, `LOG_DIR` | `.winslow/{env}/state`, `.winslow/{env}/cache`, `.winslow/{env}/logs` | the directories, relative to the working directory. `{env}` resolves to `ENV`, so each environment keeps its own sessions, caches and logs |
 | `LOG_FORMAT`, `LOG_DATEFMT`, `LOG_UTC` | the timestamped format, UTC | the console and session log lines |
 | `LOG_JSON` | `False` | one JSON object per record on stdout (see [Logs](serve.md#logs)) |
 | `TASK_LOG_BUFFER_SIZE`, `EXECUTION_RECORD_LOG_BUFFER_SIZE` | `1000` | the lines kept per task and per record |

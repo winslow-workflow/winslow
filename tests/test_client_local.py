@@ -767,6 +767,36 @@ def test_create_session_fills_unsent_options_from_the_cli_base(e2e_repo, state_s
     session = registry.get(row.session_id)
     assert session.workflow.workflow_config.client == "beta"
 
+    # A null value is an unset form field: the base fills it in.
+    row = started(app.create_session("my-identified", values={"client": None}))
+    session = registry.get(row.session_id)
+    assert session.workflow.workflow_config.client == "acme"
+
+
+def test_validate_values_drops_null_values():
+    from types import SimpleNamespace
+
+    from winslow.descriptors import ConfigOption
+    from winslow.session import validate_values
+
+    workflow_kls = SimpleNamespace(
+        config_meta={
+            "client": ConfigOption(required=True, choices=["acme", "beta"]),
+            "name": ConfigOption(),
+        }
+    )
+    orchestrator = SimpleNamespace(config_meta={"port": ConfigOption(type=int)})
+
+    values, overrides = validate_values(
+        "wf", workflow_kls, orchestrator, {"client": "acme", "name": None}, {"port": None}
+    )
+    assert values == {"client": "acme"}
+    assert overrides == {}
+
+    # Without a base, a null required option is a missing one.
+    with pytest.raises(ValueError, match="requires client"):
+        validate_values("wf", workflow_kls, orchestrator, {"client": None}, {})
+
 
 # --- the apply_filter scopes ------------------------------------------------------
 
@@ -906,3 +936,22 @@ def test_effective_workflow_values_round_trip_through_the_manifest():
         "rate": Decimal("1.5"),
         "picks": [1, 3],
     }
+
+
+def test_a_session_of_another_env_is_no_restore_candidate(
+    e2e_repo, state_store, monkeypatch
+):
+    registry = SessionRegistry()
+    app = LocalAppClient(
+        registry, orchestrator=local_orchestrator(e2e_repo), state_store=state_store
+    )
+    row = started(app.create_session("my-workflow"))
+    assert state_store.load_manifest(row.session_id).env == settings.ENV
+    registry.remove(row.session_id)
+
+    monkeypatch.setattr(settings, "ENV", "elsewhere")
+
+    assert row.session_id not in {m.session_id for m in app.manifests()}
+    refused = app.restore_session(row.session_id)
+    assert "restore it from a local process" in refused.reason
+    assert row.session_id not in registry

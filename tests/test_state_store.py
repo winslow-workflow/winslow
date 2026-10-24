@@ -6,6 +6,7 @@ from winslow.conf import import_string, settings
 from winslow.exceptions import MisconfigurationError, SerializationError
 from winslow.orchestrator import OrchestratorConfig
 from winslow.state import (
+    belongs_to_env,
     StateStore,
     BatchRecord,
     FileStateStore,
@@ -311,3 +312,10 @@ def test_a_module_names_another_state_store(monkeypatch):
     monkeypatch.setattr(settings, "STATE_STORE", "winslow.state.Nope")
     with pytest.raises(MisconfigurationError, match="winslow.state has no 'Nope'"):
         import_string(settings.STATE_STORE)
+
+
+def test_a_manifest_belongs_to_the_env_it_records():
+    assert belongs_to_env(build_manifest(env="prod"), "prod")
+    assert not belongs_to_env(build_manifest(env="dev"), "prod")
+    # A manifest written before the env stamp counts for every env.
+    assert belongs_to_env(build_manifest(), "prod")

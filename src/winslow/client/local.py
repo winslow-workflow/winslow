@@ -18,6 +18,7 @@ from winslow.logger import (
     get_task_dispatcher,
 )
 from winslow.access.permissions import LOCAL
+from winslow.state import belongs_to_env
 from winslow.model import (
     CachesPayload,
     CacheUpdatedEvent,
@@ -122,6 +123,7 @@ class LocalAppClient(AppClient):
             )
             for manifest in self.state_store.list_open_manifests()
             if manifest.session_id not in self.registry
+            and belongs_to_env(manifest, settings.ENV)
         )
 
     def host_stats(self):

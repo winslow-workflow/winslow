@@ -3,6 +3,7 @@ its pipeline is runnable and archives it at the end."""
 
 import pytest
 
+from winslow.conf import settings
 from winslow.constants import Mode
 from winslow.events import TaskStatusEvent
 from winslow.exceptions import RegistrationError
@@ -191,3 +192,22 @@ def test_a_restored_session_satisfies_auto_init(e2e_repo, state_store, monkeypat
 
     (session,) = registry.sessions()
     assert session.session_id == row.session_id
+
+
+def test_serve_startup_leaves_out_the_sessions_of_another_env(
+    e2e_repo, state_store, monkeypatch
+):
+    from winslow.client import LocalAppClient
+
+    orchestrator = _serve_orchestrator(e2e_repo)
+    dead = LocalAppClient(
+        SessionRegistry(), orchestrator=orchestrator, state_store=state_store
+    )
+    row = started(dead.create_session("my-workflow"))
+    monkeypatch.setattr(settings, "ENV", "elsewhere")
+
+    registry = SessionRegistry()
+    orchestrator._restore_sessions(registry, state_store)
+
+    assert row.session_id not in registry
+    assert state_store.load_manifest(row.session_id).ended_at is None

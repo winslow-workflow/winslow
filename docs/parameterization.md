@@ -167,6 +167,22 @@ class Audit(Task):
         return parameters.region != "legacy"
 ```
 
+Raise `TaskSkip` to drop the set with a reason. The log line of the drop ends with the message:
+
+```python
+from winslow.exceptions import TaskSkip
+
+
+class Audit(Task):
+    region = Parameter(values=["eu", "us", "legacy"])
+
+    @classmethod
+    def should_be_initialized(cls, workflow_config, parameters=None):
+        if parameters.region == "legacy":
+            raise TaskSkip("the legacy region keeps no audit trail")
+        return True
+```
+
 This is stronger than `is_eligible`, which marks a created instance as skipped. Use it when most of the sets
 are not relevant for the run.
 

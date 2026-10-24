@@ -14,6 +14,9 @@ MODULE_VARIABLE = "WINSLOW_SETTINGS_MODULE"
 # The module a project keeps beside its workflows directory, picked up from
 # the working directory the way the workflows are, when the variable is unset.
 MODULE_FILE = "settings.py"
+# The directory settings that take an {env} placeholder. It resolves to ENV, so
+# each environment keeps its own sessions, caches and logs.
+ENV_DIRECTORIES = ("STATE_DIR", "CACHE_DIR", "LOG_DIR")
 
 
 @dataclass(frozen=True)
@@ -27,7 +30,12 @@ class Loaded:
 
     @property
     def names(self):
-        return {**self.base, **self.overrides}
+        merged = {**self.base, **self.overrides}
+        directories = {
+            name: os.fspath(merged[name]).replace("{env}", merged["ENV"])
+            for name in ENV_DIRECTORIES
+        }
+        return {**merged, **directories}
 
     def source(self, name):
         """`module` for a name the project module set, else `default`."""

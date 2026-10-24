@@ -449,6 +449,7 @@ class Workflow(_ConfigBase):
                     origin=origin,
                     started_at=session.start,
                     user=user,
+                    env=self.env,
                 )
             )
         except Exception:

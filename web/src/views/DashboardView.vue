@@ -13,6 +13,7 @@ import { formatClock } from '@/protocol/format'
 import type { FormValues } from '@/protocol/forms'
 import { NO_PERMISSION_MESSAGE } from '@/protocol/messages'
 import type { ManifestInfo } from '@/protocol/model'
+import { workflowRows } from '@/protocol/workflows'
 import { useConnectionStore } from '@/stores/connection'
 import { useNoticesStore } from '@/stores/notices'
 import { useSessionsStore } from '@/stores/sessions'
@@ -23,7 +24,7 @@ const connection = useConnectionStore()
 const router = useRouter()
 
 const selected = ref<string | null>(null)
-const names = computed(() => sessions.descriptors?.workflows.map((row) => row.workflow) ?? [])
+const rows = computed(() => workflowRows(sessions.descriptors?.workflows ?? []))
 const descriptor = computed(
   () => sessions.descriptors?.workflows.find((row) => row.workflow === selected.value) ?? null,
 )
@@ -46,7 +47,7 @@ async function start(values: FormValues) {
 <template>
   <div class="dashboard-layout">
     <div class="dashboard-top">
-      <WorkflowList :names="names" :selected="selected" @select="selected = $event" />
+      <WorkflowList :rows="rows" :selected="selected" @select="selected = $event" />
       <div class="pane">
         <WorkflowForm v-if="descriptor" :descriptor="descriptor" :overrides="overrides" @start="start" />
         <div v-else class="d-flex align-items-center justify-content-center h-100 text-secondary">

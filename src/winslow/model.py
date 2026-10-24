@@ -11,6 +11,7 @@ method, so this module imports nothing from winslow at module level."""
 
 from dataclasses import asdict, dataclass
 from enum import StrEnum
+from pathlib import Path
 from typing import Optional
 
 
@@ -918,6 +919,27 @@ class WorkflowDescriptor:
     # The scope name of the permissions on this workflow (see Workflow.permission_scope).
     permission_scope: str
     auto_init: bool = False
+    # The nearest listed workflow whose directory holds this one, None at the top level.
+    parent: Optional[str] = None
+
+
+def _parent_names(workflow_classes):
+    """The parent of each workflow name: the listed workflow with the deepest
+    directory that holds the directory of the workflow (see the nested
+    workflows in docs/workflows.md)."""
+    directories = {
+        name: Path(kls.get_module_directory()) for name, kls in workflow_classes.items()
+    }
+
+    def parent_of(directory):
+        enclosing = [
+            (len(other.parts), name)
+            for name, other in directories.items()
+            if other != directory and directory.is_relative_to(other)
+        ]
+        return max(enclosing)[1] if enclosing else None
+
+    return {name: parent_of(directory) for name, directory in directories.items()}
 
 
 @dataclass(frozen=True)
@@ -935,17 +957,22 @@ class Descriptors:
     @classmethod
     def from_orchestrator(cls, orchestrator):
         workflow_args = orchestrator.collect_workflow_args()
+        registry = orchestrator.workflow_registry
+        listed = {
+            name: registry[name]
+            for name in registry.names
+            if registry[name].should_be_initialized(orchestrator.orchestrator_config)
+        }
+        parents = _parent_names(listed)
         workflows = []
-        for name in orchestrator.workflow_registry.names:
-            workflow_kls = orchestrator.workflow_registry[name]
-            if not workflow_kls.should_be_initialized(orchestrator.orchestrator_config):
-                continue
+        for name, workflow_kls in listed.items():
             parsed = workflow_args.get(workflow_kls)
             workflows.append(
                 WorkflowDescriptor(
                     workflow=name,
                     auto_init=workflow_kls.auto_init,
                     permission_scope=workflow_kls.get_permission_scope(),
+                    parent=parents[name],
                     options=tuple(
                         OptionInfo.from_option(
                             option_name,

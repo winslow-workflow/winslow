@@ -69,6 +69,16 @@ class SessionManifest:
     # a local start, and for an end the session reached by itself.
     user: str | None = None
     ended_by: str | None = None
+    # The ENV of the process that started the session. None for a manifest that
+    # a winslow before the env stamp wrote (see belongs_to_env).
+    env: str | None = None
+
+
+def belongs_to_env(manifest, env):
+    """True when the session of the manifest ran in the env. A process lists and
+    restores the sessions of its own env only. A manifest with no env stamp counts
+    for every env."""
+    return manifest.env in (None, env)
 
 
 @dataclass(frozen=True)

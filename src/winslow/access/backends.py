@@ -31,6 +31,9 @@ class AuthBackend:
     # None when the backend issues nothing itself: a token is minted, a
     # ticket is handed over (see winslow.serve.mcp.McpEndpoint).
     authorization_server = None
+    # The scopes a login at that server asks for. The MCP resource metadata
+    # lists them, so an agent requests the same ones.
+    scopes = ()
 
     def __init__(self, policy=None):
         self.policy = policy or FilePolicyStore()
