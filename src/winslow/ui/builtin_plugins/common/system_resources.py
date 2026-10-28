@@ -43,6 +43,8 @@ class UserStat(Stat):
     name = var("user")
 
     def show(self, stats):
+        # A served host reports no user (see LocalAppClient).
+        self.display = stats.user is not None
         self.value = stats.user
 
 

@@ -2,6 +2,8 @@
 LocalSessionClient pass the dataclasses the core builds through unchanged
 (see winslow.model)."""
 
+import getpass
+import os
 import time
 from dataclasses import asdict
 from functools import partial
@@ -72,13 +74,24 @@ def _emit_task_log(handler, task_key, line):
     handler(TaskLogEvent(task_key=task_key, line=line))
 
 
+def process_user():
+    """The name of the account that runs the process. A container that runs
+    under a uid without a passwd entry gets the uid number."""
+    try:
+        return getpass.getuser()
+    # Python 3.12 raises KeyError. Python 3.13 and later raise OSError.
+    except (KeyError, OSError):
+        return str(os.getuid())
+
+
 class HostStatsSampler:
     """A custom cpu percent over a window of `interval` seconds, shared by
     every client. psutil.cpu_percent keeps its previous counters in a module
     global, so several clients reading at once would need a lock."""
 
-    def __init__(self, interval=1.0):
+    def __init__(self, interval=1.0, user=None):
         self.interval = interval
+        self.user = user
         # (stamp, cpu counters at the stamp, stats of the window that ended there)
         self.window = (time.monotonic(), psutil.cpu_times(), None)
 
@@ -91,7 +104,7 @@ class HostStatsSampler:
         total = sum(fresh) - sum(counters)
         idle = fresh.idle - counters.idle
         cpu_percent = round(100 * (total - idle) / total, 1) if total else 0.0
-        stats = HostStats.sample(cpu_percent)
+        stats = HostStats.sample(cpu_percent, self.user)
         # One tuple swap: a racing read computes the same window and wins nothing.
         self.window = (now, fresh, stats)
         return stats
@@ -99,14 +112,17 @@ class HostStatsSampler:
 
 class LocalAppClient(AppClient):
     """The dashboard scope over a live SessionRegistry. orchestrator and
-    state_store serve descriptors, manifests, create and restore."""
+    state_store serve descriptors, manifests, create and restore.
 
-    def __init__(self, registry, orchestrator, state_store):
+    host_user is the user of the host stats. The local TUI sets it. A served
+    process keeps None, because its account does not identify the viewer."""
+
+    def __init__(self, registry, orchestrator, state_store, host_user=None):
         self.registry = registry
         self.orchestrator = orchestrator
         self.state_store = state_store
         self.actions = AppActionHandler(orchestrator, state_store, registry)
-        self.host_sampler = HostStatsSampler()
+        self.host_sampler = HostStatsSampler(user=host_user)
 
     def sessions(self):
         return tuple(

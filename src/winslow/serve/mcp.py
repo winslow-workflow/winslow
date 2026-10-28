@@ -233,7 +233,7 @@ class McpEndpoint:
     @tool
     async def host_stats(self) -> dict:
         """The resources of the host that runs the sessions: memory in
-        bytes, the cpu load since the previous sample, hostname and user."""
+        bytes, the cpu load since the previous sample and the hostname."""
         return await self._read(AppClient.host_stats)
 
     @tool

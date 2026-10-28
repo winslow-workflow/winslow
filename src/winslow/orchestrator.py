@@ -832,6 +832,7 @@ class Orchestrator(_ConfigBase):
         setup_run_logging()
 
         from winslow.client import LocalAppClient
+        from winslow.client.local import process_user
         from winslow.session import SessionRegistry
 
         # The composition root of the local TUI: this process owns the registry
@@ -840,6 +841,7 @@ class Orchestrator(_ConfigBase):
             SessionRegistry(),
             orchestrator=self,
             state_store=import_string(settings.STATE_STORE)(self.orchestrator_config),
+            host_user=process_user(),
         )
         app = Winslow(client=local_client, logger=self.logger, owns_sessions=True)
 

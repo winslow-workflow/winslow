@@ -1,6 +1,6 @@
 <script setup lang="ts">
-// The system resources pane: memory, cpu, host and user of the process that
-// runs the sessions, polled over the host_stats read while the wire is connected.
+// The system resources pane: memory, cpu and host of the process that runs
+// the sessions, polled over the host_stats read while the wire is connected.
 
 import { computed, ref } from 'vue'
 
@@ -69,7 +69,7 @@ function loadClass(percent: number): string {
       <span class="label">host</span>
       <span class="text-truncate">{{ stats.hostname }}</span>
     </div>
-    <div class="stat d-flex justify-content-between gap-2">
+    <div v-if="stats.user !== null" class="stat d-flex justify-content-between gap-2">
       <span class="label">user</span>
       <span class="text-truncate">{{ stats.user }}</span>
     </div>

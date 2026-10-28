@@ -287,7 +287,7 @@ class AppClient(Port):
         result=HostStats,
         open=True,
         doc="Return the HostStats of the process: memory, cpu load, hostname "
-        "and user of the host that runs the sessions.",
+        "and user of the host that runs the sessions. A served host reports no user.",
     )
     create_session = Action(
         requires=Permission.START_WORKFLOW,

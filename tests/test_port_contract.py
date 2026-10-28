@@ -420,7 +420,6 @@ def test_host_stats_describe_the_serving_host(port):
     stats = port.host_stats()
     assert isinstance(stats, HostStats)
     assert stats.hostname
-    assert stats.user
     assert 0 < stats.memory_used <= stats.memory_total
     assert 0 <= stats.memory_percent <= 100
     assert 0 <= stats.cpu_percent <= 100

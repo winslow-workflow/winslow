@@ -811,18 +811,17 @@ class ManifestInfo:
 class HostStats:
     """The resources of the host that runs the sessions: memory in bytes, the
     cpu load over the previous window (see HostStatsSampler), the hostname
-    and the user."""
+    and the user. The user is None on a served host (see LocalAppClient)."""
 
     hostname: str
-    user: str
+    user: str | None
     cpu_percent: float
     memory_used: int
     memory_total: int
     memory_percent: float
 
     @classmethod
-    def sample(cls, cpu_percent):
-        import getpass
+    def sample(cls, cpu_percent, user):
         import socket
 
         import psutil
@@ -830,7 +829,7 @@ class HostStats:
         memory = psutil.virtual_memory()
         return cls(
             hostname=socket.gethostname(),
-            user=getpass.getuser(),
+            user=user,
             cpu_percent=cpu_percent,
             memory_used=memory.used,
             memory_total=memory.total,

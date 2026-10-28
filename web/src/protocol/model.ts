@@ -228,10 +228,10 @@ export interface ManifestInfo {
 }
 
 // The resources of the host that runs the sessions: memory in bytes, the cpu
-// load since the previous sample.
+// load since the previous sample. A served host reports no user.
 export interface HostStats {
   hostname: string
-  user: string
+  user: string | null
   cpu_percent: number
   memory_used: number
   memory_total: number
