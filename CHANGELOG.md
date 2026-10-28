@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [0.8.1] — 2026-10-28
+
+### Changed
+
+- A served process leaves the user out of the host stats. `HostStats.user` is
+  `None`, and the system resources pane of the web UI shows the memory, the cpu
+  and the host. The account of a served process is the server account, and the
+  person who views the page logs in through the auth backend.
+
+### Fixed
+
+- The local TUI shows the uid number as the user when the account has no name,
+  as in a container that runs under a uid without a passwd entry. The
+  `host_stats` read used to fail there on every poll.
+
 ## [0.8.0] — 2026-10-24
 
 ### Added
