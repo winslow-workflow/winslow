@@ -357,8 +357,10 @@ def create_session(
     stamps the manifest with the endpoint that created the session, user with
     the person: the ambient user of the request by default, or the stored user
     of a manifest on a restore. Raises with a directional message on an
-    unknown workflow; a failure after registration marks the session errored
-    and unregisters it.
+    unknown workflow. The registry reserves the session id while the tasks
+    build and registers the session after the build (see
+    SessionRegistry.reserve). A failed build marks the session errored and
+    drops the reservation.
 
     session_id and seed serve a restore: the caller passes the id of the
     stored manifest, so the session rebuilds under it, and seed=True replays
@@ -412,7 +414,7 @@ def create_session(
         )
         session = Session(workflow, session_id=session_id, log_buffer=log_buffer)
         session.user = current_user() if user is None else user
-        registry.register(session)
+        registry.reserve(session_id)
         try:
             workflow.initialize_tasks(logger=workflow.logger)
             workflow.check_pipeline_eligibility(logger=workflow.logger)
@@ -437,6 +439,7 @@ def create_session(
             registry.remove(session_id)
             session.mark_error(exc)
             raise
+        registry.register(session)
     return session
 
 
@@ -447,15 +450,31 @@ class SessionRegistry:
 
     def __init__(self):
         self._sessions = {}
+        # The ids of the sessions whose tasks build (see reserve).
+        self._reserved = set()
         self._lock = threading.Lock()
+
+    def reserve(self, session_id):
+        """Hold the id of a session while its tasks build. The `in` check is
+        true for a reserved id, so the manifests read hides its manifest and
+        a second restore is refused. sessions and resolve serve the session
+        from register on, when its tasks exist."""
+        with self._lock:
+            self._reserved.add(session_id)
 
     def register(self, session):
         with self._lock:
+            self._reserved.discard(session.session_id)
             self._sessions[session.session_id] = session
 
     def resolve(self, session_id):
         """The live session under the id. Raises KeyError with direction."""
         session = self.get(session_id)
+        if session is None and session_id in self._reserved:
+            raise KeyError(
+                f"session id {session_id!r} is still building its tasks - "
+                f"it resolves once the build ends."
+            )
         if session is None:
             raise KeyError(
                 f"session id {session_id!r} does not resolve to a live session - "
@@ -467,8 +486,10 @@ class SessionRegistry:
         return self._sessions.get(session_id)
 
     def remove(self, session_id):
-        """Drop and return the session, or None: a teardown can run twice."""
+        """Drop and return the session, or None: a teardown can run twice. It
+        also drops a reserved id."""
         with self._lock:
+            self._reserved.discard(session_id)
             return self._sessions.pop(session_id, None)
 
     def sessions(self):
@@ -476,7 +497,7 @@ class SessionRegistry:
         return tuple(self._sessions.values())
 
     def __contains__(self, session_id):
-        return session_id in self._sessions
+        return session_id in self._sessions or session_id in self._reserved
 
     def __len__(self):
         return len(self._sessions)
@@ -564,6 +585,11 @@ class AppActionHandler(BaseActionHandler):
             reason = (
                 f"the manifest names workflow {manifest.workflow_class!r}, "
                 f"which this process does not collect."
+            )
+        elif action.session_id in self.registry:
+            reason = (
+                f"{action.session_id!r} is already restoring - it lists as a live "
+                f"session once its tasks are built."
             )
         else:
             return manifest, self.scope_of(manifest.workflow_class)
