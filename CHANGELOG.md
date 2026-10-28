@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [0.8.2] — 2026-10-28
+
+### Fixed
+
+- A session lists and resolves once its tasks are built. A roster read
+  during the task build used to fail with a TypeError. The registry holds
+  the session id during the build, so the manifests read hides a manifest
+  under restore and a second restore of it is refused.
+
 ## [0.8.1] — 2026-10-28
 
 ### Changed
