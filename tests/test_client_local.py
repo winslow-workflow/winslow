@@ -788,7 +788,11 @@ def test_validate_values_drops_null_values():
     orchestrator = SimpleNamespace(config_meta={"port": ConfigOption(type=int)})
 
     values, overrides = validate_values(
-        "wf", workflow_kls, orchestrator, {"client": "acme", "name": None}, {"port": None}
+        "wf",
+        workflow_kls,
+        orchestrator,
+        {"client": "acme", "name": None},
+        {"port": None},
     )
     assert values == {"client": "acme"}
     assert overrides == {}
