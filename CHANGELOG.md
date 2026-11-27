@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and Winslow follows [Semantic Versioning](https://semver.org/) (pre-1.0: minor
 versions may include breaking changes).
 
+## [Unreleased]
+
+### Added
+
+- `Task.get_groups` accepts the parameters of an instance, so a parameterized
+  task gives each instance a group of its own: `ship-eu`, `ship-us`. The
+  group filter, the task info and the telemetry attributes read the groups of
+  the instance through the new `Task.instance_groups`. A call with no
+  parameters answers for the class, and a dependency on a group name reads
+  that answer.
+
+### Changed
+
+- An override of `Task.get_groups` declares the `parameters=None` argument.
+- `TaskInfo.get_groups` is now the property `TaskInfo.instance_groups`.
+
 ## [0.8.2] — 2026-10-28
 
 ### Fixed

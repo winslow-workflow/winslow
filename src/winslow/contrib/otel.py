@@ -48,7 +48,7 @@ class OpenTelemetryHandler(TelemetryHandler):
             # str(task): the declared name plus the parameter values.
             "winslow.task_instance": str(task),
             # A sorted string array; None drops the attribute.
-            "winslow.groups": sorted(task.get_groups()) or None,
+            "winslow.groups": sorted(task.instance_groups) or None,
             "winslow.batch_uuid": batch_uuid,
             "winslow.phase": phase.value,
         }

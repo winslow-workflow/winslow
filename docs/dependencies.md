@@ -102,6 +102,28 @@ class UnitTest(Task):
 A group has two uses. It is a dependency target, as the table above shows. It is also a filter target, so
 `--filter '!g static'` selects every task of the group. See [Filters](filters.md).
 
+### A group for each instance
+
+The `get_groups` classmethod returns the groups of a task. Winslow calls it with the parameters of each
+instance, so a [parameterized](parameterization.md) task can give each instance a group of its own:
+
+```python
+class Ship(Task):
+    region = Parameter(values=["eu", "us"])
+
+    @classmethod
+    def get_groups(cls, parameters=None):
+        if parameters is None:
+            return {"ship"}
+        return {f"ship-{parameters.region}"}
+```
+
+`ship ('eu')` is in the group `ship-eu`, and `ship ('us')` is in the group `ship-us`. The filter
+`--filter '!g ship-eu'` selects the one instance, and the UI shows the group next to it.
+
+Winslow calls the method with no parameters for the class. That result holds the dependency targets, so
+`dependencies = "ship"` reaches every instance.
+
 ## A complete example
 
 The `delivery` workflow uses every dependency form in one graph. An ingest group feeds a validate task, a

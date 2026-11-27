@@ -14,14 +14,14 @@ class GroupFilter(TaskFilter):
     long_command = "group"
 
     def matches(self, task):
-        return self.value in task.get_groups()
+        return self.value in task.instance_groups
 
     def explain(self):
         return f"in group '{self.value}'"
 
 
 # The filters that the history search accepts: they read only get_name and
-# get_groups, which TaskInfo also provides. A project filter needs a live task.
+# instance_groups, which TaskInfo also provides. A project filter needs a live task.
 BUILTIN_FILTERS = (NameFilter, GroupFilter)
 
 

@@ -201,7 +201,10 @@ class TaskInfo:
     def get_name(self):
         return self.name
 
-    def get_groups(self):
+    @property
+    def instance_groups(self):
+        """The same read as Task.instance_groups, so a filter takes a task
+        and its info alike."""
         return frozenset(self.groups)
 
     @property
@@ -246,7 +249,7 @@ class TaskInfo:
             # The real source file through inspect, and not the synthetic scoped
             # __module__.
             task_class=f"{task_cls.__qualname__} ({_safe_sourcefile(task_cls) or task_cls.__module__})",
-            groups=tuple(sorted(task.get_groups())),
+            groups=tuple(sorted(task.instance_groups)),
             parameters=_display_parameters(task) or None,
             dependencies=tuple(
                 TaskRef.from_task(d)

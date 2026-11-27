@@ -156,7 +156,7 @@ class Graph(_Base):
     def _pipeline_sort_func(self, task):
         return (
             *task.execution_order,
-            tuple(sorted(task.get_groups())),
+            tuple(sorted(task.instance_groups)),
             task.instance_name,
             str(task),
         )

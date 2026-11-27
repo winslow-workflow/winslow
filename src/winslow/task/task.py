@@ -248,13 +248,26 @@ class Task(_ParameterizationBase):
         )
 
     @classmethod
-    def get_groups(cls):
+    def get_groups(cls, parameters=None):
+        """The groups of the task. The registry calls this with no parameters,
+        and the result holds the dependency targets of the class. An instance
+        calls it with its own parameters (see instance_groups).
+
+        Override this to give each instance of a parameterized task a group
+        of its own.
+        """
         groups = cls.groups if cls.groups else []
         return frozenset(to_tuple(groups))
 
+    @cached_property
+    def instance_groups(self):
+        """The groups of this instance: get_groups with the parameters of the
+        instance. The filters and the task info read this value."""
+        return frozenset(self.get_groups(self._params))
+
     @property
     def groups_readable(self):
-        return ", ".join(sorted(self.get_groups()))
+        return ", ".join(sorted(self.instance_groups))
 
     @cached_property
     def _str_cached(self):
