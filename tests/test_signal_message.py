@@ -54,19 +54,23 @@ def test_a_check_that_passes_after_the_sign_off_carries_no_message(e2e_repo):
 
 
 def test_a_task_behind_a_paused_dependency_names_its_block(e2e_repo):
-    workflow, session, registry = registered(e2e_repo, "my-actions")
+    workflow, session, registry, needs, _ = paused_session(e2e_repo)
     client = LocalSessionClient(session)
     dependent = by_name(workflow)["DependsOnApproval"]
 
     run_to_completion(workflow, client, dependent)
 
-    (row,) = client.history()
+    _, row = client.history()
+    # The dependency is outside this batch and has no record in it. The block
+    # message names it, so a client knows which task to check.
+    assert set(row.tasks) == {dependent.identity_key}
     outcome = row.tasks[dependent.identity_key]
     # The handler above process_task writes BLOCKED a second time, without a
     # message. The message of the first write stays.
     assert outcome.status == "BLOCKED"
     assert outcome.signal_message == (
-        f"Cannot run {dependent} - 1 dependencies are failing."
+        f"Cannot run {dependent} - 1 dependencies are failing: "
+        f"{needs} ({S.ACTION_REQUIRED})."
     )
 
 
@@ -84,6 +88,48 @@ def test_a_failed_check_carries_the_fail_message(e2e_repo):
     assert outcome.signal_message == "the target is missing"
 
 
+def test_a_block_from_a_gate_carries_the_block_message(e2e_repo):
+    workflow, session, registry = registered(e2e_repo, "my-actions")
+    client = LocalSessionClient(session)
+    task = by_name(workflow)["NeedsApproval"]
+    task.can_run = lambda: task.block("the maintenance window is closed")
+
+    run_to_completion(workflow, client, task)
+
+    (row,) = client.history()
+    outcome = row.tasks[task.identity_key]
+    assert outcome.status == "BLOCKED"
+    assert outcome.signal_message == "the maintenance window is closed"
+
+
+def test_a_gate_that_returns_false_carries_no_message(e2e_repo):
+    workflow, session, registry = registered(e2e_repo, "my-actions")
+    client = LocalSessionClient(session)
+    task = by_name(workflow)["NeedsApproval"]
+    task.can_run = lambda: False
+
+    run_to_completion(workflow, client, task)
+
+    (row,) = client.history()
+    outcome = row.tasks[task.identity_key]
+    assert outcome.status == "BLOCKED"
+    assert outcome.signal_message == ""
+
+
+def test_a_mirrored_status_does_not_inherit_a_message(e2e_repo):
+    workflow, session, registry = registered(e2e_repo, "my-actions")
+    task = by_name(workflow)["NeedsApproval"]
+    store = ExecutionRecordStore(workflow.bus, "batch", [])
+    store.register(task)
+    workflow.runner._execution_record_store_map["batch"] = store
+    key = task.identity_key
+
+    store.settle(key, S.BLOCKED, "the gate is closed")
+    workflow.runner._mirror_batch_status(task, S.COMPLETED, "batch")
+
+    assert store.get_record(key).message_for(store[key]) == ""
+
+
 def test_the_message_belongs_to_the_status_that_carried_it(e2e_repo):
     workflow, session, registry = registered(e2e_repo, "my-actions")
     task = by_name(workflow)["NeedsApproval"]
@@ -93,16 +139,21 @@ def test_the_message_belongs_to_the_status_that_carried_it(e2e_repo):
     record = store.get_record(key)
 
     store.settle(key, S.BLOCKED, "the gate is closed")
-    assert (store[key], record.signal_message) == (S.BLOCKED, "the gate is closed")
+    assert store[key] is S.BLOCKED
+    assert record.message_for(S.BLOCKED) == "the gate is closed"
 
     store.settle(key, S.BLOCKED)
-    assert record.signal_message == "the gate is closed"
+    assert record.message_for(S.BLOCKED) == "the gate is closed"
 
     store.settle(key, S.BLOCKED, "another gate is closed")
-    assert record.signal_message == "another gate is closed"
+    assert record.message_for(S.BLOCKED) == "another gate is closed"
+
+    # A reader that holds an older status gets no message of another status.
+    assert record.message_for(S.FAILED) == ""
 
     store.settle(key, S.CHECKING_COMPLETION)
-    assert (store[key], record.signal_message) == (S.CHECKING_COMPLETION, "")
+    store.settle(key, S.BLOCKED)
+    assert record.message_for(S.BLOCKED) == ""
 
 
 def test_the_websocket_serves_the_prompt(e2e_repo):

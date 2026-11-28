@@ -132,7 +132,7 @@ class InteractiveRunner(HeadlessRunner):
     def _mirror_batch_status(self, task, status, batch_uuid):
         store = self._execution_record_store_map[batch_uuid]
         if task.identity_key in store:
-            store[task.identity_key] = status
+            store.settle(task.identity_key, status)
 
     @contextmanager
     def task_log_scope(self, task, batch_uuid):

@@ -55,14 +55,10 @@ class ExecutionRecordStore(TaskStore):
             record.info = TaskInfo.from_task(task, full=True, root_dir=self.root_dir)
 
     def settle(self, task_key, status, message=""):
-        """Write the status of one record with the message of its task signal.
-
-        The message is bound before the status, so a reader that sees the
-        status also sees its message. A repeated status without a message
-        keeps the message of the first write.
-        """
-        if message or self.get(task_key) is not status:
-            self._records[task_key].signal_message = message
+        """Write the status of one record with the message of its task signal
+        (see ExecutionRecord.annotate). The note is bound before the status,
+        so a reader that sees the status also finds its message."""
+        self._records[task_key].annotate(status, message)
         self[task_key] = status
 
     def get_record(self, task_key) -> ExecutionRecord:

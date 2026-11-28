@@ -4,7 +4,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
 from datetime import datetime
 from enum import Enum, auto
-from typing import Optional, TYPE_CHECKING
+from typing import NamedTuple, Optional, TYPE_CHECKING
 
 from winslow.conf import settings
 
@@ -95,6 +95,14 @@ class PhaseSpan:
         return None
 
 
+class StatusNote(NamedTuple):
+    """One status of a record with the message of the task signal that set it.
+    The message is empty when no signal set the status."""
+
+    status: object = None
+    message: str = ""
+
+
 @dataclass(eq=False)
 class ExecutionRecord:
     # A value snapshot, never the task: the record outlives the session. The
@@ -117,9 +125,9 @@ class ExecutionRecord:
     # ExecutionPhase -> tuple[CacheReadSnapshot]. A repeated phase overwrites,
     # so the last occurrence wins, exactly like transient_snapshots.
     cache_snapshots: dict = field(default_factory=dict)
-    # The message of the task signal that set the current status. A status
-    # write without a signal resets it (see ExecutionRecordStore.settle).
-    signal_message: str = ""
+    # The last status write with its message, rebound as one value. A reader
+    # on another thread thus gets a message together with its status.
+    note: StatusNote = StatusNote()
 
     def __post_init__(self):
         # append_log runs on worker threads while log_tail snapshots on the
@@ -171,6 +179,18 @@ class ExecutionRecord:
             self.transient_snapshots = {**self.transient_snapshots, phase: transients}
         if cache_reads:
             self.cache_snapshots = {**self.cache_snapshots, phase: cache_reads}
+
+    def annotate(self, status, message=""):
+        """Bind the message to the status. A repeated status without a message
+        keeps the message of the first write."""
+        if message or self.note.status is not status:
+            self.note = StatusNote(status, message)
+
+    def message_for(self, status) -> str:
+        """Return the message of the status, or an empty string when the last
+        note belongs to another status."""
+        note = self.note
+        return note.message if note.status is status else ""
 
     def append_log(self, line: str):
         with self._log_lock:

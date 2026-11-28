@@ -215,9 +215,9 @@ class BaseRunner(_Base):
                     raise
 
     def set_status(self, task, status, batch_uuid, origin=Origin.RUN, message=""):
-        """Write the status of the task. message is the text of the task signal
-        that caused the status. The interactive runner keeps it on the
-        execution record (see TaskOutcome)."""
+        """Write the status of the task. message says why: the text of a task
+        signal, or the reason of the runner for a block. The interactive
+        runner keeps it on the execution record (see TaskOutcome)."""
         # The current runners abort on ERROR, but a custom runner may
         # introduce retry logic in a batch. An errored task can then run
         # again in the same batch, and the RUNNING write must reset the flag.
@@ -536,7 +536,11 @@ class BaseRunner(_Base):
         ]
 
         if failed_deps:
-            msg = f"Cannot run {task} - {len(failed_deps)} dependencies are failing."
+            names = ", ".join(f"{dep} ({self.store[dep]})" for dep in failed_deps)
+            msg = (
+                f"Cannot run {task} - {len(failed_deps)} dependencies are "
+                f"failing: {names}."
+            )
             self.set_status(task, TaskStatus.BLOCKED, batch_uuid, message=msg)
             raise TaskBlock(msg)
 
