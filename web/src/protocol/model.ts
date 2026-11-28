@@ -129,6 +129,7 @@ export interface TaskOutcome {
   started_at: number | null
   duration: number | null
   last_log: string
+  signal_message: string
 }
 
 export interface BatchOutcome {

@@ -151,9 +151,12 @@ An agent gets the same reads and actions as a terminal, over MCP. On the host:
 
 4. Ask. "Which sessions are live?" calls `list_sessions`. "Start etl" calls `descriptors` for the options,
    then `start_session`. "What failed in last night's run?" calls `history` for the batches with the outcome
-   of each task, then `task_detail` for the traceback. "Run it again" calls `run_tasks` with the key of the
-   task and `{"force_run": true}`. Every action answers an ack, accepted with the batch uuid or refused with
-   the reason, and the connected terminals show the batch the agent started.
+   of each task, then `task_detail` for the traceback. "What is waiting on me?" calls `history` and reads
+   the `signal_message` of each `ACTION_REQUIRED` outcome in the latest batch of the task: the text the
+   task gave to `require_action`. A `BLOCKED` or `FAILED` outcome carries the text of `block` or `fail`
+   the same way. "Run it again" calls `run_tasks` with the key of the task and `{"force_run": true}`.
+   Every action answers an ack, accepted with the batch uuid or refused with the reason, and the
+   connected terminals show the batch the agent started.
 
 ## The process picture
 

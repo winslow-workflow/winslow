@@ -54,6 +54,13 @@ class ExecutionRecordStore(TaskStore):
         if record is not None:
             record.info = TaskInfo.from_task(task, full=True, root_dir=self.root_dir)
 
+    def settle(self, task_key, status, message=""):
+        """Write the status of one record with the message of its task signal
+        (see ExecutionRecord.annotate). The note is bound before the status,
+        so a reader that sees the status also finds its message."""
+        self._records[task_key].annotate(status, message)
+        self[task_key] = status
+
     def get_record(self, task_key) -> ExecutionRecord:
         return self._records[task_key]
 

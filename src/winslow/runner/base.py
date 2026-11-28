@@ -214,7 +214,10 @@ class BaseRunner(_Base):
                 if self.orchestrator_config.reraise_errors:
                     raise
 
-    def set_status(self, task, status, batch_uuid, origin=Origin.RUN):
+    def set_status(self, task, status, batch_uuid, origin=Origin.RUN, message=""):
+        """Write the status of the task. message says why: the text of a task
+        signal, or the reason of the runner for a block. The interactive
+        runner keeps it on the execution record (see TaskOutcome)."""
         # The current runners abort on ERROR, but a custom runner may
         # introduce retry logic in a batch. An errored task can then run
         # again in the same batch, and the RUNNING write must reset the flag.
@@ -297,7 +300,7 @@ class BaseRunner(_Base):
                 self.set_status(task, status, batch_uuid)
             except TaskBlock as e:
                 task.logger.error(e)
-                self.set_status(task, TaskStatus.BLOCKED, batch_uuid)
+                self.set_status(task, TaskStatus.BLOCKED, batch_uuid, message=str(e))
 
     def _check_task_eligibility(self, task, _):  # The signature matches _batch_call
         # This does not run in task_scope. An eligibility check that fails must
@@ -350,7 +353,7 @@ class BaseRunner(_Base):
                     return
             except TaskBlock as e:
                 task.logger.error(e)
-                self.set_status(task, TaskStatus.BLOCKED, batch_uuid)
+                self.set_status(task, TaskStatus.BLOCKED, batch_uuid, message=str(e))
                 return
 
         with self.task_scope(task, batch_uuid, phase):
@@ -373,13 +376,15 @@ class BaseRunner(_Base):
                 self.set_status(task, stat, batch_uuid)
             except TaskBlock as e:
                 task.logger.error(e)
-                self.set_status(task, TaskStatus.BLOCKED, batch_uuid)
+                self.set_status(task, TaskStatus.BLOCKED, batch_uuid, message=str(e))
             except TaskActionRequired as e:
                 task.logger.info(str(e))
-                self.set_status(task, TaskStatus.ACTION_REQUIRED, batch_uuid)
+                self.set_status(
+                    task, TaskStatus.ACTION_REQUIRED, batch_uuid, message=str(e)
+                )
             except TaskFailure as e:
                 task.logger.error(e)
-                self.set_status(task, TaskStatus.FAILED, batch_uuid)
+                self.set_status(task, TaskStatus.FAILED, batch_uuid, message=str(e))
 
     def _run_task(self, task, batch_uuid):
         with self.task_scope(task, batch_uuid, ExecutionPhase.RUN) as ctx:
@@ -531,10 +536,13 @@ class BaseRunner(_Base):
         ]
 
         if failed_deps:
-            self.set_status(task, TaskStatus.BLOCKED, batch_uuid)
-            raise TaskBlock(
-                f"Cannot run {task} - {len(failed_deps)} dependencies are failing."
+            names = ", ".join(f"{dep} ({self.store[dep]})" for dep in failed_deps)
+            msg = (
+                f"Cannot run {task} - {len(failed_deps)} dependencies are "
+                f"failing: {names}."
             )
+            self.set_status(task, TaskStatus.BLOCKED, batch_uuid, message=msg)
+            raise TaskBlock(msg)
 
         # This runs after the dependency check, because the runnability check can
         # depend on the effects of the completed dependencies.
