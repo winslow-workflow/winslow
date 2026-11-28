@@ -352,6 +352,9 @@ class TaskOutcome:
     started_at: float | None
     duration: float | None
     last_log: str
+    # The message of the task signal behind the status: the text that the
+    # task gave to block, fail or require_action. Empty without a signal.
+    signal_message: str = ""
 
     @classmethod
     def from_record(cls, status, record):
@@ -360,6 +363,7 @@ class TaskOutcome:
             started_at=(record.started_at.timestamp() if record.started_at else None),
             duration=record.duration,
             last_log=record.last_log,
+            signal_message=record.signal_message,
         )
 
 

@@ -117,6 +117,9 @@ class ExecutionRecord:
     # ExecutionPhase -> tuple[CacheReadSnapshot]. A repeated phase overwrites,
     # so the last occurrence wins, exactly like transient_snapshots.
     cache_snapshots: dict = field(default_factory=dict)
+    # The message of the task signal that set the current status. A status
+    # write without a signal resets it (see ExecutionRecordStore.settle).
+    signal_message: str = ""
 
     def __post_init__(self):
         # append_log runs on worker threads while log_tail snapshots on the

@@ -52,13 +52,13 @@ class InteractiveRunner(HeadlessRunner):
         # A copy, so iteration survives a map update from another thread.
         return list(self._execution_record_store_map.values())
 
-    def set_status(self, task, status, batch_uuid, origin=Origin.RUN):
+    def set_status(self, task, status, batch_uuid, origin=Origin.RUN, message=""):
         super().set_status(task, status, batch_uuid, origin=origin)
         # A dependency that is probed for the batch is not part of the batch.
         # Only the tasks of the batch get an execution record.
         store = self._execution_record_store_map.get(batch_uuid) if batch_uuid else None
         if store is not None and task.identity_key in store:
-            store[task.identity_key] = status
+            store.settle(task.identity_key, status, message)
 
     def _track(self, batch_uuid, task, phase):
         store = self._execution_record_store_map[batch_uuid]
